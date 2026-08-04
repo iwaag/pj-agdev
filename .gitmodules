@@ -1,0 +1,3 @@
+[submodule "agdevworld"]
+	path = agdevworld
+	url = https://github.com/iwaag/agdevworld.git
