@@ -8,8 +8,9 @@ scene.
 - Added `src/clusterState.ts` with the `nctl.drift.v1` data types, runtime
   envelope validation, snapshot loading, and node filtering.
 - The loader first requests `/cluster/state.json` with caching disabled. It
-  falls back to `/state.sample.json` only for HTTP 404; other HTTP and data
-  errors remain visible instead of silently hiding a broken live snapshot.
+  falls back to `/state.sample.json` for HTTP 404 or Vite's development-only
+  200 HTML history fallback; other HTTP and data errors remain visible instead
+  of silently hiding a broken live snapshot.
 - A target is included only when `target.kind` is `node` and none of these
   not-confirmed codes is present:
   - `missing_actual_node`
