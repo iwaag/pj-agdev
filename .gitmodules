@@ -1,0 +1,6 @@
+[submodule "agdevworld"]
+	path = agdevworld
+	url = https://github.com/iwaag/agdevworld.git
+[submodule "agforge"]
+	path = agforge
+	url = https://github.com/iwaag/agforge.git
