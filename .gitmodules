@@ -4,3 +4,6 @@
 [submodule "agforge"]
 	path = agforge
 	url = https://github.com/iwaag/agforge.git
+[submodule "agautolab"]
+	path = agautolab
+	url = https://github.com/iwaag/agautolab.git
