@@ -21,4 +21,21 @@
   agent instruction. (Recorded 2026-08-06, scoped out of
   devdocs/ent-episodes/swarmui-flow/plan.md.)
 
+- Agent access point on agforge: put an agent behind the request-service
+  seam (`POST /api/requests` stays the contract; the deterministic
+  generate.sh backend becomes one tool among several). (Recorded 2026-08-06,
+  scoped out of episodes/connect_world_and_forge/plan.md.)
+- Artifact persistence: generated images currently live only behind
+  presigned URLs that expire (60 min default); no catalogue, and the chat
+  image bubble dies with the URL. Design storage/cataloguing when it hurts.
+  (Recorded 2026-08-06, scoped out of episodes/connect_world_and_forge.)
+- Voice-driven flow: ask for an image by voice, agdevworld's stated
+  audio-in/out experience. (Recorded 2026-08-06, scoped out of
+  episodes/connect_world_and_forge.)
+
 ## Done
+
+- 2026-08-06 connect_world_and_forge: chat "draw a castle at sunset" in
+  agdevworld → assistant emits generate_image action → agforge request
+  service (intent-level HTTP API over generate.sh) → image bubble in the
+  chat panel. See episodes/connect_world_and_forge/report[1-4].md.
