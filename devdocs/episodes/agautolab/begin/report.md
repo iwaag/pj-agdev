@@ -34,3 +34,17 @@ Verified: 8 new stub-CLI tests (18 total passing), then a real-model proof:
 fizzbuzz toy job in `.local/jobs/fizzbuzz` converged on iteration 1
 ($0.13, 5 turns, 13 s, no permission denials), gate re-verified by hand.
 Details in the autodev episode's `report2.md`.
+
+## Step 3 — loop mode — 2026-08-07
+
+Added `autolab loop <job-dir>`: repeats `run-once` while it returns 10
+(continue) with a configurable `--sleep` (default 5 s) between iterations,
+and exits with the terminal code (0/20/30; 130 on Ctrl-C). No recovery code
+needed — state is on disk, the next run continues. Template systemd user unit
+recorded at `devenv/systemd/autolab@.service` (`Restart=on-failure` with
+`RestartPreventExitStatus=20 30` so terminal verdicts don't restart-loop);
+installation is Step 5 work.
+
+Verified: 5 new tests in `tests/test_loop.py` (23 total passing) plus a
+foreground smoke run of a fake-adapter job converging in 3 iterations.
+Details in the autodev episode's `report3.md`.
