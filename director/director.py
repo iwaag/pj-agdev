@@ -145,8 +145,8 @@ def expected_asset_path(context: Context) -> Path:
     return candidate
 
 
-def review(context: Context) -> tuple[dict, dict]:
-    asset = expected_asset_path(context)
+def review(context: Context, asset: Path | None = None) -> tuple[dict, dict]:
+    asset = expected_asset_path(context) if asset is None else asset.resolve()
     if not asset.is_file():
         raise DirectorError(f"delivered asset does not exist: {asset}")
     prompt = f"""You are leniently reviewing one immature generated game asset.
@@ -176,6 +176,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--direction", required=True, type=Path)
     result.add_argument("--manifest", required=True, type=Path)
     result.add_argument("--request-id", required=True)
+    result.add_argument(
+        "--asset",
+        type=Path,
+        help="candidate image to review; defaults to the manifest-declared delivery path",
+    )
     return result
 
 
@@ -183,7 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         context = load_context(args.direction, args.manifest, args.request_id)
-        answer, meta = compose(context) if args.question == "compose" else review(context)
+        answer, meta = (
+            compose(context) if args.question == "compose" else review(context, args.asset)
+        )
     except DirectorError as error:
         print(f"director: {error}", file=sys.stderr)
         return 1
