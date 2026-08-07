@@ -80,3 +80,21 @@ binary busy-loop at 100 % CPU through every install path; fixed by
 WorkflowEpisode `701ad4e6-00c0-4cc0-b367-1e55d2548927`; follow-up candidate:
 default `cpu: host` in clusterintent's `create_qemu.yml`. Details in the
 autodev episode's `report5.md`.
+
+## Step 6 — first real full-auto job: browser Othello — 2026-08-07
+
+Ran the first end-to-end job with no human help mid-run: `autodev/othello-web`
+(private, on the agstudio gitea) seeded with a contract README and a
+pre-validated 10-case `node:test` acceptance suite (engine API, rules, CPU
+legality, self-play termination, index.html wiring); gate = bare `node --test`
+(no npm deps — cheap and deterministic on the VM's Node 22).
+`autolab@othello-web.service` on agautolab1 converged in **one iteration**:
+64 s adapter wall, 12 turns, $0.311, sonnet-5 pinned via
+`adapter_config.args`. Agent wrote `othello.js` (109 lines) + `index.html`
+(235 lines), left `test/` untouched; result pushed to gitea `main`.
+
+agautolab change en route: `jobs/` added to `.gitignore`. Observed gaps for
+Step 7: no auto-push from `run_once` (pushed manually), no status/monitoring
+command (ssh-polled `state.json`), and a one-iteration convergence means
+NOTES handoff / stuck detection are still unexercised by a real model.
+Details in the autodev episode's `report6.md`.
