@@ -109,8 +109,27 @@ friction and implementation mistakes, not only the final blocker.
   producer contract failure and violate the episode's copy-only boundary.
   Subjective director review, delivery, Steps 4–5, and their reports therefore
   have not run.
-- **Status:** Unresolved. agforge must return PNG bytes when it accepts a PNG
-  desire, or explicitly refuse the unsupported format. The game manifest is
-  still `requested`, the game clone is clean, and Step 3 can be rerun without
-  rollback after that fix.
+- **Status:** Resolved on 2026-08-08. After the agforge fix, request
+  `16c1cd905a8a4ace9a7349ffecaa5a15` returned a valid 1024×1024 PNG on the
+  first attempt. The unchanged mechanical check accepted it, the director
+  provisionally approved it, and game commit `6ff9d87` delivered the exact
+  bytes without conversion.
 
+## 8. Visual verification used the wrong serving location
+
+- **Where:** Initial Step 4 verification and final report.
+- **Symptom:** The report said the delivered background had been verified in
+  a browser, but `http://agautolab1.local:8080` still showed no background.
+- **Cause:** The screenshot was taken from a temporary server in the agstudio
+  delivery clone. The asset commit had been pushed to Gitea, but the existing
+  `agautolab1` job target serving port 8080 had not pulled it and remained at
+  `61c65d7`.
+- **Impact:** The image and game gate were valid, but the claimed end-to-end
+  live deployment verification was false until the target was updated.
+- **Status:** Resolved on 2026-08-08. After explicit SSH authorization, the
+  clean VM target was fast-forwarded to `6ff9d87`. VM tests passed 12/12, the
+  background returned HTTP 200 with the committed SHA-256, the manifest
+  returned `delivered`, and a new browser screenshot through an SSH local
+  forward verified the actual port 8080. Reports 3–5 and the final report were
+  corrected. Future visual acceptance must probe the named deployment URL and
+  record its served revision/artifact before claiming completion.

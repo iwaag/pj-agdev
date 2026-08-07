@@ -20,9 +20,10 @@ background readably.
    presigned-URL API, mechanically checked the candidate, obtained a
    provisional creative acceptance, copied the exact bytes, and changed only
    the request status to `delivered`.
-4. The delivered game commit `6ff9d87` was pushed to Gitea `main`. Bare
-   `node --test` passed 12/12, including the delivered branch, and a local
-   browser screenshot confirmed a visible background and readable board.
+4. The delivered game commit `6ff9d87` was pushed to Gitea `main` and pulled
+   into the existing `agautolab1` job target. Bare `node --test` passed 12/12
+   on the VM, including the delivered branch. A browser screenshot from the
+   VM's actual port 8080 confirmed a visible background and readable board.
 
 The first Step 3 attempt on 2026-08-07 correctly stopped when two requests
 returned JPEG despite the explicit PNG desire. After agforge was fixed, the
@@ -72,6 +73,14 @@ or New game control.
 The original JPEG-for-PNG failure was a useful producer-contract finding. The
 fixed agforge path now returns valid 1024×1024 PNG bytes for the same style of
 desire, and the delivery flow proved that rather than masking it downstream.
+
+The first visual-verification report exposed a separate deployment mistake:
+the screenshot had been taken from a temporary agstudio server while the VM
+still served the pre-delivery commit. HTTP probing found the live background
+404, the clean VM target was fast-forwarded, and verification was repeated
+against its actual port 8080. Future acceptance checks must name and probe the
+intended deployment endpoint rather than treating an equivalent local checkout
+as live evidence.
 
 ## Follow-ups
 

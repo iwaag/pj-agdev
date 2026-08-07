@@ -35,7 +35,9 @@ to `reviews/background.md`.
 
 The game repository commit is `6ff9d87` (`director: deliver background asset
 (agforge 16c1cd90, accepted)`). It was pushed from the clean local delivery
-clone to Gitea `main`; the clone is synchronized with `origin/main`.
+clone to Gitea `main`. The existing `agautolab1` job target was subsequently
+fast-forwarded from `61c65d7` to `6ff9d87`; both checkouts are synchronized
+with `origin/main`.
 
 ## Independent verification
 

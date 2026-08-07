@@ -11,7 +11,8 @@ The episode finished with:
 - game delivery commit `6ff9d87` on Gitea `autodev/othello-web` `main`;
 - a valid 1024×1024 PNG and `delivered` manifest state;
 - 12/12 game tests and 8/8 director tests passing;
-- browser confirmation that the background is visible and the board remains
-  readable;
+- the existing `agautolab1` job target fast-forwarded to the delivery commit;
+- browser confirmation from its actual port 8080 that the background is
+  visible and the board remains readable;
 - no direction material committed into the game repository and no game
   implementation context supplied to the director.
