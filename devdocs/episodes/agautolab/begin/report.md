@@ -48,3 +48,17 @@ installation is Step 5 work.
 Verified: 5 new tests in `tests/test_loop.py` (23 total passing) plus a
 foreground smoke run of a fake-adapter job converging in 3 iterations.
 Details in the autodev episode's `report3.md`.
+
+## Step 4 — fresh agent-only gitea on agstudio — 2026-08-07
+
+Removed agstudio's old experimental gitea (the `localgit` service in
+`~/services/service_scripts`'s compose; container + `gitea_data` removed by
+the user after the permission classifier blocked agent-side `docker rm`, the
+compose entry removed by the agent). Deployed a fresh agent-only Gitea
+1.27.1 from `devenv/gitea/compose.yaml`: named volume, sqlite3 +
+INSTALL_LOCK, registration disabled, ports 3000/2222. Admin user
+`autolab-agent`, org `autodev`; password and all-scopes API token live only
+in `.local/gitea/` (mode 600). Verified: API repo create → token push →
+clone round-trip → smoke repo deleted; reachable via `agstudio.local:3000`.
+Setup notes in `devenv/gitea/SETUP.md`; details in the autodev episode's
+`report4.md`.
