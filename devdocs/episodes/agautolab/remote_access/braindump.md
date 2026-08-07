@@ -1,0 +1,8 @@
+pj-agdev/devdocs/episodes/agautolab/proper_role_separation/report.mdで最近agautolabを要望だけ渡して動作できる状態にした。
+現在、VMのagautolab1.localにautolabが少し古いリビジョンで展開されているはずだ。
+
+これをssh無しで呼び出して依頼できるようにしたい。
+autolabノードのへのautolabの配置や更新はansible_agdev、autolabエージェントへの依頼はエンドポイントでできるようにして、sshなしで指示を出してタスクを開始してブラウザゲームをサーブすることろまで実証したい。
+内容はなるべく軽く、単純な３択クイズゲームでいい。
+
+何かエラーが起きた場合などはSSHでアクセスしてかまわない。
