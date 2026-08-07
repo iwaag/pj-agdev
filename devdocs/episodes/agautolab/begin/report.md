@@ -62,3 +62,21 @@ in `.local/gitea/` (mode 600). Verified: API repo create → token push →
 clone round-trip → smoke repo deleted; reachable via `agstudio.local:3000`.
 Setup notes in `devenv/gitea/SETUP.md`; details in the autodev episode's
 `report4.md`.
+
+## Step 5 — dev node setup (agautolab1) — 2026-08-07
+
+Provisioned the job-runner VM `agautolab1.local` (Proxmox VM 109 on aghub,
+Ubuntu 24.04, 4 vCPU / 8 GB): uv 0.12.2, agautolab cloned from gitea
+(`autodev/agautolab`, 23 tests passing on the VM), gitea token + credential
+store in `~/.agautolab/.local/gitea/`, `autolab@.service` installed as a
+systemd user unit with linger and an explicit PATH (`~/.local/bin` +
+`~/.local/node/bin`). Claude Code CLI 2.1.224 installed via npm under
+user-space Node 22; user logged in with the dedicated Claude account;
+headless `claude -p` smoke test OK (7 s).
+
+Incident: the VM's default `kvm64` CPU (no AVX2) made the bun-built claude
+binary busy-loop at 100 % CPU through every install path; fixed by
+`qm set 109 --cpu host` + full stop/start (user-run). Recorded as
+WorkflowEpisode `701ad4e6-00c0-4cc0-b367-1e55d2548927`; follow-up candidate:
+default `cpu: host` in clusterintent's `create_qemu.yml`. Details in the
+autodev episode's `report5.md`.
