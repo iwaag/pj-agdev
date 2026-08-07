@@ -98,3 +98,12 @@ Step 7: no auto-push from `run_once` (pushed manually), no status/monitoring
 command (ssh-polled `state.json`), and a one-iteration convergence means
 NOTES handoff / stuck detection are still unexercised by a real model.
 Details in the autodev episode's `report6.md`.
+
+## Step 7 — episode close — 2026-08-07
+
+The autodev episode is closed with its final `report.md` (projects-root
+devdocs). agautolab's follow-up backlog from the episode: push `target/`
+(and ideally `evidence/`) off-node on iteration/terminal, an
+`autolab status` subcommand, a default `.gitignore` for auto-initialized
+targets, and a harder job to exercise NOTES handoff + stuck detection with
+a real model. Total real-model spend across the episode: ≈ $0.44.
