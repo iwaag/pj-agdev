@@ -26,8 +26,15 @@ only under `summaries/`; nothing under `.local/` and no real hostname is
 committed (`AUTOLAB_NODES` defaults to the local node, real values in an
 ignored `.env`); the scope-1 monitor page still works.
 
-Total spend proving the scope: **≈ $1.29** — $0.40 mediator, $0.18 job,
-$0.71 for five summaries.
+Total spend proving the scope: **≈ $1.46** — $0.40 mediator, $0.18 job,
+$0.88 for six summaries (five on agstudio, one on agautolab1).
+
+Both nodes work: agautolab1 was updated through the existing deploy path
+(push `agautolab` `main` to the agstudio gitea, then
+`ansible-playbook -i inventories/agautolab.yml
+playbooks/agent/setup_autolab_node.yml`), and it now serves the unauthenticated
+read side, has `claude` 2.1.224, and produced a real summary through the
+passthrough for $0.165.
 
 ## What the work taught
 
@@ -60,10 +67,13 @@ unabridged so nothing re-summarizes it away.
    sits at 192.168.0.220 while its desired endpoint says 192.168.0.130, and
    runs a checkout old enough to still demand a token on read routes. Nothing
    in the system notices either fact.
-2. **A key or an ansible pass for `agautolab1`.** Its gateway cannot be
-   updated from here (publickey-only SSH, no key for this account), so
-   whether `claude` exists there is still unverified. The `autolab_node` role
-   in clusterintent's `ansible_agdev` owns that machine.
+2. ~~A key or an ansible pass for `agautolab1`.~~ **Done** — the node was
+   updated with `playbooks/agent/setup_autolab_node.yml` after pushing to its
+   deploy source. What remains is that nothing *notices* when it falls behind:
+   the gitea `autodev/agautolab` had been stale for several commits and the
+   only symptom was a 401 that looked like a node problem. A freshness check
+   (deploy-source HEAD vs node checkout, surfaced in the view) would turn that
+   into information rather than a mystery.
 3. **Auth, system-wide.** An unauthenticated POST that spends money is
    accepted for this experimental phase and bounded by the one-at-a-time guard
    and the per-iteration cache. It should not survive the phase.
