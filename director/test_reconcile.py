@@ -62,6 +62,14 @@ class ReconcileTests(unittest.TestCase):
                     path, {"format": "png", "width": 3, "height": 2}
                 )
 
+    def test_persist_envelopes_writes_readable_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            direction = Path(temporary)
+            payload = {"request": "bg", "desire": "d", "attempts": [], "verdict": "in_progress"}
+            path = reconcile.persist_envelopes(direction, "bg", payload)
+            self.assertEqual(path, direction / "reviews" / "bg.envelopes.json")
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), payload)
+
     def test_set_delivered_changes_only_selected_status(self):
         with tempfile.TemporaryDirectory() as temporary:
             manifest = Path(temporary) / "manifest.json"

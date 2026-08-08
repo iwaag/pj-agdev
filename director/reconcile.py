@@ -171,6 +171,20 @@ def set_delivered(manifest: Path, request_id: str) -> None:
     temporary.replace(manifest)
 
 
+def persist_envelopes(direction: Path, request_id: str, payload: dict) -> Path:
+    """Write the full compose/review evidence for one request atomically.
+
+    Called after compose and after every attempt so partial evidence survives
+    any later failure — the parent episode lost a successful envelope this way.
+    """
+    path = direction / "reviews" / f"{request_id}.envelopes.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
 def write_review(
     path: Path,
     desire: str,
@@ -209,6 +223,14 @@ def reconcile(direction_path: Path, manifest_path: Path, request_id: str, agforg
     suffix = "." + str(context.request.get("format", "png")).lower()
     candidate = context.direction / "candidates" / f"{request_id}{suffix}"
     attempts: list[dict] = []
+    evidence = {
+        "request": request_id,
+        "desire": desire,
+        "compose_meta": compose_meta,
+        "attempts": attempts,
+        "verdict": "in_progress",
+    }
+    persist_envelopes(context.direction, request_id, evidence)
     last_error: ReconcileError | None = None
     for attempt_number in (1, 2):
         agforge_id = "not-created"
@@ -225,10 +247,24 @@ def reconcile(direction_path: Path, manifest_path: Path, request_id: str, agforg
                     "mechanical": f"failed: {error}",
                 }
             )
+            persist_envelopes(context.direction, request_id, evidence)
             if "refused:" in str(error):
                 break
             continue
-        subjective, review_meta = director.review(context, candidate)
+        try:
+            subjective, review_meta = director.review(context, candidate)
+        except director.DirectorError as error:
+            last_error = ReconcileError(f"director review failed: {error}")
+            attempts.append(
+                {
+                    "attempt": attempt_number,
+                    "request_id": agforge_id,
+                    "mechanical": f"passed: {mechanical.format} {mechanical.width}x{mechanical.height}",
+                    "subjective": f"error: {error}",
+                }
+            )
+            persist_envelopes(context.direction, request_id, evidence)
+            continue
         attempts.append(
             {
                 "attempt": attempt_number,
@@ -239,11 +275,14 @@ def reconcile(direction_path: Path, manifest_path: Path, request_id: str, agforg
                 "review_meta": review_meta,
             }
         )
+        persist_envelopes(context.direction, request_id, evidence)
         if subjective["accepted"]:
             destination = director.expected_asset_path(context)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(candidate, destination)
             set_delivered(context.manifest, request_id)
+            evidence["verdict"] = "provisional"
+            persist_envelopes(context.direction, request_id, evidence)
             write_review(
                 context.direction / "reviews" / f"{request_id}.md",
                 desire,
@@ -252,6 +291,8 @@ def reconcile(direction_path: Path, manifest_path: Path, request_id: str, agforg
             )
             return {"desire": desire, "compose_meta": compose_meta, "attempts": attempts}
         last_error = ReconcileError(f"director rejected attempt {attempt_number}: {subjective['reason']}")
+    evidence["verdict"] = "rejected"
+    persist_envelopes(context.direction, request_id, evidence)
     write_review(
         context.direction / "reviews" / f"{request_id}.md",
         desire,
