@@ -41,8 +41,7 @@ disagrees):
 Constraints (kept to the true minimum):
 1. Monitoring reads must never write job/agent state or take the job `.lock`.
 2. Nothing under `.local/` gets committed.
-3. Code lives in the `agautolab` submodule (braindump says "aglab" — that
-   directory does not exist anywhere; it means `agautolab`).
+3. Code lives in the `agautolab` submodule.
 
 Everything else — naming, layout, endpoint shapes, HTML structure — is
 implementer's discretion.
