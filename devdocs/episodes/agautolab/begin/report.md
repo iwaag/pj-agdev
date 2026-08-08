@@ -107,17 +107,3 @@ devdocs). agautolab's follow-up backlog from the episode: push `target/`
 `autolab status` subcommand, a default `.gitignore` for auto-initialized
 targets, and a harder job to exercise NOTES handoff + stuck detection with
 a real model. Total real-model spend across the episode: ≈ $0.44.
-
-## Step 5 — dev node setup (agautolab1 VM) — 2026-08-08
-
-Runner VM `agautolab1` (Ubuntu 24.04, 4 vCPU/8 GB, aghub-pve) created via
-pj-clusterintent's new QEMU path; user did SSH setup and dedicated-account
-Claude login per the manual handoff boundary. Agent-side provisioning, all
-userspace: uv 0.12.2; agautolab pushed to gitea as `autodev/agautolab` and
-cloned to `~/agautolab` (23 tests pass on the VM); gitea token in
-`~/.agautolab/.local/gitea/` + git credential store; systemd user unit
-installed, linger enabled. Claude CLI 2.1.224: official installer's
-self-setup hung reproducibly — the downloaded binary was placed directly as
-`~/.local/bin/claude` instead. Verified with a real headless one-shot
-(`claude -p` → OK, $0.057). node/npm not installed yet — Step 6 gate-stack
-consideration. Details in the autodev episode's `report5.md`.
