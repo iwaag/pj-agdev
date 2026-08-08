@@ -77,8 +77,9 @@ the same evidence passthrough for the raw artefacts.
 
 ## What live verification found
 
-Three bugs, none of which `curl` could have shown; two needed a browser
-render and one needed something actually running:
+Six bugs, none of which `curl` could have shown. Two needed a browser render,
+two needed something actually running, and two needed a *real paid* mission —
+each layer of realism bought a bug the layer below could not reach:
 
 1. A 6-column table at `width: 100%` spread its slack across every column, so
    the cost drifted halfway across the screen from the job name.
@@ -88,14 +89,26 @@ render and one needed something actually running:
 3. The in-flight session rendered as a red `unparsed` row, because `claude`
    creates its output file at start and only fills it at the end. It now
    reads `in progress` while a driver is alive.
+4. A stale devstyle report was shown under a freshly submitted mission, next
+   to a STATUS line that correctly called the notes stale.
+5. A job the mediator had just created — `job.yaml` written, `state.json` not
+   yet — showed a red *"state.json missing or unparsable"*. The most normal
+   moment in a job's life was displayed as a fault. Now `not started`.
+6. The devstyle 3-line report was truncated mid-sentence, because real
+   `NOTES.md` is hard-wrapped prose and the parser read one line per answer.
+   Unreachable with a stub, because the stub's notes were written unwrapped
+   by the same hand that wrote the parser.
 
-A fourth was found by reading the rendered header: `mission_first_line` was
-literally `# Mission`, and the line after it stopped mid-sentence because
+A seventh was found simply by reading the rendered header: `mission_first_line`
+was literally `# Mission`, and the line after it stopped mid-sentence because
 mission prose is hard-wrapped. `/status` now reports the first paragraph.
 
-The lesson worth keeping: for a presentation layer, `curl`-level verification
-proves the data is right and proves nothing about whether a human can read it.
-Every one of these survived a green endpoint check.
+Two lessons worth keeping. For a presentation layer, `curl`-level verification
+proves the data is right and proves nothing about whether a human can read it —
+every one of these survived a green endpoint check. And a test double only
+exercises the states its author thought of: bugs 5 and 6 are both about what
+the real system looks like *in between* its named states, and both were
+invisible until a real mission ran.
 
 ## Constraints
 
@@ -107,7 +120,7 @@ Every one of these survived a green endpoint check.
 - Path traversal on both new file-serving routes was checked over a raw
   socket, because curl normalises `..` away before sending.
 
-`uv run pytest -q` → 49 passed (8 new tests).
+`uv run pytest -q` → 51 passed (10 new tests).
 
 ## Style report
 
@@ -122,8 +135,17 @@ Every one of these survived a green endpoint check.
   places. Rendering it should have come before, not after, the endpoints
   looked green.
 
-## Not done
+## End-to-end proof
 
-No paid mediator session was run. `POST /mission` → `drive.sh` → `session.sh`
-was exercised twice against a stub `claude` binary; the real thing costs money
-and takes minutes, so it is the user's call. See [report3](report3.md).
+One real mission was run with the user's cost approval: a Roman-numeral CLI,
+`max_sessions: 1`. The mediator session cost **$0.6263** (17 turns, 112 s) and
+the job converged at iteration 1 of 3 with 6/6 gates for **$0.2027** (8 turns,
+24 s) — **$0.83** total. The whole lifecycle was watched on the page: mission
+headline, driver running → finished (exit 0), the live session showing
+`in progress` then its final cost, the job appearing and converging, evidence
+links resolving, and cumulative cost moving from $1.7415 to $2.3678.
+
+The mediator chose `instant-ramen` and its own devstyle report is on the page:
+*"mission explicitly bounded itself … textbook small/reversible work"* /
+*"yes — converged in 1 iteration at minimal cost, no plan/approve overhead
+needed for a problem this narrow and well-specified."*
