@@ -1,0 +1,29 @@
+directorの設計が想定と中途半端に乖離してしまった。
+完全い想定と違うわけではないが、私の考える「エージェントワークスペースのスタート地点」とは明確に異なる。
+エージェントとの会話も、ある程度合致するがゆえにその微妙なギャップを理解するのが難しく、話が噛み合わない。
+私の指示の仕方と計画のチェックに問題があった。中途半端に構想を伝えてしまい、計画のチェックも雑だった。
+ここは一度、完全に設計の手綱を握り直す必要がある。
+
+一度既存のdirector関連機構は白紙に戻す。
+今までのdirectorに関する要望も撤回する。
+私の考える「本当の最低限のエージェントワークスペース」の状態から始めたい。
+そしてそこから実際にテスト運用してみて必要な要素を足していく。
+実装内容は以下。
+
+0. 現状のdirector関連の実装は削除
+1. 空のディレクトリ資料リポジトリをgiteaに作る。ユーザーは全ノード共通のデフォルトAI用ユーザーの前提。
+2. 初期ファイルは3つ。
+2-1 .gitignore、中身は".local"のみ
+2-2 GUIDE.md、内容は"You are a game director.　All information about the game is inside this foder."
+2-3 concept.md、中身は"This is Scifi-themed game. All images must follow futuristic aesthetics."
+3. autolabにdirector用のテキストin/outの単一windowを設置。
+3-1. エージェントcliワンショットで"First, read GUIDE.md. Then, follow this request.: /n"みたいな文字列に入力文字列を連結して渡す。
+3-2. あえてconcept.mdについては言及していない。勝手に判断して読むか見てみる。
+4. director用のwindowに入力テスト、
+4-1. テスト１："What is this project?"
+4-2. テスト２："Suggest prompt to generate background image of this game."
+4-3. ここで返答のプロンプトを使って実際にagforgeで画像生成
+4-4. directorワークスペースの".local/image/background.md"に画像を配置
+4-5. テスト３："review .local/image/background.md"と質問
+
+一連の作業はOmni Agentが行う。コーディングエージェントとの連携は今は考えない。

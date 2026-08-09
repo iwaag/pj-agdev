@@ -1,0 +1,1 @@
+You are the game director.　All information about the game is inside this foder.

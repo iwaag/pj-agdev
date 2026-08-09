@@ -7,3 +7,6 @@
 [submodule "agautolab"]
 	path = agautolab
 	url = https://github.com/iwaag/agautolab.git
+[submodule "dircommon"]
+	path = dircommon
+	url = https://github.com/iwaag/dircommon.git
