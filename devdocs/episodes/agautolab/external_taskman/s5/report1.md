@@ -1,6 +1,6 @@
 # Step 1 report — version-1 issue ready for manual dispatch
 
-Status: **awaiting a second human Execute attempt** on 2026-08-11.
+Status: **failed and terminated** on 2026-08-11.
 
 ## Plane issue
 
@@ -69,6 +69,9 @@ progress comment. The Omni Agent posted comment
 issue to Ready — did failure reporting and recovery transition for the
 mediator, handoff candidate.
 
-The task remains unchanged and dispatchable. A second human Execute is needed;
-posting the product mission directly to `/window` would violate the manual
-boundary and is not used as a workaround.
+The task remained unchanged and dispatchable after that recovery. The user
+then directed the episode to end with a failure report rather than make a
+second Execute attempt. Final comment
+`2743d2a6-8031-41b5-8ee5-87da1bbbdbd5` records that decision and the absence
+of a v1 implementation, and `PA-6` was moved from Ready to Cancelled. Posting
+the product mission directly to `/window` was not used as a workaround.
