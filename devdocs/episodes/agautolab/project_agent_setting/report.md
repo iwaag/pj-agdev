@@ -42,8 +42,13 @@ beyond the plan's default shape.
 
 ## Follow-up
 
-The OpenCode coding-adapter cwd mismatch is worth an ENT episode. No change for
-that unrelated behavior was folded into this project-settings implementation.
+The observed OpenCode cwd mismatch was subsequently traced to a stale inherited
+`PWD`: `subprocess(cwd=...)` changed the real cwd without changing that
+environment value. The follow-up deliberately applies two defenses and records
+the reason in code and documentation: pyagag synchronizes `PWD` with cwd, while
+the OpenCode adapter also passes its native `--dir`. Both have regression tests,
+and a local/OpenCode job launched from the parent checkout subsequently
+converged with all tool events confined to its `target/`.
 
 did per-project coding/director agent-setting implementation and live smoke
 evidence for the agautolab in-system agent — handoff candidate.

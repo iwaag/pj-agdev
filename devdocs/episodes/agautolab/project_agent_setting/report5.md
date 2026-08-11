@@ -35,3 +35,14 @@ same common `role_run` CLI directly rather than the HTTP entrance.
 ENT follow-up candidate: investigate why the OpenCode coding adapter's tool
 working directory can escape the supplied `target/` even though the harness
 process receives that cwd. This did not affect project/profile resolution.
+
+## Post-episode follow-up
+
+The cwd issue was subsequently reproduced as a stale inherited `PWD`: Python's
+`subprocess(cwd=...)` changed the real cwd but retained the parent's `PWD`, and
+OpenCode used that value for its project/tool context. The follow-up now uses
+two documented defenses: the shared pyagag harness synchronizes `PWD` with cwd,
+and the OpenCode adapter always supplies its native `--dir`. Regression tests
+cover both boundaries. A local/OpenCode iteration launched from the parent
+agautolab checkout then converged in one run: its write and bash events both
+used the job's `target/`, and no file appeared in the parent checkout.
