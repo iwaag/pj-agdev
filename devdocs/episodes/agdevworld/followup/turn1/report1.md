@@ -31,3 +31,9 @@ The gateway was stopped at the start of this step. The documented bare
 dependency in this shell, so the live instance was started through the project
 environment with `uv run python agent/gateway.py`. The durable documentation
 correction is scheduled for Step 4.
+
+After this finding, the human authorized replacing sibling-source `pyagag`
+dependencies with GitHub sources. Both agautolab and agforge now declare the
+`pyagag` `main` branch as their uv source; each lockfile pins the resolved
+commit. This keeps normal installs reproducible without requiring a particular
+sibling checkout layout while retaining an explicit upgrade operation.
