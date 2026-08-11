@@ -8,10 +8,10 @@ records. Job rows/details also carry their optional project association.
 
 The autolab view places read-only project cards before the job cards. Each
 project card shows its effective coding and director profiles; malformed rows
-use a visible project-error state. Project cards have no pointer action, and
-the footer explicitly directs profile changes to conversation. Job cards keep
-their existing drill-down behavior and show their project association when
-present.
+use a visible project-error state. Project cards open a read-only detail popup,
+and the footer explicitly directs profile changes to conversation. Job cards
+keep their existing drill-down behavior and show their project association
+when present.
 
 Both copies of the prime agent capability description now include the projects
 route and the conversational change path: inspect the selection, ask the
