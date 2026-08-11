@@ -15,7 +15,7 @@ The delivered path is:
 3. The front role has general Edit/Write capability and a capability card that
    describes project profile settings.
 4. agdevworld fetches projects through the existing bounded passthrough and
-   renders read-only project cards ahead of jobs.
+   renders read-only project cards in a separate `projects` tab from `jobs`.
 5. The prime agent knows to read the project, ask the node window to change it,
    and confirm with another read. No direct write endpoint or UI selector was
    introduced.

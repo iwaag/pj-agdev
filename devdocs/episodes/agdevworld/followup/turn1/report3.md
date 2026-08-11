@@ -6,12 +6,13 @@ The agdevworld autolab client now reads `GET /api/autolab/<node>/projects`
 with typed project, role-selection, profile-source, and available-profile
 records. Job rows/details also carry their optional project association.
 
-The autolab view places read-only project cards before the job cards. Each
-project card shows its effective coding and director profiles; malformed rows
-use a visible project-error state. Project cards open a read-only detail popup,
-and the footer explicitly directs profile changes to conversation. Job cards
-keep their existing drill-down behavior and show their project association
-when present.
+The autolab view separates read-only project cards and job cards into
+`projects` and `jobs` tabs on the selected node. Each project card shows its
+effective coding and director profiles; malformed rows use a visible
+project-error state. Project cards open a read-only detail popup, and the
+footer explicitly directs profile changes to conversation. Job cards keep
+their existing drill-down behavior and show their project association when
+present.
 
 Both copies of the prime agent capability description now include the projects
 route and the conversational change path: inspect the selection, ask the
@@ -27,8 +28,8 @@ was added, and the evidence-path guard was unchanged.
 - The assistant passthrough returned the live `autolab.projects.v1` envelope
   for agstudio.
 - A Playwright pass at 1280x800 opened the production-style web service,
-  switched to autolab, and captured a view showing three project cards with
-  their coding/director profiles before the 25 job cards.
+  switched to autolab, and captured separate views showing three project cards
+  with their coding/director profiles and 25 job cards.
 - One ordinary chat sentence to the prime agent changed `yokai` coding from
   `sonnet` to `local`. The prime agent delegated the write to agstudio's
   `/window` and reported its confirmation read.
