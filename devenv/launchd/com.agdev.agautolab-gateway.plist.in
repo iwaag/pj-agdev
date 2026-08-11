@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agdev.agautolab-gateway</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/uv</string>
+    <string>run</string>
+    <string>python</string>
+    <string>agent/gateway.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>__PROJECTS_ROOT__/pj-agdev/agautolab</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/agautolab/.local/agent/gateway/launchd.log</string>
+  <key>StandardErrorPath</key><string>__PROJECTS_ROOT__/pj-agdev/agautolab/.local/agent/gateway/launchd.log</string>
+</dict>
+</plist>
