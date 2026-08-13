@@ -11,6 +11,10 @@
     <string>agent/gateway.py</string>
   </array>
   <key>WorkingDirectory</key><string>__PROJECTS_ROOT__/pj-agdev/agautolab</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
