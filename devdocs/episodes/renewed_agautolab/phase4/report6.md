@@ -29,7 +29,20 @@ than by an action: the placement it wanted to change does not exist that way.
 
 The gitea push was still made (mirror `main`: `f777634` → `64284e6`), per the
 localrule "push every commit, then reflect it onto the consumers". Its only
-consumer is the agstudio placement.
+consumer was the agstudio placement.
+
+**Follow-up, same day:** the developer then corrected the `agstudio`
+placement's `repo_url` in the Nautobot desired state as well. Re-rendered and
+confirmed: both `agautolab1` and `agstudio` now carry
+`https://github.com/iwaag/agautolab.git`. **The agautolab gitea mirror is
+therefore dead — nothing deploys from it, and nothing may be pointed back at
+it.** It was created to work around the GitHub-deploy rule, it went silently
+stale, and a node deploying from a stale mirror runs superseded code while
+accepting missions. `localrule.md` forbids this ("ローカルgitea参照に変えると
+か…絶対にするな") and `.local/devenv.md` now says so at the point of use. The
+gitea instance itself stays — it hosts the generated project repositories
+(`<project>`, `-direction`, `-devlog`), which are workspaces, not a deployment
+source.
 
 `.local/devenv.md` has been corrected in place, with the verification command
 (`ansible … -a "git -C /home/eiji/agautolab rev-parse --short HEAD"`) added so
