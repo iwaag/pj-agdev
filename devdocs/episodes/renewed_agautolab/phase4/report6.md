@@ -34,9 +34,12 @@ consumer was the agstudio placement.
 **Follow-up, same day:** the developer then corrected the `agstudio`
 placement's `repo_url` in the Nautobot desired state as well. Re-rendered and
 confirmed: both `agautolab1` and `agstudio` now carry
-`https://github.com/iwaag/agautolab.git`. **The agautolab gitea mirror is
-therefore dead — nothing deploys from it, and nothing may be pointed back at
-it.** It was created to work around the GitHub-deploy rule, it went silently
+`https://github.com/iwaag/agautolab.git`. **The agautolab gitea mirror was
+then deleted** (2026-08-14, at the developer's request, after checking it held
+only `main` at `64284e6` — the same commit as GitHub — with no other branches
+and no tags). A sweep of the gitea instance found no other mirror of a
+GitHub-managed repository: the remaining 43 repositories are generated project
+workspaces and generated web apps. Nothing is to recreate it. It was created to work around the GitHub-deploy rule, it went silently
 stale, and a node deploying from a stale mirror runs superseded code while
 accepting missions. `localrule.md` forbids this ("ローカルgitea参照に変えると
 か…絶対にするな") and `.local/devenv.md` now says so at the point of use. The
