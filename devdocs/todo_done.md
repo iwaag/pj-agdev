@@ -2,6 +2,16 @@
 
 ## TODO
 
+- Give the autolab bot administer rights on the project channels it works in,
+  so retiring a project does not need the Developer's realm-admin account.
+  Zulip grants `can_administer_channel_group` to a channel's creator; the
+  fourteen `pj-` channels had four different creators and one of them is a
+  deactivated bot, leaving that group empty. Whoever opens a `pj-` channel
+  should put the autolab bot in it. Then `project_archive` runs under the
+  node's own credentials, and the natural next step — a `pj-` topic the
+  autolab listener recognizes as "retire this project" — becomes possible.
+  (Recorded 2026-08-17 from episodes/agautolab/archive_projects.)
+
 - Separate the two consumption modes of cluster state from pj-clusterintent:
   snapshot use (state bundle + detail file, for handing state to AI/humans as
   one file) versus interactive use in agdevworld (visualization / conversational
