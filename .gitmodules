@@ -10,3 +10,6 @@
 [submodule "dircommon"]
 	path = dircommon
 	url = https://github.com/iwaag/dircommon.git
+[submodule "agfront"]
+	path = agfront
+	url = https://github.com/iwaag/agfront.git
