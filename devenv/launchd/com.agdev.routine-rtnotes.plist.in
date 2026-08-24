@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agdev.routine-rtnotes</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__PROJECTS_ROOT__/pj-agdev/devenv/routine/trigger.sh</string>
+    <string>rtnotes</string>
+  </array>
+  <key>WorkingDirectory</key><string>__PROJECTS_ROOT__/pj-agdev</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <!-- Every 2 h from load, not hourly: one rtnotes mission normally closes in
+       minutes, but a stuck run waits WORK_TIMEOUT_SECONDS = 1200 per task and
+       the p2 plan asks for a cadence that cannot fire into a normal run. -->
+  <key>StartInterval</key><integer>7200</integer>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/agfront/.local/out/routine-rtnotes.log</string>
+  <key>StandardErrorPath</key><string>__PROJECTS_ROOT__/pj-agdev/agfront/.local/out/routine-rtnotes.log</string>
+</dict>
+</plist>
