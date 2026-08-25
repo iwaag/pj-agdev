@@ -75,6 +75,80 @@ def test_due_not_due_expired_and_already_fired(tmp_path):
     assert result["events"][4]["fired_at"] == "2026-08-25T08:31:00Z"
 
 
+def test_a_logical_tick_records_the_real_time_and_the_logical_one(tmp_path):
+    """`--now` advances the clock for what is due; it must not make the record
+    claim the action happened at that time. p3's GUI showed fires in the
+    future because it did."""
+    path = tmp_path / "schedule.json"
+    path.write_text(
+        json.dumps(
+            {
+                "requests": [
+                    {"id": "r1", "said_at": "2026-08-25T08:00:00Z", "until": "2026-09-01T00:00:00Z",
+                     "by": "developer", "text": "daily papers"},
+                ],
+                "events": [
+                    {"id": "e1", "at": "2026-08-30T09:00:00Z", "kind": "fire", "routine": "papers",
+                     "from": "r1", "fired_at": None},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fired = dispatch.dispatch_schedule(
+        path,
+        datetime(2026, 8, 30, 9, tzinfo=timezone.utc),
+        real_now=datetime(2026, 8, 25, 5, 30, tzinfo=timezone.utc),
+        before_action=lambda _event_id: None,
+        fire=lambda _routine: None,
+        decide=lambda _event_id, _ask: None,
+        after_action=lambda _event_id: None,
+        after_prune=lambda _event_ids: None,
+    )
+
+    assert fired == ["e1"]
+    event = json.loads(path.read_text())["events"][0]
+    assert event["fired_at"] == "2026-08-25T05:30:00Z"
+    assert event["logical_at"] == "2026-08-30T09:00:00Z"
+    # And the schedule still validates with the new field present.
+    dispatch.load_schedule(path)
+
+
+def test_a_real_tick_records_no_logical_time(tmp_path):
+    """Production has one clock, so there is nothing to keep beside it."""
+    path = tmp_path / "schedule.json"
+    path.write_text(
+        json.dumps(
+            {
+                "requests": [
+                    {"id": "r1", "said_at": "2026-08-25T08:00:00Z", "until": "2026-08-25T12:00:00Z",
+                     "by": "developer", "text": "daily papers"},
+                ],
+                "events": [
+                    {"id": "e1", "at": "2026-08-25T09:00:00Z", "kind": "fire", "routine": "papers",
+                     "from": "r1", "fired_at": None},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    dispatch.dispatch_schedule(
+        path,
+        datetime(2026, 8, 25, 9, 3, tzinfo=timezone.utc),
+        before_action=lambda _event_id: None,
+        fire=lambda _routine: None,
+        decide=lambda _event_id, _ask: None,
+        after_action=lambda _event_id: None,
+        after_prune=lambda _event_ids: None,
+    )
+
+    event = json.loads(path.read_text())["events"][0]
+    assert event["fired_at"] == "2026-08-25T09:03:00Z"
+    assert "logical_at" not in event
+
+
 def test_events_older_than_seven_days_are_pruned(tmp_path):
     path = tmp_path / "schedule.json"
     path.write_text(

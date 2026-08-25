@@ -82,6 +82,8 @@ def load_schedule(path: Path) -> dict[str, Any]:
             raise DispatchError(f"event {event_id} refers to unknown request {event.get('from')!r}")
         if event.get("fired_at") is not None:
             parse_time(event["fired_at"], f"event {event_id} fired_at")
+        if event.get("logical_at") is not None:
+            parse_time(event["logical_at"], f"event {event_id} logical_at")
         kind = event.get("kind")
         if kind == "fire" and not isinstance(event.get("routine"), str):
             raise DispatchError(f"fire event {event_id} has no routine")
@@ -139,13 +141,24 @@ def dispatch_schedule(
     path: Path,
     now: datetime,
     *,
+    real_now: datetime | None = None,
     before_action: Callable[[str], None],
     fire: Callable[[str], None],
     decide: Callable[[str, str], None],
     after_action: Callable[[str], None],
     after_prune: Callable[[list[str]], None],
 ) -> list[str]:
-    """Dispatch one snapshot. The durable marker is written before each action."""
+    """Dispatch one snapshot. The durable marker is written before each action.
+
+    `now` is the tick's clock — what is due, and what has expired. `real_now`
+    is when the dispatch actually happened; it differs only under `--now`, the
+    accelerated test clock. `fired_at` is always the real time, so the record
+    never claims an action happened in the future (p3's report4 found the GUI
+    showing exactly that), and the logical tick is kept beside it as
+    `logical_at` so an accelerated sitting stays readable afterwards.
+    """
+    logical = None if real_now is None else now
+    stamp = format_time(now if real_now is None else real_now)
     schedule = load_schedule(path)
     removed = prune_old_events(schedule, now)
     if removed:
@@ -154,7 +167,9 @@ def dispatch_schedule(
 
     fired = []
     for event in due_events(schedule, now):
-        event["fired_at"] = format_time(now)
+        event["fired_at"] = stamp
+        if logical is not None:
+            event["logical_at"] = format_time(logical)
         atomic_write(path, schedule)
         before_action(event["id"])
         if event["kind"] == "fire":
@@ -216,7 +231,8 @@ def main(argv: list[str] | None = None) -> int:
 
     repo = args.repo.resolve()
     schedule_path = repo / "schedule.json"
-    now = parse_time(args.now, "--now") if args.now else utc_now()
+    logical = parse_time(args.now, "--now") if args.now else None
+    now = logical if logical is not None else utc_now()
     try:
         env = git_environment()
         agentchat = Path(os.environ.get("AGENTCHAT", DEFAULT_AGENTCHAT))
@@ -249,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
         fired = dispatch_schedule(
             schedule_path,
             now,
+            real_now=utc_now() if logical is not None else None,
             before_action=mark,
             fire=fire,
             decide=decide,
