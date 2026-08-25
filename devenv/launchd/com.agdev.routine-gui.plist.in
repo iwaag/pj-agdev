@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agdev.routine-gui</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-m</string>
+    <string>http.server</string>
+    <string>8093</string>
+    <string>--bind</string>
+    <string>127.0.0.1</string>
+  </array>
+  <key>WorkingDirectory</key><string>__PROJECTS_ROOT__/pj-agdev/.local/rtschedule</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/agfront/.local/out/routine-gui.log</string>
+  <key>StandardErrorPath</key><string>__PROJECTS_ROOT__/pj-agdev/agfront/.local/out/routine-gui.log</string>
+</dict>
+</plist>
