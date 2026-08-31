@@ -85,6 +85,13 @@ def build_intake(args: argparse.Namespace, notifier: Notifier) -> CommandIntake 
 def daemon(args: argparse.Namespace) -> int:
     notifier = Notifier(args.tickets, args.log, agentchat=args.agentchat)
     intake = None if args.no_commands else build_intake(args, notifier)
+    if intake is not None:
+        # The callback must land in the conversation as it is *now*, not as it
+        # was named when the job was commanded: a run that closes its own topic
+        # renames it while the render is still going.
+        from agag.zulip import live_topic_name
+
+        notifier.live_topic = lambda channel, topic: live_topic_name(intake.client, channel, topic)
     while True:
         if intake is not None:
             try:

@@ -117,11 +117,21 @@ def message(record: dict[str, Any], mention: str | None = None) -> str:
 
 class Notifier:
     def __init__(self, tickets_dir: Path, log_path: Path, *, agentchat: str = "agentchat",
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 live_topic: Callable[[str, str], str] | None = None) -> None:
         self.tickets_dir = tickets_dir
         self.log_path = log_path
         self.agentchat = agentchat
         self.clock = clock
+        # Resolving a topic *renames* it to `✔ <topic>`. A ticket remembers the
+        # name the job was commanded under, and a run that finishes by closing
+        # its own topic renames it while its job is still rendering — so
+        # posting the remembered name creates an empty topic beside the real
+        # conversation and the callback serves nobody. Measured in
+        # `zulip_command` step 4: the callback for task 2 landed in a fresh
+        # `workrun-task2-m-51` while every other message sat in
+        # `✔ workrun-task2-m-51`.
+        self.live_topic = live_topic or (lambda _channel, topic: topic)
 
     def log(self, text: str) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,8 +147,9 @@ class Notifier:
         )
 
     def post(self, ticket: dict[str, Any], record: dict[str, Any]) -> None:
-        self.send(str(ticket["channel"]), str(ticket["topic"]),
-                  message(record, ticket.get("mention")))
+        channel = str(ticket["channel"])
+        topic = self.live_topic(channel, str(ticket["topic"]))
+        self.send(channel, topic, message(record, ticket.get("mention")))
 
     def sweep_once(self) -> int:
         completed = 0

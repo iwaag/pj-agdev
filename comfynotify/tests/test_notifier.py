@@ -84,6 +84,24 @@ def test_posted_ticket_is_archived_so_a_restart_cannot_post_twice(tmp_path, monk
     assert len(list((tickets / "done").glob("*.json"))) == 1
 
 
+def test_the_callback_follows_a_topic_that_was_resolved_while_the_job_ran(tmp_path, monkeypatch):
+    """A run that closes its own topic renames it mid-render. Posting the
+    remembered name opens an empty topic beside the real conversation, and
+    the callback then serves nobody (`zulip_command` step 4, task 2)."""
+    from comfynotify import notifier as module
+    from comfynotify.tickets import write_ticket
+    tickets = tmp_path / "tickets"
+    write_ticket(tickets, {**ticket(), "comfyui_url": "http://comfy.invalid",
+                           "channel": "work-m-51", "topic": "workrun-task2-m-51"})
+    monkeypatch.setattr(module, "ComfyClient", lambda _url: FakeClient(entry={"status": {"status_str": "success"}}))
+    sent = []
+    service = Notifier(tickets, tmp_path / "out.log",
+                       live_topic=lambda channel, topic: f"\u2714 {topic}")
+    monkeypatch.setattr(service, "send", lambda channel, topic, text: sent.append((channel, topic)))
+    assert service.sweep_once() == 1
+    assert sent == [("work-m-51", "\u2714 workrun-task2-m-51")]
+
+
 def test_post_is_two_lines_however_many_outputs_the_job_has():
     """A 124-frame video graph lists 125 outputs; Zulip truncates long posts
     silently, so the post names the job and nothing else."""
