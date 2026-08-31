@@ -128,12 +128,17 @@ class Notifier:
         with self.log_path.open("a", encoding="utf-8") as output:
             output.write(text + "\n")
 
-    def post(self, ticket: dict[str, Any], record: dict[str, Any]) -> None:
+    def send(self, channel: str, topic: str, text: str) -> None:
+        """The one delivery boundary — the callback and the command's own
+        error line leave through the same door."""
         subprocess.run(
-            [self.agentchat, "send", str(ticket["channel"]), str(ticket["topic"]),
-             message(record, ticket.get("mention"))],
+            [self.agentchat, "send", channel, topic, text],
             check=True, env={**os.environ, "AGENTCHAT_HOME": ""}, text=True,
         )
+
+    def post(self, ticket: dict[str, Any], record: dict[str, Any]) -> None:
+        self.send(str(ticket["channel"]), str(ticket["topic"]),
+                  message(record, ticket.get("mention")))
 
     def sweep_once(self) -> int:
         completed = 0

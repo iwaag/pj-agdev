@@ -10,6 +10,7 @@
   <dict>
     <key>PATH</key><string>__PROJECTS_ROOT__/pj-agdev/agforge/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>AGENTCHAT_ZULIP_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/zulip/comfy-notifier.env</string>
+    <key>AGFORGE_COMFYUI_URL</key><string>__COMFYUI_URL__</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/comfynotify/.local/out/notifier.log</string>

@@ -7,12 +7,14 @@ import os
 import time
 from pathlib import Path
 
+from .commands import CommandIntake
 from .notifier import Notifier
 from .tickets import DEFAULT_TIMEOUT_S, now, write_ticket
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TICKETS = ROOT / ".local" / "tickets"
 DEFAULT_LOG = ROOT / ".local" / "out" / "notifier.log"
+DEFAULT_STATE = ROOT / ".local" / "command-mark.json"
 
 
 def _destination(value: str) -> tuple[str, str]:
@@ -45,9 +47,50 @@ def watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_intake(args: argparse.Namespace, notifier: Notifier) -> CommandIntake | None:
+    """The mention sweep, or None with a logged reason.
+
+    Command intake is an addition, not a precondition: a daemon without Zulip
+    credentials or a default ComfyUI URL still serves every ticket the CLI
+    writes, which is the path this project started from.
+    """
+    credentials = os.environ.get("AGENTCHAT_ZULIP_ENV")
+    comfyui_url = os.environ.get("AGFORGE_COMFYUI_URL")
+    if not credentials or not comfyui_url:
+        missing = " and ".join(
+            name for name, value in
+            (("AGENTCHAT_ZULIP_ENV", credentials), ("AGFORGE_COMFYUI_URL", comfyui_url))
+            if not value
+        )
+        notifier.log(f"command intake off: {missing} unset")
+        return None
+    from agag.zulip import ZulipClient
+
+    client = ZulipClient.from_env(Path(credentials))
+    identity = client.whoami()
+    intake = CommandIntake(
+        client,
+        tickets_dir=args.tickets,
+        state_path=args.command_state,
+        comfyui_url=comfyui_url,
+        bot_name=str(identity.get("full_name") or "Comfy Notifier"),
+        self_id=int(identity["user_id"]),
+        send=notifier.send,
+        log=notifier.log,
+    )
+    notifier.log(f"command intake on as {intake.bot_name} ({intake.self_id})")
+    return intake
+
+
 def daemon(args: argparse.Namespace) -> int:
     notifier = Notifier(args.tickets, args.log, agentchat=args.agentchat)
+    intake = None if args.no_commands else build_intake(args, notifier)
     while True:
+        if intake is not None:
+            try:
+                intake.sweep_once()
+            except Exception as error:  # noqa: BLE001 — Zulip being down is not fatal
+                notifier.log(f"command sweep failed: {error}")
         notifier.sweep_once()
         if args.once:
             return 0
@@ -76,6 +119,10 @@ def main() -> int:
     daemon_parser.add_argument("--log", type=Path, default=DEFAULT_LOG)
     daemon_parser.add_argument("--agentchat", default="agentchat")
     daemon_parser.add_argument("--poll-interval", type=float, default=5)
+    daemon_parser.add_argument("--command-state", type=Path, default=DEFAULT_STATE,
+                               help="high-water mark for processed commands (default: %(default)s)")
+    daemon_parser.add_argument("--no-commands", action="store_true",
+                               help="serve tickets only; do not read Zulip mentions")
     daemon_parser.add_argument("--once", action="store_true")
     daemon_parser.set_defaults(handler=daemon)
     args = parser.parse_args()

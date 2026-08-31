@@ -3,9 +3,13 @@ name = "comfynotify"
 version = "0.1.0"
 description = "Disk-backed ComfyUI completion notifier for Zulip"
 requires-python = ">=3.11"
+dependencies = ["pyagag"]
 
 [project.scripts]
 comfynotify = "comfynotify.cli:main"
+
+[tool.uv.sources]
+pyagag = { git = "https://github.com/iwaag/pyagag.git", branch = "main" }
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
