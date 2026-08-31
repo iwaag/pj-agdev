@@ -15,13 +15,13 @@ from .tickets import archive, load_tickets, replace_ticket
 
 LOST_POLLS = 3
 UNREACHABLE_S = int(os.environ.get("COMFYNOTIFY_UNREACHABLE_S", "120"))
-# Zulip accepts an over-long message and *truncates* it silently: the send
-# succeeds, the daemon logs "posted", and the receiving agent gets an
-# unparseable JSON block with prompt_id/state/wall_s cut off the end. A
-# 124-frame video graph lists 125 outputs (~27 000 characters) against a
-# ~10 000-character cap, so the list is capped here and `outputs_total`
-# carries the real count. The callback names the job; it is not a manifest.
-MAX_OUTPUTS = int(os.environ.get("COMFYNOTIFY_MAX_OUTPUTS", "6"))
+# The post is a notification, not a manifest. Zulip accepts an over-long
+# message and *truncates* it silently (a 124-frame graph's output list ran to
+# ~27 000 characters against a ~10 000 cap, and the receiving agent got an
+# unparseable block), so the post carries two lines and nothing else; the
+# full record, outputs included, is kept in the archived ticket. The
+# receiving run reads `GET /history/<prompt_id>` itself.
+ERROR_EXCERPT = 300
 
 
 def _elapsed(ticket: dict[str, Any], clock: Callable[[], float]) -> int:
@@ -76,7 +76,7 @@ def terminal_record(ticket: dict[str, Any], client: ComfyClient, clock: Callable
             except ComfyUnavailable:
                 pass
             return _record(
-                ticket, state, elapsed, outputs=outputs[:MAX_OUTPUTS],
+                ticket, state, elapsed, outputs=outputs,
                 outputs_total=len(outputs), vram_free=vram_free,
                 error=_readable_error(status) if state == "error" else None,
             )
@@ -91,10 +91,28 @@ def terminal_record(ticket: dict[str, Any], client: ComfyClient, clock: Callable
     return None
 
 
+def _detail(record: dict[str, Any]) -> str:
+    state = record["state"]
+    if state == "success":
+        return f"{record.get('outputs_total', 0)} outputs"
+    if state == "error":
+        return "error: " + " ".join(str(record.get("error") or "").split())[:ERROR_EXCERPT]
+    if state == "timeout":
+        return "timed out, " + ("still in queue" if record.get("in_queue") else "not in queue")
+    if state == "lost":
+        return "not in queue or history — ComfyUI probably restarted"
+    if state == "unreachable":
+        return "ComfyUI unreachable: " + str(record.get("error") or "")[:ERROR_EXCERPT]
+    return ""
+
+
 def message(record: dict[str, Any], mention: str | None = None) -> str:
+    """Two lines: what happened, and the id to look it up with."""
     prefix = f"@**{mention}** " if mention else ""
-    headline = f"{prefix}comfy {record['state']} {record['prompt_id'][:8]} in {record['wall_s']}s"
-    return f"{headline}\n```json\n{json.dumps(record, indent=2, sort_keys=True)}\n```"
+    headline = f"{prefix}comfy {record['state']} {record['prompt_id'][:8]} in {record['wall_s']}s — {_detail(record)}"
+    if record.get("note"):
+        headline += f" · {record['note']}"
+    return f"{headline}\nprompt_id `{record['prompt_id']}` — read `GET /history/<prompt_id>` for outputs"
 
 
 class Notifier:

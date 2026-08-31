@@ -84,15 +84,25 @@ def test_posted_ticket_is_archived_so_a_restart_cannot_post_twice(tmp_path, monk
     assert len(list((tickets / "done").glob("*.json"))) == 1
 
 
-def test_many_outputs_are_capped_so_the_post_survives_zulips_length_limit():
-    """A 124-frame video graph lists 125 outputs; Zulip truncates silently."""
+def test_post_is_two_lines_however_many_outputs_the_job_has():
+    """A 124-frame video graph lists 125 outputs; Zulip truncates long posts
+    silently, so the post names the job and nothing else."""
     images = [{"filename": f"frame_{n:05d}.png", "subfolder": "", "type": "output"}
               for n in range(125)]
     entry = {"status": {"status_str": "success", "completed": True},
              "outputs": {"9": {"images": images}}}
+    result = terminal_record(ticket(note="A jump"), FakeClient(entry=entry))
+    assert result["outputs_total"] == 125 and len(result["outputs"]) == 125  # archived in full
+    posted = notifier.message(result, mention="Someone")
+    lines = posted.splitlines()
+    assert len(lines) == 2 and len(posted) < 400
+    assert lines[0].startswith("@**Someone** comfy success prompt-1 in ")
+    assert "125 outputs" in lines[0] and "A jump" in lines[0]
+    assert "prompt-12345678" in lines[1]
+
+
+def test_error_post_carries_a_short_excerpt():
+    entry = {"status": {"status_str": "error", "messages": ["x" * 3000]}}
     result = terminal_record(ticket(), FakeClient(entry=entry))
-    assert result["outputs_total"] == 125
-    assert len(result["outputs"]) == notifier.MAX_OUTPUTS
     posted = notifier.message(result)
-    assert len(posted) < 10000
-    assert json.loads(posted.split("```json\n", 1)[1].rsplit("\n```", 1)[0])["prompt_id"]
+    assert posted.startswith("comfy error prompt-1 in ") and len(posted) < 500
