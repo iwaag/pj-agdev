@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from datetime import UTC, datetime
 
+from comfynotify import notifier
 from comfynotify.notifier import LOST_POLLS, Notifier, terminal_record
 
 
@@ -79,3 +82,17 @@ def test_posted_ticket_is_archived_so_a_restart_cannot_post_twice(tmp_path, monk
     assert service.sweep_once() == 0
     assert len(sent) == 1
     assert len(list((tickets / "done").glob("*.json"))) == 1
+
+
+def test_many_outputs_are_capped_so_the_post_survives_zulips_length_limit():
+    """A 124-frame video graph lists 125 outputs; Zulip truncates silently."""
+    images = [{"filename": f"frame_{n:05d}.png", "subfolder": "", "type": "output"}
+              for n in range(125)]
+    entry = {"status": {"status_str": "success", "completed": True},
+             "outputs": {"9": {"images": images}}}
+    result = terminal_record(ticket(), FakeClient(entry=entry))
+    assert result["outputs_total"] == 125
+    assert len(result["outputs"]) == notifier.MAX_OUTPUTS
+    posted = notifier.message(result)
+    assert len(posted) < 10000
+    assert json.loads(posted.split("```json\n", 1)[1].rsplit("\n```", 1)[0])["prompt_id"]

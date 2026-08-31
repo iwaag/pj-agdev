@@ -15,6 +15,13 @@ from .tickets import archive, load_tickets, replace_ticket
 
 LOST_POLLS = 3
 UNREACHABLE_S = int(os.environ.get("COMFYNOTIFY_UNREACHABLE_S", "120"))
+# Zulip accepts an over-long message and *truncates* it silently: the send
+# succeeds, the daemon logs "posted", and the receiving agent gets an
+# unparseable JSON block with prompt_id/state/wall_s cut off the end. A
+# 124-frame video graph lists 125 outputs (~27 000 characters) against a
+# ~10 000-character cap, so the list is capped here and `outputs_total`
+# carries the real count. The callback names the job; it is not a manifest.
+MAX_OUTPUTS = int(os.environ.get("COMFYNOTIFY_MAX_OUTPUTS", "6"))
 
 
 def _elapsed(ticket: dict[str, Any], clock: Callable[[], float]) -> int:
@@ -69,7 +76,8 @@ def terminal_record(ticket: dict[str, Any], client: ComfyClient, clock: Callable
             except ComfyUnavailable:
                 pass
             return _record(
-                ticket, state, elapsed, outputs=outputs, vram_free=vram_free,
+                ticket, state, elapsed, outputs=outputs[:MAX_OUTPUTS],
+                outputs_total=len(outputs), vram_free=vram_free,
                 error=_readable_error(status) if state == "error" else None,
             )
     if elapsed >= int(ticket["timeout_s"]):
