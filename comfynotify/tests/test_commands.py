@@ -87,6 +87,35 @@ def test_a_malformed_command_posts_one_line_and_writes_no_ticket(tmp_path):
     assert client.reactions == []
 
 
+def test_a_topic_is_told_it_is_not_understood_exactly_once(tmp_path):
+    """The error post wakes the poster, and a woken agent that answers by
+    naming this bot again would be answered again — the loop `zulip_command`
+    step 4 watched start between the notifier and Front."""
+    intake, client, posts, log = build(tmp_path, [])
+    intake.sweep_once()
+    client.messages += [
+        mention(800, f"@**{BOT}** I can do this. Here is the plan:"),
+        mention(801, f"@**{BOT}** and here is the next one"),
+        mention(802, f"@**{BOT}** junk elsewhere", topic="another-topic"),
+    ]
+    intake.sweep_once()
+    assert len(posts) == 2  # one for each topic, not one per junk message
+    assert {topic for _channel, topic, _text in posts} == {"workrun-task3-m-46", "another-topic"}
+    assert sum("staying quiet" in line for line in log) == 1
+    assert json.loads((tmp_path / "command-mark.json").read_text())["errored_topics"] == [
+        "work-m-46/workrun-task3-m-46", "work-m-46/another-topic"]
+
+
+def test_a_told_topic_still_gets_its_watch_commands_served(tmp_path):
+    intake, client, posts, _ = build(tmp_path, [])
+    intake.sweep_once()
+    client.messages.append(mention(900, f"@**{BOT}** nonsense"))
+    intake.sweep_once()
+    client.messages.append(mention(901, f"@**{BOT}** watch abc-123"))
+    assert intake.sweep_once() == 1
+    assert len(load_tickets(tmp_path / "tickets")) == 1 and len(posts) == 1
+
+
 def test_the_same_feed_replayed_does_nothing_the_second_time(tmp_path):
     """A mention is never consumed by answering it, so only the mark stops a
     restart from ticketing — and double-ticketing serves an agent twice."""

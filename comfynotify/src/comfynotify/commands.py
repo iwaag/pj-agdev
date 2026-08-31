@@ -14,7 +14,11 @@ of this module:
   re-serves that topic's owner — it is the resume mechanism — so acking with
   "watching…" would wake the agent early and burn a paid run.
 - **A malformed command is the one case that should post back**, because the
-  poster has to learn it was not understood, and waking it is then correct.
+  poster has to learn it was not understood, and waking it is then correct —
+  but **only once per topic**. That post wakes an agent, and an agent woken by
+  it may answer by naming this bot again; `zulip_command` step 4 watched
+  exactly that start between the notifier and Front, one paid run per lap.
+  One line per topic is enough for a person and cannot become a loop.
 - **The mention is never consumed.** Answering it does not remove it from the
   narrow, so a high-water mark on disk is what stops a restart re-ticketing
   every command a topic ever carried.
@@ -33,6 +37,10 @@ from .tickets import DEFAULT_TIMEOUT_S, now, replace_ticket, write_ticket
 # accepted, because refusing a synonym teaches nothing.
 WATCH_VERBS = ("watch", "watch_comfy")
 ACK_EMOJI = "eyes"
+# How many topics remember that they were already told. A bound, not a policy:
+# the file should not grow forever, and a topic that fell out of it is one
+# nobody has posted junk in for a very long time.
+ERROR_TOPIC_MEMORY = 200
 # `@**Name**`, and Zulip's silent `@_**Name**` form, anywhere in the line.
 MENTION = re.compile(r"@_?\*\*[^*]+\*\*")
 SELFNOTE_MARK = "[selfnote]"
@@ -70,19 +78,27 @@ def usage_line(bot_name: str) -> str:
     )
 
 
-def read_mark(path: Path) -> int | None:
-    """The highest message id already handled, or None when never run here."""
+def read_state(path: Path) -> dict[str, Any]:
+    """The daemon's command memory: the high-water mark and who has been told.
+
+    An empty dict means "never run here", which is what makes the first sweep
+    seed itself instead of ticketing everything Zulip still remembers.
+    """
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
-    value = state.get("last_message_id") if isinstance(state, dict) else None
-    return int(value) if isinstance(value, int) else None
+        return {}
+    return state if isinstance(state, dict) else {}
 
 
-def write_mark(path: Path, message_id: int) -> None:
+def write_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    replace_ticket(path, {"last_message_id": int(message_id), "updated_at": now()})
+    replace_ticket(path, {**state, "updated_at": now()})
+
+
+def read_mark(path: Path) -> int | None:
+    value = read_state(path).get("last_message_id")
+    return int(value) if isinstance(value, int) else None
 
 
 def commandable(messages: Iterable[dict[str, Any]], self_id: int, mark: int) -> list[dict[str, Any]]:
@@ -133,14 +149,15 @@ class CommandIntake:
         self.timeout_s = timeout_s
 
     def sweep_once(self) -> int:
-        mark = read_mark(self.state_path)
+        state = read_state(self.state_path)
         messages = self.client.mentions()
-        if mark is None:
+        mark = state.get("last_message_id")
+        if not isinstance(mark, int):
             # First run on this host: adopt the present as the past. Every
             # command Zulip still remembers predates this daemon, and
             # ticketing a month of history at once is not what anybody asked.
             highest = max((int(m.get("id") or 0) for m in messages), default=0)
-            write_mark(self.state_path, highest)
+            write_state(self.state_path, {**state, "last_message_id": highest})
             self.log(f"command mark seeded at {highest}")
             return 0
         handled = 0
@@ -149,20 +166,20 @@ class CommandIntake:
             # the two loses one command; the other order posts one callback
             # twice, which serves an agent twice — the prohibition that
             # matters. Nothing here is expensive enough to be worth the risk.
-            write_mark(self.state_path, int(message["id"]))
-            self._handle(message)
+            state["last_message_id"] = int(message["id"])
+            write_state(self.state_path, state)
+            self._handle(message, state)
             handled += 1
         return handled
 
-    def _handle(self, message: dict[str, Any]) -> None:
+    def _handle(self, message: dict[str, Any], state: dict[str, Any]) -> None:
         channel = str(message.get("display_recipient") or "")
         topic = str(message.get("subject") or "")
         message_id = int(message["id"])
         try:
             prompt_id, note = parse_command(str(message.get("content") or ""))
         except CommandError as error:
-            self.log(f"command {message_id} rejected: {error}")
-            self.send(channel, topic, usage_line(self.bot_name))
+            self._refuse(message_id, channel, topic, str(error), state)
             return
         ticket = {
             "prompt_id": prompt_id,
@@ -183,6 +200,26 @@ class CommandIntake:
             return
         self.log(f"command {message_id} watching {prompt_id} for {channel}/{topic} ({path.name})")
         self._ack(message_id)
+
+    def _refuse(self, message_id: int, channel: str, topic: str, reason: str,
+                state: dict[str, Any]) -> None:
+        """Tell a topic once that it is not being understood, then stay quiet.
+
+        The post is deliberate — the poster must learn its command did nothing
+        — but it also *wakes* that poster, and a woken agent that answers by
+        naming this bot again would be answered again. Step 4 watched that
+        start with Front. The topic is told once and then left alone; the log
+        keeps every refusal.
+        """
+        told = [str(name) for name in state.get("errored_topics") or []]
+        key = f"{channel}/{topic}"
+        if key in told:
+            self.log(f"command {message_id} rejected: {reason} (already told {key}, staying quiet)")
+            return
+        state["errored_topics"] = (told + [key])[-ERROR_TOPIC_MEMORY:]
+        write_state(self.state_path, state)
+        self.log(f"command {message_id} rejected: {reason}")
+        self.send(channel, topic, usage_line(self.bot_name))
 
     def _ack(self, message_id: int) -> None:
         try:
