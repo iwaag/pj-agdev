@@ -76,6 +76,26 @@ def test_junk_is_refused_rather_than_guessed(content):
         parse_command(content)
 
 
+def test_the_command_is_a_line_not_a_message(tmp_path):
+    """agforge's listener answers its own run topic with a short report whose
+    watch line is in the middle. Reading the message as one command would
+    miss the verb and swallow the rest of the report into the note."""
+    reply = (
+        'running "Submit a slow image job"\n\n'
+        f"@**{BOT}** watch b09133ad-5f47 slow relay test\n\n"
+        "queued as `b09133ad-5f47` and left with the notifier; this Work "
+        "stays open and its next run collects the outputs"
+    )
+    assert parse_command(reply) == ("b09133ad-5f47", "slow relay test")
+
+
+def test_a_message_whose_only_mention_line_is_prose_is_still_refused(tmp_path):
+    """Front's "I can do this. Here's the plan:" under a bare mention must
+    stay an error — line-wise parsing must not turn prose into a command."""
+    with pytest.raises(CommandError):
+        parse_command(f"@**{BOT}**\n\nI can do this. Here's the plan:\nwatch the topic")
+
+
 def test_a_malformed_command_posts_one_line_and_writes_no_ticket(tmp_path):
     intake, client, posts, _ = build(tmp_path, [])
     intake.sweep_once()

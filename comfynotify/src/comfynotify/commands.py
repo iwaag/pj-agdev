@@ -50,14 +50,13 @@ class CommandError(ValueError):
     """A command that reached us but could not be read."""
 
 
-def parse_command(content: str) -> tuple[str, str]:
-    """`(prompt_id, note)` from the text of a mention, or raise CommandError.
+def parse_line(line: str) -> tuple[str, str]:
+    """`(prompt_id, note)` from one line that mentions us, or raise.
 
     The prompt id is unquoted on the way in: an agent that writes it inside
     backticks means the same job as one that does not.
     """
-    text = MENTION.sub(" ", content or "").strip()
-    words = text.split()
+    words = MENTION.sub(" ", line).split()
     if not words:
         raise CommandError("no command after the mention")
     verb = words[0].lower().strip("`")
@@ -69,6 +68,32 @@ def parse_command(content: str) -> tuple[str, str]:
     if not prompt_id:
         raise CommandError(f"{verb} needs a prompt_id")
     return prompt_id, " ".join(words[2:]).strip()
+
+
+def parse_command(content: str) -> tuple[str, str]:
+    """`(prompt_id, note)` from a message, or raise CommandError.
+
+    **The command is a line, not a message.** A poster is not always a bare
+    command: agforge's listener answers its own run topic with a short report
+    whose *second* line is the watch line, and reading the whole message as
+    one command would both miss the verb and swallow the rest of the report
+    into the note. So every line that mentions us is tried in turn, and the
+    first one that parses is the command; when none do, the first mentioning
+    line is the one whose complaint is reported, because that is the line the
+    poster most likely meant as a command.
+    """
+    lines = [line for line in (content or "").splitlines() if MENTION.search(line)]
+    if not lines:
+        # No mention in the body at all (a `@_**silent**` form Zulip rendered
+        # away, or a caller passing bare text). Read it as one command.
+        return parse_line(content or "")
+    first_error: CommandError | None = None
+    for line in lines:
+        try:
+            return parse_line(line)
+        except CommandError as error:
+            first_error = first_error or error
+    raise first_error  # noqa: RSE102 — always set: the loop ran at least once
 
 
 def usage_line(bot_name: str) -> str:
