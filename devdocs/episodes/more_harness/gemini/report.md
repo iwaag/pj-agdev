@@ -48,10 +48,33 @@ exist yet — the value is the developer's to write. Until it exists, selecting
 untouched; the front overlay's `[roles.front] profile = "gemini"` is left
 commented out for the same reason.
 
+## Second attempt (2026-09-04 15:00 UTC, key file in place)
+
+The developer wrote `pj-agdev/.local/gemini_api_key`. With it:
+
+- **The key reaches launchd-started runs.** Front (`#front > front-gemini-trial`,
+  second post) and the autolab gateway (`POST /window`, `window/run-0017`)
+  both resolved `gemini` and launched the CLI; exit 41 is gone.
+- **Both then failed on quota**, exit 173 in ~7 s: `TerminalQuotaError: You
+  have exhausted your daily quota on this model` (HTTP 429). A direct probe
+  from the shell says the same for `gemini-2.5-flash`, `gemini-2.0-flash`
+  and the default model, so it is the key's free-tier daily quota — today's
+  retries and trials used it up — not the harness. `gemini-2.5-pro` is
+  "no longer available to new users"; the CLI names
+  `gemini-3.1-pro-preview` instead.
+- Both records say `outcome: failed` with the CLI's error quoted, which is
+  the failure path doing its job (173 is a non-zero exit; the exit-0 error
+  case is covered by the unit test and the 14:17 stream capture).
+- Front and the autolab window are back on `sonnet`; the overlay lines for
+  `gemini` are left commented next to the secrets entry.
+
 ## Remaining
 
-1. Developer writes the bare key, one line, to `pj-agdev/.local/gemini_api_key`.
-2. Uncomment `[roles.front] profile = "gemini"` in `agfront/.local/agents.local.toml`
+1. ~~Developer writes the key file~~ — done 2026-09-04.
+2. Wait for the daily quota to reset (Pacific midnight) or put billing on
+   the key; check with `echo pong? | GEMINI_API_KEY=$(cat
+   pj-agdev/.local/gemini_api_key) gemini -m gemini-2.5-flash -p "" -o json
+   --skip-trust`. Then uncomment `[roles.front] profile = "gemini"` in `agfront/.local/agents.local.toml`
    (config is read per run; no restart), post once into a `front-*` topic,
    read the record under `agfront/.local/topics/front/<topic>/<N>/front/`.
 3. One autolab role on `gemini` through the acceptance route, to see whether
