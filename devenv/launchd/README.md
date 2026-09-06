@@ -18,3 +18,11 @@ exist that the others do not: its `/ops` half is a *running* reconstruction of
 the realm, so every restart costs a full sweep and a stretch of `unknown` rows.
 `ThrottleInterval` is therefore 30 s rather than launchd's default 10, so a
 crash loop cannot spend the agents' Zulip quota at full speed.
+
+Since `operation_room` p3 it also carries `AGENTROOM_CHAT_ZULIP_ENV` and
+`AGENTROOM_SCHEDULE_JSON`. The first is the relay's **write** credential — the
+Developer's, because a post from the operation room is the Developer speaking
+and buys a Front run — and it is a separate variable from the two read ones so
+that a relay without it is read-only rather than quietly posting as its
+observer. The second is the routine dispatcher's `schedule.json`, read as a
+local file because the routine GUI on `:8093` answers no CORS header.

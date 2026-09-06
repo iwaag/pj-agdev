@@ -16,6 +16,10 @@
     <key>OPSROOM_ZULIP_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/zulip/opsroom.env</string>
     <!-- The relay's own default; stated here because this is where it is tuned. -->
     <key>AGENTROOM_STALLED_SECONDS</key><string>900</string>
+    <!-- The chat's own credential: the *Developer*, because a post from the
+         GUI is the Developer speaking and starts a paid Front run. Separate
+         from the read variables on purpose, and nothing falls back to it. -->
+    <key>AGENTROOM_CHAT_ZULIP_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/zulip/developer.env</string>
     <!-- The routine dispatcher's schedule, read as a local file: the routine
          GUI on :8093 serves the same clone but answers no CORS header, so a
          browser cannot read it (`operation_room` p3). -->
