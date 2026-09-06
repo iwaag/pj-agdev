@@ -20,6 +20,11 @@
          GUI is the Developer speaking and starts a paid Front run. Separate
          from the read variables on purpose, and nothing falls back to it. -->
     <key>AGENTROOM_CHAT_ZULIP_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/zulip/developer.env</string>
+    <!-- `instance=<project root>` for the in-flight signal: the relay looks
+         at this host's own `.local/topics` and `.local/agent` trees, never at
+         Zulip, which is why the view may poll it at a few seconds
+         (`operation_room` p3). An instance missing here reports `unknown`. -->
+    <key>AGENTROOM_AGENT_ROOTS</key><string>front-agstudio1=__PROJECTS_ROOT__/pj-agdev/agfront,autolab-agstudio1=__PROJECTS_ROOT__/pj-agdev/agautolab,agforge-agstudio1=__PROJECTS_ROOT__/pj-agdev/agforge,arxivsage-agstudio1=__PROJECTS_ROOT__/arxivsage,agecho-agstudio1=__PROJECTS_ROOT__/agecho</string>
     <!-- The routine dispatcher's schedule, read as a local file: the routine
          GUI on :8093 serves the same clone but answers no CORS header, so a
          browser cannot read it (`operation_room` p3). -->
