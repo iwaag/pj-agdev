@@ -11,3 +11,10 @@ Runtime state and logs remain below each project's ignored `.local/` tree.
 `__COMFYUI_URL__`: the notifier now accepts `watch` commands posted as Zulip
 mentions, and such a command carries only a `prompt_id`, so the daemon must
 know which ComfyUI to poll. The host lives in the installed copy only.
+
+`com.agdev.agentroom.plist.in` is the agdevworld relay (`agdevworld/agentroom`,
+loopback `:8094`). It has no extra placeholder, but it does have a reason to
+exist that the others do not: its `/ops` half is a *running* reconstruction of
+the realm, so every restart costs a full sweep and a stretch of `unknown` rows.
+`ThrottleInterval` is therefore 30 s rather than launchd's default 10, so a
+crash loop cannot spend the agents' Zulip quota at full speed.

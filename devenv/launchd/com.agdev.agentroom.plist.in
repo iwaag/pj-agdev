@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agdev.agentroom</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/sh</string><string>__PROJECTS_ROOT__/pj-agdev/agdevworld/agentroom/service/serve.sh</string></array>
+  <key>WorkingDirectory</key><string>__PROJECTS_ROOT__/pj-agdev/agdevworld/agentroom</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- `uv` is what serve.sh execs; without an explicit PATH launchd's own
+         does not carry it and the job dies on every restart. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- Paths to ignored credentials files. Never the values themselves. -->
+    <key>AGENTROOM_ZULIP_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/zulip/developer.env</string>
+    <key>OPSROOM_ZULIP_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/zulip/opsroom.env</string>
+    <!-- The relay's own default; stated here because this is where it is tuned. -->
+    <key>AGENTROOM_STALLED_SECONDS</key><string>900</string>
+  </dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/agdevworld/agentroom/.local/out/agentroom.log</string>
+  <key>StandardErrorPath</key><string>__PROJECTS_ROOT__/pj-agdev/agdevworld/agentroom/.local/out/agentroom.log</string>
+</dict>
+</plist>
