@@ -23,6 +23,10 @@ DEFAULT_ZULIP_ENV = AGDEV_ROOT / ".local" / "zulip" / "developer.env"
 DEFAULT_GITEA_TOKEN = AGDEV_ROOT / "agautolab" / ".local" / "gitea" / "autolab-agent.token"
 DEFAULT_GITEA_ASKPASS = AGDEV_ROOT / "agautolab" / ".local" / "gitea" / "askpass.sh"
 SCHEDULE_POINTER = "Gitea autodev/rtschedule, schedule.json"
+#: One topic per run (operation_room p7): the fire is posted into this topic,
+#: and `runs[<routine>]` in the schedule remembers the last one so the next
+#: fire can name it. `trigger.sh` builds the same string from the same stamp.
+RUN_TOPIC_PREFIX = "front-routine-"
 
 
 class DispatchError(RuntimeError):
@@ -47,6 +51,15 @@ def format_time(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def minute_stamp(value: datetime) -> str:
+    """The fire line's own stamp: a UTC minute, `YYYY-MM-DDTHH:MMZ`."""
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def run_topic(routine: str, stamp: str) -> str:
+    return f"{RUN_TOPIC_PREFIX}{routine}-{stamp}"
+
+
 def load_schedule(path: Path) -> dict[str, Any]:
     try:
         schedule = json.loads(path.read_text(encoding="utf-8"))
@@ -58,6 +71,12 @@ def load_schedule(path: Path) -> dict[str, Any]:
     events = schedule.get("events")
     if not isinstance(requests, list) or not isinstance(events, list):
         raise DispatchError("schedule must contain requests and events arrays")
+    runs = schedule.setdefault("runs", {})
+    if not isinstance(runs, dict):
+        raise DispatchError("runs must be an object keyed by routine name")
+    for routine, run in runs.items():
+        if not isinstance(run, dict) or not isinstance(run.get("topic"), str):
+            raise DispatchError(f"runs[{routine!r}] must be an object with a topic")
     request_ids: set[str] = set()
     for request in requests:
         if not isinstance(request, dict) or not isinstance(request.get("id"), str):
@@ -143,7 +162,7 @@ def dispatch_schedule(
     *,
     real_now: datetime | None = None,
     before_action: Callable[[str], None],
-    fire: Callable[[str], None],
+    fire: Callable[[str, str, str | None], None],
     decide: Callable[[str, str], None],
     after_action: Callable[[str], None],
     after_prune: Callable[[list[str]], None],
@@ -156,9 +175,16 @@ def dispatch_schedule(
     never claims an action happened in the future (p3's report4 found the GUI
     showing exactly that), and the logical tick is kept beside it as
     `logical_at` so an accelerated sitting stays readable afterwards.
+
+    A fire gets a topic of its own, `run_topic(routine, minute)`, recorded in
+    `runs[routine]` **before** the action with the same marker commit, so the
+    schedule and the realm name the same topic; the previous record is what
+    the fire callback receives as the run's predecessor.
     """
     logical = None if real_now is None else now
-    stamp = format_time(now if real_now is None else real_now)
+    real = now if real_now is None else real_now
+    stamp = format_time(real)
+    minute = minute_stamp(real)
     schedule = load_schedule(path)
     removed = prune_old_events(schedule, now)
     if removed:
@@ -170,10 +196,18 @@ def dispatch_schedule(
         event["fired_at"] = stamp
         if logical is not None:
             event["logical_at"] = format_time(logical)
+        previous = None
+        if event["kind"] == "fire":
+            routine = event["routine"]
+            earlier = schedule["runs"].get(routine)
+            previous = earlier["topic"] if earlier else None
+            topic = run_topic(routine, minute)
+            event["topic"] = topic
+            schedule["runs"][routine] = {"topic": topic, "at": stamp, "event": event["id"]}
         atomic_write(path, schedule)
         before_action(event["id"])
         if event["kind"] == "fire":
-            fire(event["routine"])
+            fire(event["routine"], minute, previous)
         else:
             decide(event["id"], event["ask"])
         after_action(event["id"])
@@ -244,8 +278,11 @@ def main(argv: list[str] | None = None) -> int:
             commit(repo, f"Mark schedule event {event_id} fired", env)
             print(f"{format_time(now)} marked {event_id} before action", flush=True)
 
-        def fire(routine: str) -> None:
-            run([str(trigger), routine], env={**env, "AGENTCHAT_ZULIP_ENV": zulip_env})
+        def fire(routine: str, minute: str, previous: str | None) -> None:
+            command = [str(trigger), routine, minute]
+            if previous:
+                command.append(previous)
+            run(command, env={**env, "AGENTCHAT_ZULIP_ENV": zulip_env})
 
         def decide(event_id: str, ask: str) -> None:
             text = f"Schedule decide event `{event_id}`.\n\n{ask}\n\nSchedule: {SCHEDULE_POINTER}."

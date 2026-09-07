@@ -52,7 +52,7 @@ def test_due_not_due_expired_and_already_fired(tmp_path):
         path,
         now,
         before_action=lambda event_id: calls.append(("marked", event_id, json.loads(path.read_text())["events"])),
-        fire=lambda routine: calls.append(("fire", routine)),
+        fire=lambda routine, minute, previous: calls.append(("fire", routine, minute, previous)),
         decide=lambda event_id, ask: calls.append(("decide", event_id, ask)),
         after_action=lambda event_id: calls.append(("pushed", event_id)),
         after_prune=lambda event_ids: calls.append(("pruned", event_ids)),
@@ -101,7 +101,7 @@ def test_a_logical_tick_records_the_real_time_and_the_logical_one(tmp_path):
         datetime(2026, 8, 30, 9, tzinfo=timezone.utc),
         real_now=datetime(2026, 8, 25, 5, 30, tzinfo=timezone.utc),
         before_action=lambda _event_id: None,
-        fire=lambda _routine: None,
+        fire=lambda _routine, _minute, _previous: None,
         decide=lambda _event_id, _ask: None,
         after_action=lambda _event_id: None,
         after_prune=lambda _event_ids: None,
@@ -138,7 +138,7 @@ def test_a_real_tick_records_no_logical_time(tmp_path):
         path,
         datetime(2026, 8, 25, 9, 3, tzinfo=timezone.utc),
         before_action=lambda _event_id: None,
-        fire=lambda _routine: None,
+        fire=lambda _routine, _minute, _previous: None,
         decide=lambda _event_id, _ask: None,
         after_action=lambda _event_id: None,
         after_prune=lambda _event_ids: None,
@@ -168,10 +168,53 @@ def test_events_older_than_seven_days_are_pruned(tmp_path):
         path,
         datetime(2026, 8, 25, tzinfo=timezone.utc),
         before_action=lambda _event_id: None,
-        fire=lambda _routine: None,
+        fire=lambda _routine, _minute, _previous: None,
         decide=lambda _event_id, _ask: None,
         after_action=lambda _event_id: None,
         after_prune=lambda event_ids: pruned.extend(event_ids),
     )
     assert pruned == ["old"]
     assert [event["id"] for event in json.loads(path.read_text())["events"]] == ["edge"]
+
+
+def test_a_fire_gets_its_own_topic_and_names_the_previous_one(tmp_path):
+    path = tmp_path / "schedule.json"
+    path.write_text(
+        json.dumps(
+            {
+                "requests": [
+                    {"id": "r", "said_at": "2026-09-01T00:00:00Z", "until": "2026-12-01T00:00:00Z", "by": "developer", "text": "daily"},
+                ],
+                "events": [
+                    {"id": "e1", "at": "2026-09-07T05:00:00Z", "kind": "fire", "routine": "papers", "from": "r", "fired_at": None},
+                    {"id": "e2", "at": "2026-09-07T05:01:00Z", "kind": "fire", "routine": "publish", "from": "r", "fired_at": None},
+                ],
+                "runs": {"papers": {"topic": "front-routine-papers-2026-09-06T05:00Z", "at": "2026-09-06T05:00:12Z"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    marked = []
+    now = datetime(2026, 9, 7, 5, 2, 30, tzinfo=timezone.utc)
+    dispatch.dispatch_schedule(
+        path,
+        now,
+        before_action=lambda event_id: marked.append(json.loads(path.read_text())["runs"]),
+        fire=lambda routine, minute, previous: calls.append((routine, minute, previous)),
+        decide=lambda event_id, ask: None,
+        after_action=lambda event_id: None,
+        after_prune=lambda event_ids: None,
+    )
+    assert calls == [
+        ("papers", "2026-09-07T05:02Z", "front-routine-papers-2026-09-06T05:00Z"),
+        ("publish", "2026-09-07T05:02Z", None),
+    ]
+    # The record is written with the marker, before the action.
+    assert marked[0]["papers"]["topic"] == "front-routine-papers-2026-09-07T05:02Z"
+    assert "publish" not in marked[0]
+    result = json.loads(path.read_text())
+    assert result["runs"]["publish"] == {
+        "topic": "front-routine-publish-2026-09-07T05:02Z", "at": "2026-09-07T05:02:30Z", "event": "e2",
+    }
+    assert result["events"][0]["topic"] == "front-routine-papers-2026-09-07T05:02Z"
