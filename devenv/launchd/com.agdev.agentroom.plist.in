@@ -29,6 +29,14 @@
          GUI on :8093 serves the same clone but answers no CORS header, so a
          browser cannot read it (`operation_room` p3). -->
     <key>AGENTROOM_SCHEDULE_JSON</key><string>__PROJECTS_ROOT__/pj-agdev/.local/rtschedule/schedule.json</string>
+    <!-- The budget read (`gauge_panel` ex1): the CLIs' own binaries, by
+         absolute path because `~/.local/bin` is not on the PATH above. The
+         relay only ever *reads* through them; it never touches a credential
+         store. `AGENTROOM_CLAUDE_CREDENTIALS` keeps its default
+         (`~/.claude/.credentials.json`); `AGENTROOM_BUDGET_SECONDS` (60) is
+         how often a vendor is asked, whatever the page polls. -->
+    <key>AGENTROOM_CODEX_BIN</key><string>__HOME__/.local/bin/codex</string>
+    <key>AGENTROOM_AGY_BIN</key><string>__HOME__/.local/bin/agy</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer>
   <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/agdevworld/agentroom/.local/out/agentroom.log</string>

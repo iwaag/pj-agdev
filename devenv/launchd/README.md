@@ -26,3 +26,11 @@ and buys a Front run — and it is a separate variable from the two read ones so
 that a relay without it is read-only rather than quietly posting as its
 observer. The second is the routine dispatcher's `schedule.json`, read as a
 local file because the routine GUI on `:8093` answers no CORS header.
+
+Since `gauge_panel` ex1 the same template carries a third placeholder,
+`__HOME__` (the user's home directory), because the budget read spawns
+`codex` and `agy` from `~/.local/bin`, which the job's PATH does not carry.
+`AGENTROOM_CODEX_BIN` and `AGENTROOM_AGY_BIN` are those absolute paths. The
+relay reads the CLIs' own stores and never writes them, so nothing else is
+needed — and remember that `kickstart -k` does not re-read a changed
+`EnvironmentVariables` block: `bootout`, wait, `bootstrap`.
