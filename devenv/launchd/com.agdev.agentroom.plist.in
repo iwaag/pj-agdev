@@ -29,6 +29,14 @@
          GUI on :8093 serves the same clone but answers no CORS header, so a
          browser cannot read it (`operation_room` p3). -->
     <key>AGENTROOM_SCHEDULE_JSON</key><string>__PROJECTS_ROOT__/pj-agdev/.local/rtschedule/schedule.json</string>
+    <!-- Plane credentials for the Front Desk's completion button
+         (`front_desk` p3). A path to an ignored file, like every credential
+         here. The key must be able to read *and* transition the projects the
+         conversations reach: a per-agent key was measured reading one project
+         and refused another (HTTP 403), so this is the admin key rather than
+         an agent identity. Unset leaves the button closing the chat half
+         only, and the preview says which Works it could not see. -->
+    <key>AGENTROOM_PLANE_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/plane-credentials.env</string>
     <!-- The budget read (`gauge_panel` ex1): the CLIs' own binaries, by
          absolute path because `~/.local/bin` is not on the PATH above. The
          relay only ever *reads* through them; it never touches a credential
