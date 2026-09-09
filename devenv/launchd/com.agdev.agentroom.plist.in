@@ -27,8 +27,6 @@
     <key>AGENTROOM_AGENT_ROOTS</key><string>front-agstudio1=__PROJECTS_ROOT__/pj-agdev/agfront,autolab-agstudio1=__PROJECTS_ROOT__/pj-agdev/agautolab,agforge-agstudio1=__PROJECTS_ROOT__/pj-agdev/agforge,arxivsage-agstudio1=__PROJECTS_ROOT__/arxivsage,agecho-agstudio1=__PROJECTS_ROOT__/agecho</string>
     <!-- The routine dispatcher's schedule, read as a local file: the routine
          GUI on :8093 serves the same clone but answers no CORS header, so a
-         browser cannot read it (`operation_room` p3). -->
-    <key>AGENTROOM_SCHEDULE_JSON</key><string>__PROJECTS_ROOT__/pj-agdev/.local/rtschedule/schedule.json</string>
     <!-- Plane credentials for the Front Desk's completion button
          (`front_desk` p3). A path to an ignored file, like every credential
          here. The key must be able to read *and* transition the projects the
