@@ -19,13 +19,17 @@ the realm, so every restart costs a full sweep and a stretch of `unknown` rows.
 `ThrottleInterval` is therefore 30 s rather than launchd's default 10, so a
 crash loop cannot spend the agents' Zulip quota at full speed.
 
-Since `operation_room` p3 it also carries `AGENTROOM_CHAT_ZULIP_ENV` and
-`AGENTROOM_SCHEDULE_JSON`. The first is the relay's **write** credential — the
-Developer's, because a post from the operation room is the Developer speaking
-and buys a Front run — and it is a separate variable from the two read ones so
-that a relay without it is read-only rather than quietly posting as its
-observer. The second is the routine dispatcher's `schedule.json`, read as a
-local file because the routine GUI on `:8093` answers no CORS header.
+Since `operation_room` p3 it also carries `AGENTROOM_CHAT_ZULIP_ENV`, the
+relay's **write** credential — the Developer's, because a post from the
+operation room is the Developer speaking and buys a Front run — and it is a
+separate variable from the two read ones so that a relay without it is
+read-only rather than quietly posting as its observer.
+
+`com.agdev.routine-dispatch` and `com.agdev.routine-gui` are gone
+(`refine_routine` p1): a routine is no longer fired from a schedule. Its
+guide lives in Zulip (channel folder `routine`, one channel per routine, the
+`guide` topic) and a run is a request to Front. Boot out any installed copy
+of those two labels; nothing replaces them.
 
 Since `gauge_panel` ex1 the same template carries a third placeholder,
 `__HOME__` (the user's home directory), because the budget read spawns
