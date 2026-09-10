@@ -34,7 +34,6 @@
          and refused another (HTTP 403), so this is the admin key rather than
          an agent identity. Unset leaves the button closing the chat half
          only, and the preview says which Works it could not see. -->
-    <key>AGENTROOM_PLANE_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/plane-credentials.env</string>
     <!-- The budget read (`gauge_panel` ex1): the CLIs' own binaries, by
          absolute path because `~/.local/bin` is not on the PATH above. The
          relay only ever *reads* through them; it never touches a credential
