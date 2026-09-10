@@ -39,13 +39,11 @@ relay reads the CLIs' own stores and never writes them, so nothing else is
 needed — and remember that `kickstart -k` does not re-read a changed
 `EnvironmentVariables` block: `bootout`, wait, `bootstrap`.
 
-Since `front_desk` p3 it carries `AGENTROOM_PLANE_ENV`, a path to an ignored
-Plane credentials file. It is the Front Desk's completion button's one
-non-Zulip credential: closing a conversation also closes the Plane Work its
-delegation opened, and nothing else in this relay touches Plane. The key must
-be able to *transition* the projects those conversations reach — a per-agent
-key was measured reading one project and refused another (HTTP 403), so the
-installed copy points at the admin key rather than at an agent identity.
-Unset, the button still closes the chat half and the preview says which Works
-it could not see. This is another `EnvironmentVariables` change: `bootout`,
-wait, `bootstrap` — `kickstart -k` will not pick it up.
+`AGENTROOM_PLANE_ENV` is **gone** (`refactor` p2 step 4). It carried the
+completion button's one non-Zulip credential — closing a conversation also
+closed the Plane Work its delegation had opened — and forge was its last
+consumer: since p2 forge's plan, outcome and result references live in its
+own `assetplan-`/`assetrun-` conversations, as autolab's have since p1. The
+relay now holds three credentials, all Zulip. An installed copy still
+carrying the variable is harmless (nothing reads it) until the next
+`bootout`/`bootstrap`.
