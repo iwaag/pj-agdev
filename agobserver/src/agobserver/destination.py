@@ -61,6 +61,7 @@ __all__ = [
     "Destination",
     "Resolved",
     "anchored",
+    "at_message",
     "parse",
     "resolve",
 ]
@@ -154,7 +155,7 @@ def resolve(client: ZulipClient, destination: Destination) -> Resolved:
     about.
     """
     if destination.message_id is not None:
-        return _by_id(client, destination.message_id)
+        return at_message(client, destination.message_id)
     named = destination.conversation
     if named is None:
         return Resolved(ABSENT, reason="no destination was understood")
@@ -175,7 +176,14 @@ def anchored(client: ZulipClient, text: str) -> tuple[Destination | None, Resolv
     return parsed, resolve(client, parsed)
 
 
-def _by_id(client: ZulipClient, message_id: int) -> Resolved:
+def at_message(client: ZulipClient, message_id: int) -> Resolved:
+    """The conversation a message is in now, three-valued.
+
+    The same question a watch asks about its **own** anchor — "where am I,
+    and am I still wanted?" — so it lives here rather than being written
+    twice. `CLOSED` reads as cancelled there and as undeliverable here; both
+    are "answered, and the answer is no".
+    """
     try:
         conversation = conversation_of(client, message_id, strict=True)
     except ZulipRejected as error:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from agag.agent import AgentSpec
+from agag.zulip import ZulipTimeout
 
 from agobserver import anchor, observe, store, worker
 
@@ -158,17 +159,149 @@ def test_a_resolve_during_the_evaluation_still_cancels(spec, zulip):
     assert store.load(spec.local / "watches", f"w{watch_id}")["state"] == "cancelled"
 
 
-def test_an_unreadable_channel_is_not_a_cancellation(spec, zulip):
+def test_an_unanswered_anchor_lookup_is_not_a_cancellation(spec, zulip):
     """A lookup failure read as a ✔ would drop every watch on one hiccup."""
-    open_watch(zulip, "watch-a")
+    watch_id = open_watch(zulip, "watch-a")
     made = make_worker(spec, zulip)
     made.reconcile()
 
-    def explode(_stream_id):
-        raise RuntimeError("zulip is unreachable")
+    zulip.fail_next_message = ZulipTimeout("timed out")
+    made.ticks = 1
+    made.tick()
+    assert made.looked == []                          # the attempt was skipped
+    record = store.load(spec.local / "watches", f"w{watch_id}")
+    assert record["state"] == anchor.ACTIVE           # and nothing was concluded
 
-    zulip.channel_topics = explode
-    assert made.cancelled(made.scheduled()[0]) is False
+    made.ticks = 1
+    made.tick()
+    assert len(made.looked) == 1                      # the next tick just works
+
+
+# --- the watch follows its own anchor (ex1 step 2) -------------------------
+
+
+def rename(zulip, topic: str, to: str) -> None:
+    """A rename that is not a resolve: the same conversation, a new name."""
+    for (channel, name) in list(zulip.topics):
+        if name == topic:
+            zulip.topics[(channel, to)] = zulip.topics.pop((channel, topic))
+            return
+
+
+def test_a_renamed_watch_is_continued_under_its_new_name(spec, zulip):
+    watch_id = open_watch(zulip, "watch-a")
+    made = make_worker(spec, zulip)
+    made.reconcile()
+    rename(zulip, "watch-a", "watch-a-renamed")
+
+    made.ticks = 1
+    assert made.tick() == 1
+    assert len(made.looked) == 1                      # still being watched
+    record = store.load(spec.local / "watches", f"w{watch_id}")
+    assert record["topic"] == "watch-a-renamed"       # and addressed correctly
+    assert record["state"] == anchor.ACTIVE
+
+
+def test_what_a_renamed_watch_says_goes_to_where_it_is_now(spec, zulip):
+    """The failure report is the one thing a waiting watch ever posts."""
+    open_watch(zulip, "watch-a")
+    made = make_worker(spec, zulip, verdict=observe.UNABLE)
+    made.reconcile()
+    rename(zulip, "watch-a", "watch-a-renamed")
+    zulip.post(CHANNEL, "watch-a", "unrelated work under the reused name", sender_id=8)
+
+    for _ in range(3):
+        made.ticks = 1
+        made.tick()
+
+    said = " ".join(e["content"] for e in zulip.topic_history(CHANNEL, "watch-a-renamed", 100))
+    assert said.count("not been able to look") == 1
+    reused = " ".join(e["content"] for e in zulip.topic_history(CHANNEL, "watch-a", 100))
+    assert "not been able to look" not in reused
+
+
+def test_a_renamed_then_resolved_watch_is_cancelled_without_a_look(spec, zulip):
+    """Renaming before resolving used to hide the ✔ from the name comparison."""
+    watch_id = open_watch(zulip, "watch-a")
+    made = make_worker(spec, zulip)
+    made.reconcile()
+    rename(zulip, "watch-a", "watch-a-renamed")
+    zulip.resolve_topic(0, "watch-a-renamed")
+
+    made.ticks = 1
+    made.tick()
+    assert made.looked == []
+    assert store.load(spec.local / "watches", f"w{watch_id}")["state"] == worker.CANCELLED
+    assert made.scheduled() == []
+
+
+def test_a_cancelled_watch_posts_nothing_into_its_reused_name(spec, zulip):
+    watch_id = open_watch(zulip, "watch-a")
+    delivered = []
+    made = worker.Worker(
+        spec, zulip, interval=60,
+        evaluate=lambda *a: observe.Observation(observe.MET, evidence="stub"),
+        deliver=lambda *args: delivered.append(args) or True,
+    )
+    made.reconcile()
+    rename(zulip, "watch-a", "watch-a-renamed")
+    zulip.resolve_topic(0, "watch-a-renamed")
+    before = len(zulip.topic_history(CHANNEL, "watch-a", 100))
+    zulip.post(CHANNEL, "watch-a", "somebody else's watch, same name", sender_id=8)
+
+    made.ticks = 1
+    made.tick()
+
+    assert delivered == []
+    assert len(zulip.topic_history(CHANNEL, "watch-a", 100)) == before + 1
+    assert store.load(spec.local / "watches", f"w{watch_id}")["state"] == worker.CANCELLED
+
+
+def test_a_deleted_anchor_ends_the_watch_locally(spec, zulip):
+    watch_id = open_watch(zulip, "watch-a")
+    made = make_worker(spec, zulip)
+    made.reconcile()
+    zulip.deleted.add(watch_id)
+
+    made.ticks = 1
+    made.tick()
+    assert made.looked == []
+    record = store.load(spec.local / "watches", f"w{watch_id}")
+    assert record["state"] == worker.REMOVED
+    assert made.scheduled() == []
+
+
+def test_a_watch_pending_delivery_re_reads_its_own_location(spec, zulip):
+    """The second check: a ✔ that lands inside the evaluation still cancels,
+    and a rename that lands inside it still gets the completion post."""
+    watch_id = open_watch(zulip, "watch-a")
+    delivered = []
+
+    def evaluate(_spec, watch, previous):
+        rename(zulip, "watch-a", "watch-a-renamed")   # the rename lands mid-look
+        return observe.Observation(observe.MET, evidence="stub")
+
+    made = worker.Worker(
+        spec, zulip, interval=60, evaluate=evaluate,
+        deliver=lambda client, watch, record: delivered.append(watch) or True,
+    )
+    made.reconcile()
+    made.ticks = 1
+    made.tick()
+    assert [watch.topic for watch in delivered] == ["watch-a-renamed"]
+    assert store.load(spec.local / "watches", f"w{watch_id}")["topic"] == "watch-a-renamed"
+
+
+def test_a_reconcile_refreshes_a_name_it_used_to_leave_stale(spec, zulip):
+    """`reconcile` skipped any record whose state and acceptance matched,
+    which is every renamed watch."""
+    watch_id = open_watch(zulip, "watch-a")
+    made = make_worker(spec, zulip)
+    assert made.reconcile() == 1
+    rename(zulip, "watch-a", "watch-a-renamed")
+    assert made.reconcile() == 1                      # not skipped this time
+    assert store.load(spec.local / "watches", f"w{watch_id}")["topic"] == "watch-a-renamed"
+    assert made.reconcile() == 0                      # and nothing to do once current
 
 
 # --- the interval ----------------------------------------------------------

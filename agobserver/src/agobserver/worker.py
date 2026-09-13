@@ -14,9 +14,11 @@ Three properties the loop is built around:
 - **A restart does not need a fresh post.** The schedule is rebuilt by
   reading the channel, so an active watch nobody has spoken to since it was
   accepted is picked up again.
-- **A resolved topic is a cancelled watch, and that is checked twice** —
-  once before evaluating and once again immediately before notifying, because
-  the ✔ may land during the evaluation it is meant to cancel.
+- **A watch is found by its own anchor id, twice per tick** — once before
+  evaluating and once again immediately before notifying, because the ✔ may
+  land during the evaluation it is meant to cancel. Asking the id rather than
+  the remembered name is what makes a renamed watch continue, a renamed and
+  then resolved one cancel, and an outage conclude nothing at all.
 
 Evaluation is sequential. One watch at a time, each bounded, is enough for
 this phase and it makes "why did nothing happen for two minutes" answerable
@@ -34,7 +36,7 @@ from typing import Any, Callable
 from agag.agent import AgentSpec
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
 
-from . import anchor, observe, store
+from . import anchor, destination as dest, observe, store
 
 #: How often the queue is looked at. A watch's resolution is this interval.
 INTERVAL_ENV = "AGOBSERVER_INTERVAL_SECONDS"
@@ -46,12 +48,18 @@ RECONCILE_EVERY = 10
 #: failure is not news; three in a row is.
 UNABLE_STREAK_REPORT = 3
 
+#: Local-only lifecycle words. `cancelled` is the ✔; `removed` is an anchor
+#: Zulip says is gone, which cannot be written into a topic that no longer
+#: holds it, so it lives in the store alone.
+CANCELLED = "cancelled"
+REMOVED = "removed"
+
 #: Set by the store when a watch is met and not yet delivered. It is a field
 #: rather than a state because delivery is a separate, retryable step: a met
 #: watch whose notification failed is still met, and must not be re-judged.
 PENDING = "pending_notification"
 
-__all__ = ["Worker", "interval_seconds", "start"]
+__all__ = ["CANCELLED", "REMOVED", "Worker", "interval_seconds", "start"]
 
 
 def interval_seconds() -> float:
@@ -125,12 +133,18 @@ class Worker:
             if not watch.scheduled or watch.watch_id is None:
                 continue
             record = store.load(self.watches_dir, watch.name)
-            if record.get("state") == watch.state and record.get("accepted"):
+            fields = {
+                "watch": watch.name, "channel": channel, "topic": topic,
+                "state": watch.state, "accepted": dict(watch.accepted),
+            }
+            # Compared field by field rather than on state alone. The old
+            # test — state matches and an acceptance is present — was true of
+            # a watch whose topic had just been renamed, so the stale name
+            # stayed in the record and everything the watch said went to it.
+            if all(record.get(key) == value for key, value in fields.items()):
                 continue
             store.update(
-                self.watches_dir, watch.name,
-                watch=watch.name, channel=channel, topic=topic,
-                state=watch.state, accepted=dict(watch.accepted),
+                self.watches_dir, watch.name, **fields,
                 accepted_at=record.get("accepted_at") or store.now(),
                 evaluations=int(record.get("evaluations", 0)),
                 recovered_at=store.now(),
@@ -139,23 +153,57 @@ class Worker:
             found += 1
         return found
 
-    def cancelled(self, record: dict[str, Any]) -> bool:
-        """Whether this watch's topic has been resolved since it was accepted.
+    def locate(self, record: dict[str, Any]) -> dest.Resolved:
+        """Where this watch is now, asked of the watch's **own anchor id**.
 
-        Resolving *renames* the topic, so the question is whether the bare
-        name is gone and the `✔ ` one is there. An unreadable channel answers
-        **no**: a lookup failure must never be read as a cancellation, or a
-        Zulip hiccup silently drops every watch in the realm.
+        The one question that answers cancellation, renaming and removal at
+        once, because all three are facts about the anchor message:
+
+        - `OPEN` — the conversation it is in now, under whatever name that
+          conversation currently has. That name is what everything this watch
+          says must be addressed to;
+        - `CLOSED` — the anchor sits in a `✔ ` topic. Resolving the topic is
+          the cancellation gesture, and this is what recognizes it;
+        - `ABSENT` — Zulip says the anchor is gone. The watch has been
+          removed; it ends, locally and quietly, because there is no longer a
+          conversation to say so in;
+        - `FAILED` — the lookup got no answer. Nothing is concluded and the
+          attempt is skipped, because a Zulip hiccup read as a ✔ would
+          silently drop every watch in the realm.
+
+        What this replaces compared cached topic *names* against the channel
+        listing, so a watch renamed for any other reason looked cancelled to
+        nobody and kept posting into a name that had moved on.
         """
-        channel, topic = str(record.get("channel", "")), str(record.get("topic", ""))
-        if not channel or not topic:
-            return False
-        try:
-            topics = self.client.channel_topics(self.client.stream_id(channel))
-        except Exception as error:  # noqa: BLE001
-            log(f"cancellation check failed for {channel!r}/{topic!r}: {error}")
-            return False
-        return topic not in topics and f"{RESOLVED_TOPIC_PREFIX}{topic}" in topics
+        watch_id = self.watch_of(record).watch_id
+        if watch_id is None:
+            return dest.Resolved(
+                dest.FAILED, reason=f"{record.get('watch')!r} carries no anchor id"
+            )
+        return dest.at_message(self.client, watch_id)
+
+    def relocated(self, record: dict[str, Any], located: dest.Resolved) -> dict[str, Any]:
+        """The record with its cached conversation refreshed from `located`.
+
+        A name is a cache and this is the write-back. Doing it here rather
+        than leaving it to `reconcile` matters: reconcile runs every tenth
+        tick, and between two of them everything the watch says would be
+        addressed to where it used to be.
+        """
+        conversation = located.conversation
+        if conversation is None:
+            return record
+        if (record.get("channel"), record.get("topic")) == conversation.as_pair():
+            return record
+        log(
+            f"{record.get('watch')} is now {conversation} "
+            f"(was {record.get('channel')}/{record.get('topic')})"
+        )
+        return store.update(
+            self.watches_dir, str(record.get("watch")),
+            channel=conversation.channel, topic=conversation.topic,
+            renamed_at=store.now(),
+        )
 
     # --- one watch ------------------------------------------------------
 
@@ -171,11 +219,10 @@ class Worker:
 
     def evaluate_one(self, record: dict[str, Any]) -> None:
         name = str(record.get("watch"))
-        watch = self.watch_of(record)
-        if self.cancelled(record):
-            store.update(self.watches_dir, name, state="cancelled", cancelled_at=store.now())
-            log(f"{name} cancelled: its topic is resolved")
+        record = self.stand_down(record)
+        if record is None:
             return
+        watch = self.watch_of(record)
         observation = self.evaluate(self.spec, watch, record.get("last_result"))
         at = store.now()
         fields: dict[str, Any] = {
@@ -222,21 +269,56 @@ class Worker:
         except Exception as error:  # noqa: BLE001
             log(f"could not report the failure streak of {watch.name}: {error}")
 
-    def _hand_over(self, watch: anchor.Watch, record: dict[str, Any]) -> None:
-        """Deliver, if there is a delivery route, having re-checked the ✔.
+    def stand_down(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        """`record`, refreshed, or `None` when this watch must not go on.
 
-        The second cancellation check is here rather than in the delivery
-        code because the window it closes is *this* one: the evaluation took
-        real seconds, and a ✔ that landed inside them means nobody wants the
-        notification any more.
+        Both of the moments the plan names — before observing and again
+        before notifying — are this call, because they are the same question.
+        Three ways to stop, and they are not the same stop:
+
+        - a ✔ **cancels**: somebody said so, and it is recorded and said
+          nowhere, because the gesture was made in the topic itself;
+        - a deleted anchor **removes**: the record ends locally, and nothing
+          is posted, since the conversation that would have been told is gone;
+        - a failed lookup stops **nothing**. The attempt is skipped and the
+          watch keeps its state and its pending notification.
         """
-        if self.cancelled(record):
+        name = str(record.get("watch"))
+        located = self.locate(record)
+        if located.closed:
             store.update(
-                self.watches_dir, watch.name,
-                state="cancelled", cancelled_at=store.now(), **{PENDING: False},
+                self.watches_dir, name,
+                state=CANCELLED, cancelled_at=store.now(), **{PENDING: False},
             )
-            log(f"{watch.name} met but cancelled during the evaluation; not notifying")
+            log(f"{name} cancelled: its topic is resolved")
+            return None
+        if located.outcome == dest.ABSENT:
+            store.update(
+                self.watches_dir, name,
+                state=REMOVED, removed_at=store.now(), removed_reason=located.reason,
+                **{PENDING: False},
+            )
+            log(f"{name} removed: {located.reason}")
+            return None
+        if located.failed:
+            log(f"{name} skipped this tick: {located.reason}")
+            return None
+        return self.relocated(record, located)
+
+    def _hand_over(self, watch: anchor.Watch, record: dict[str, Any]) -> None:
+        """Deliver, if there is a delivery route, having re-checked the anchor.
+
+        The second check is here rather than in the delivery code because the
+        window it closes is *this* one: the evaluation took real seconds, and
+        a ✔ that landed inside them means nobody wants the notification any
+        more. It re-reads the location too — everything delivery says about
+        this watch goes into the watch's own topic, and that topic may have
+        been renamed while the model was looking.
+        """
+        record = self.stand_down(record)
+        if record is None:
             return
+        watch = self.watch_of(record)
         if self.deliver is None:
             log(f"{watch.name} met and held pending: no delivery route is configured")
             return
