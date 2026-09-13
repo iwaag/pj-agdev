@@ -25,6 +25,16 @@ operation room is the Developer speaking and buys a Front run — and it is a
 separate variable from the two read ones so that a relay without it is
 read-only rather than quietly posting as its observer.
 
+`com.agdev.agobserver-zulip.plist.in` is the Observer agent (`observer` p1).
+One job holds two things: the ordinary agag listener, and the due-watch
+worker thread it starts. That is why `AGOBSERVER_INTERVAL_SECONDS` is in the
+`EnvironmentVariables` block and why changing it needs a `bootout`/
+`bootstrap` rather than a `kickstart -k` — the interval is the one setting
+this job has, and `kickstart -k` does not re-read the block. Its evaluations
+run on the host's own local model, so a short interval costs no account;
+what it costs is Zulip calls, one topic listing per tick plus one run per
+active watch.
+
 `com.agdev.routine-dispatch` and `com.agdev.routine-gui` are gone
 (`refine_routine` p1): a routine is no longer fired from a schedule. Its
 guide lives in Zulip (channel folder `routine`, one channel per routine, the
