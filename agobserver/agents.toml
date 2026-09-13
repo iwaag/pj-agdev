@@ -1,0 +1,45 @@
+# agobserver's agent configuration (ag.agent-config.v2).
+#
+# Observer waits by evaluating often, not by holding one long session open,
+# so its default backend is the **local** model: an evaluation that costs
+# nothing can run every minute for a day. `sonnet` exists for the intake of
+# a request the local model cannot read, and is a public execution option;
+# no polling evaluation is meant to run on it.
+#
+# Per-machine backend choice belongs in the ignored `.local/agents.local.toml`
+# overlay, and the ollama base URL always does.
+schema = "ag.agent-config.v2"
+project = "agobserver"
+
+[models."ollama/qwen3.8:27b-mxfp8"]
+max_tokens = 8192
+
+[models."anthropic/claude-sonnet-5"]
+
+[profiles.local]
+harness = "agcode"
+model = "ollama/qwen3.8:27b-mxfp8"
+
+[profiles.sonnet]
+harness = "claude_code"
+model = "anthropic/claude-sonnet-5"
+
+[profiles.stub]
+harness = "fake"
+model = "ollama/qwen3.8:27b-mxfp8"
+
+# Reading one watch request and turning it into an accepted watch — or into
+# one concrete question. Runs once per request, not per poll.
+[roles.front]
+profile = "local"
+requires = []
+allowed_tools = "Read,Write,Edit,Glob,Grep,Bash"
+
+# One short evaluation of one active watch. This is the role the worker runs
+# on a timer, and the reason the default profile is local. Its grant is wide
+# on purpose: an observer that cannot run the command that shows the state of
+# its target cannot observe (Tool Giving — see devpolicy/terms.md).
+[roles.observe]
+profile = "local"
+requires = []
+allowed_tools = "Read,Write,Edit,Glob,Grep,Bash"
