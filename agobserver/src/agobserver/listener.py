@@ -22,6 +22,7 @@ from pathlib import Path
 from agag.agent import AgentSpec, listener_main
 from agag.execopt import Option
 
+from . import worker
 from .intake import handle_watch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +59,9 @@ SPEC = AgentSpec(
 
 
 def main() -> None:
+    # The clock first: it recovers the schedule from the channel by itself, so
+    # a restart resumes every active watch without waiting for anybody to post.
+    worker.start(SPEC)
     listener_main(SPEC, {}, entrance=lambda client, channel, topic: handle_watch(SPEC, client, channel, topic))
 
 
