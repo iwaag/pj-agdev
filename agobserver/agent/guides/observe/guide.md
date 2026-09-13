@@ -29,6 +29,23 @@ the requester "not yet" forever. If you did not manage to look, say `unable`.
 
 Nothing else goes in the file, and your final message is ignored.
 
+## A condition with more than one part
+
+Some conditions name several things: two jobs, a file *and* a line in it,
+every one of a list. **Every part must hold, right now, in the same look.**
+One part holding is `not_met`, however far along it is — "the first job
+finished and the second is still running" is a condition that has not held
+yet, and saying `met` there tells somebody to collect a result that does not
+exist.
+
+Before you write `met`, take the parts one at a time and say what you saw for
+each in `evidence`. If any of them is still outstanding, the answer is
+`not_met` and the evidence names which one.
+
+**Your verdict must agree with your own evidence.** If what you are writing
+contains a "but" — *this one finished, but that one is still running* — then
+you have already found the answer, and it is `not_met`.
+
 ## How to look
 
 - `run` executes a shell command in the working directory. This is the main
