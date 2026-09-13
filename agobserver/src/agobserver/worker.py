@@ -274,8 +274,10 @@ class Worker:
                 self.tick()
             except Exception as error:  # noqa: BLE001 - the loop outlives its ticks
                 log(f"worker tick failed: {error!r}")
-            # From the *end* of the work, so a slow evaluation delays the next
-            # look rather than queueing another one behind it.
+            # A fixed cadence: the wait is what is left of the interval, so a
+            # look that took 15 s does not push the next one 75 s out. The 1 s
+            # floor is the other half of it — an evaluation that overran the
+            # whole interval must not produce back-to-back ticks.
             stop.wait(max(1.0, self.interval - max(0.0, self.clock() - started)))
 
 
