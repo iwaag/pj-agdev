@@ -128,7 +128,8 @@ def _accepted_body(watch_name: str, accepted: dict, resolved: dest.Resolved) -> 
             f"- **when**: {accepted['condition']}",
             f"- **looking at**: {accepted['target']}",
             f"- **telling**: {resolved.conversation} "
-            f"(from `{accepted['destination']}`)",
+            f"(from `{accepted['destination']}`, anchored to message "
+            f"{accepted['destination_id']})",
             "",
             "I will post there once, when that holds, and say nothing here "
             "until then. Resolve this topic (✔) to cancel.",
@@ -188,7 +189,8 @@ def serve_intake(spec: AgentSpec, context: TopicContext) -> TopicResult:
     }
     if not accepted["condition"]:
         return _needs_input(spec, context, watch, "What condition should I watch for?")
-    parsed = dest.parse(accepted["destination"])
+    context.step = "destination"
+    parsed, resolved = dest.anchored(context.client, accepted["destination"])
     if parsed is None:
         return _needs_input(
             spec, context, watch,
@@ -196,8 +198,17 @@ def serve_intake(spec: AgentSpec, context: TopicContext) -> TopicResult:
             "conversation (Zulip's *Copy link to message*), or write "
             "`<channel>/<topic>`.",
         )
-    context.step = "destination"
-    resolved = dest.resolve(context.client, parsed)
+    if resolved.failed:
+        # Not the requester's problem to solve. Asking them for a different
+        # destination here would be asking them to work around an outage,
+        # and the one they named is very likely fine.
+        return _needs_input(
+            spec, context, watch,
+            f"I could not check `{accepted['destination']}` just now: "
+            f"{resolved.reason}. I have not started watching, because I will "
+            f"not accept a destination I cannot see. Say anything here to make "
+            f"me try again.",
+        )
     if not resolved.deliverable:
         reason = "it is already resolved (✔)" if resolved.closed else resolved.reason
         return _needs_input(
@@ -205,6 +216,10 @@ def serve_intake(spec: AgentSpec, context: TopicContext) -> TopicResult:
             f"I cannot deliver to `{accepted['destination']}`: {reason}. "
             f"Which conversation should I notify instead?",
         )
+    # The destination stops being a name here. What is stored is the id of a
+    # message in the conversation the requester meant, so that a rename, a ✔
+    # or somebody else taking the freed name cannot move the notification.
+    accepted["destination_id"] = resolved.message_id
 
     context.step = "accepting"
     watch_id = watch.watch_id

@@ -1,19 +1,28 @@
 """Where a notification goes, and how that survives the conversation moving.
 
-A requester names the destination in words. Two spellings are accepted and
-they are not equal in quality:
+A requester names the destination in words. Two spellings are accepted:
 
-- a **message link** (Zulip's *Copy link to message*), or `msg:<id>` — the
-  good one. It carries a message id, and an id is the single identifier a
-  rename, a ✔ or a reused topic name does not touch, so the notification
-  follows the conversation instead of following its old name;
-- `<channel>/<topic>` — accepted, and resolved through the ✔ rename at send
-  time, but a topic that was renamed for any other reason is simply gone as
-  far as this is concerned. It is *absent*, never "whatever holds that name
-  now": the whole reason to prefer an id is that a freed name gets reused.
+- a **message link** (Zulip's *Copy link to message*), or `msg:<id>`;
+- `<channel>/<topic>`.
 
-`resolve` is called when the notification is about to be sent, not when the
-watch is accepted, because everything above can change while a watch waits.
+They are no longer two qualities of destination. Since ex1 both are resolved
+to **a message id in the intended conversation at intake**, and that id is
+what is stored and what every later lookup uses. A name is how the requester
+said it and how the topic explains it; the id is what it means. The reason is
+the one the rest of the realm arrived at the hard way: a topic name is
+reusable, so a destination remembered by name eventually delivers into work
+it knows nothing about — and a rename is not a rare accident, it is what
+resolving a topic does.
+
+Resolution is three-valued, and the third value is the point:
+
+- **open** — a conversation that can be posted into now;
+- **absent** or **closed** — Zulip answered, and the answer is terminal;
+- **failed** — the lookup never got an answer. Nothing may be concluded from
+  it: not that the destination is gone, not that it is fine. Try again.
+
+Flattening the third into the second is how a watch that was met loses its
+notification to one bad minute of network.
 """
 
 from __future__ import annotations
@@ -22,13 +31,39 @@ import re
 from dataclasses import dataclass
 
 from agag.selfnote import Conversation, parse_conversation
-from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, conversation_of, live_topic_name
+from agag.zulip import (
+    RESOLVED_TOPIC_PREFIX,
+    ZulipClient,
+    ZulipError,
+    ZulipRejected,
+    conversation_of,
+)
 
 #: `.../near/5901` in a Zulip message link, and the bare spellings beside it.
 _NEAR = re.compile(r"/near/(\d+)")
 _EXPLICIT_ID = re.compile(r"^(?:msg:|message:|#)?(\d+)$", re.IGNORECASE)
 
-__all__ = ["Destination", "Resolved", "parse", "resolve"]
+#: A conversation that can be posted into now.
+OPEN = "open"
+#: Zulip says it is not there. Terminal.
+ABSENT = "absent"
+#: It is there and resolved (✔). Terminal: a watch is not important enough
+#: to reopen somebody's finished work.
+CLOSED = "closed"
+#: The lookup did not answer. Not a fact about the destination.
+FAILED = "failed"
+
+__all__ = [
+    "ABSENT",
+    "CLOSED",
+    "FAILED",
+    "OPEN",
+    "Destination",
+    "Resolved",
+    "anchored",
+    "parse",
+    "resolve",
+]
 
 
 @dataclass(frozen=True)
@@ -52,20 +87,35 @@ class Destination:
 
 @dataclass(frozen=True)
 class Resolved:
-    """Where the notification goes now, or why it cannot go anywhere.
+    """Where the notification goes now, or why it does not go there yet.
 
-    `closed` is a conversation that exists but is resolved (✔). It is not a
-    delivery target: posting into it would un-resolve somebody's finished
-    work, and a watch is not important enough to reopen a conversation.
+    `outcome` is the whole answer; the properties below are only the readable
+    spellings of it. `message_id` is the anchor the conversation was found
+    from — at intake it is what gets persisted, so that every later lookup
+    asks the same question of the same id.
     """
 
+    outcome: str
     conversation: Conversation | None = None
     reason: str = ""
-    closed: bool = False
+    message_id: int | None = None
 
     @property
     def deliverable(self) -> bool:
-        return self.conversation is not None and not self.closed
+        return self.outcome == OPEN
+
+    @property
+    def closed(self) -> bool:
+        return self.outcome == CLOSED
+
+    @property
+    def failed(self) -> bool:
+        return self.outcome == FAILED
+
+    @property
+    def terminal(self) -> bool:
+        """Answered, and the answer is no. The only ground for giving up."""
+        return self.outcome in (ABSENT, CLOSED)
 
 
 def parse(text: str) -> Destination | None:
@@ -90,32 +140,83 @@ def parse(text: str) -> Destination | None:
 
 
 def resolve(client: ZulipClient, destination: Destination) -> Resolved:
-    """Where the notification goes **now**.
+    """Where the notification goes **now**, read from Zulip.
 
-    A deleted anchor is absent, and absent is a terminal answer rather than
-    an invitation to guess: nothing falls back to a topic of the remembered
-    name, because that name may since have been taken over by work this
-    watch knows nothing about.
+    An id is asked about strictly: `None` then means Zulip said the message
+    is not there, and a lookup that never answered is raised and becomes
+    `FAILED` rather than a deletion nobody witnessed.
+
+    A name is resolved by reading the conversation it names — following the
+    ✔ rename, because that is the same conversation under the name it can be
+    read under — and the newest message there becomes the anchor. Nothing
+    falls back to a topic of the remembered name once an id is known: that
+    name may since have been taken over by work this watch knows nothing
+    about.
     """
     if destination.message_id is not None:
-        conversation = conversation_of(client, destination.message_id)
-        if conversation is None:
-            return Resolved(reason=f"message {destination.message_id} is gone")
-        return Resolved(
-            conversation=conversation,
-            closed=conversation.topic.startswith(RESOLVED_TOPIC_PREFIX),
-        )
+        return _by_id(client, destination.message_id)
     named = destination.conversation
     if named is None:
-        return Resolved(reason="no destination was understood")
-    live = live_topic_name(client, named.channel, named.topic)
+        return Resolved(ABSENT, reason="no destination was understood")
+    return _by_name(client, named)
+
+
+def anchored(client: ZulipClient, text: str) -> tuple[Destination | None, Resolved]:
+    """Parse and resolve in one step: what intake and delivery both need.
+
+    Returned together because the pair is the answer — the `Destination` is
+    what the requester wrote and the `Resolved` carries the id it means. A
+    text that is not a destination at all is `(None, ABSENT)`: there is
+    nothing to retry, and the requester has to be asked.
+    """
+    parsed = parse(text)
+    if parsed is None:
+        return None, Resolved(ABSENT, reason=f"{text!r} is not a destination")
+    return parsed, resolve(client, parsed)
+
+
+def _by_id(client: ZulipClient, message_id: int) -> Resolved:
     try:
-        history = client.topic_history(named.channel, live, num_before=1)
-    except Exception as error:  # noqa: BLE001 - an unreadable target is a reason
-        return Resolved(reason=f"cannot read {named.channel}/{live}: {error}")
-    if not history:
-        return Resolved(reason=f"{named.channel}/{named.topic} has no messages")
+        conversation = conversation_of(client, message_id, strict=True)
+    except ZulipRejected as error:
+        # Zulip answered and refused: the message is not there, or not ours
+        # to read. Either way it is an answer, and answers are terminal.
+        return Resolved(ABSENT, reason=f"message {message_id} cannot be read: {error}")
+    except ZulipError as error:
+        return Resolved(
+            FAILED, reason=f"could not look up message {message_id}: {error}",
+            message_id=message_id,
+        )
+    if conversation is None:
+        return Resolved(ABSENT, reason=f"message {message_id} is gone", message_id=message_id)
     return Resolved(
-        conversation=Conversation(named.channel, live),
-        closed=live.startswith(RESOLVED_TOPIC_PREFIX),
+        CLOSED if conversation.topic.startswith(RESOLVED_TOPIC_PREFIX) else OPEN,
+        conversation=conversation,
+        message_id=message_id,
     )
+
+
+def _by_name(client: ZulipClient, named: Conversation) -> Resolved:
+    """The conversation a `<channel>/<topic>` names, and a message in it.
+
+    Read under the bare name and then under the ✔ one, strictly: an empty
+    history must mean the conversation is empty, never that the read failed.
+    A conversation with no messages at all has no anchor to offer and is
+    treated as absent — there is nothing there to have meant.
+    """
+    for live in (named.topic, f"{RESOLVED_TOPIC_PREFIX}{named.topic}"):
+        try:
+            history = client.topic_history(named.channel, live, num_before=1)
+        except ZulipRejected as error:
+            return Resolved(ABSENT, reason=f"cannot read {named.channel}/{live}: {error}")
+        except ZulipError as error:
+            return Resolved(FAILED, reason=f"could not read {named.channel}/{live}: {error}")
+        if history:
+            return Resolved(
+                CLOSED if live.startswith(RESOLVED_TOPIC_PREFIX) else OPEN,
+                conversation=Conversation(named.channel, live),
+                message_id=int(history[-1]["id"]),
+            )
+        if named.topic.startswith(RESOLVED_TOPIC_PREFIX):
+            break
+    return Resolved(ABSENT, reason=f"{named.channel}/{named.topic} has no messages")

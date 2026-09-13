@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import pytest
 
+from agag.zulip import ZulipRejected
+
 SELF_ID = 23
 
 
@@ -28,7 +30,20 @@ class FakeZulip:
         #: Accept the send, then raise — the ambiguous case: the post landed
         #: and the caller never learned that it did.
         self.swallow_next_send = False
+        #: Raised by the next message lookup, then cleared. A `ZulipRejected`
+        #: is Zulip answering "not there"; anything else is a call that never
+        #: got an answer, and the two must not behave alike.
+        self.fail_next_message: Exception | None = None
+        #: Raised by the next topic read, then cleared.
+        self.fail_next_history: Exception | None = None
         self.sent: list[tuple[str, str, str]] = []
+
+    def _take(self, name: str) -> Exception | None:
+        """One injected failure, consumed. An outage that never ends is not
+        an outage, and a test that cannot recover proves nothing."""
+        error = getattr(self, name)
+        setattr(self, name, None)
+        return error
 
     # --- the calls this agent makes ---------------------------------------
     def whoami(self, refresh: bool = False) -> dict:
@@ -41,9 +56,23 @@ class FakeZulip:
         return [topic for (channel, topic) in self.topics if self.stream_id(channel) == stream_id]
 
     def topic_history(self, channel: str, topic: str, num_before: int = 50) -> list[dict]:
+        error = self._take("fail_next_history")
+        if error is not None:
+            raise error
         return list(self.topics.get((channel, topic), []))[-num_before:]
 
-    def message(self, message_id: int) -> dict | None:
+    def message(self, message_id: int, *, strict: bool = False) -> dict | None:
+        """`ZulipClient.message`, including its error policy.
+
+        The policy is the part worth copying: a refusal is absence under both
+        settings, and an unanswered call is absence only when the caller did
+        not ask to be told the difference.
+        """
+        error = self._take("fail_next_message")
+        if error is not None:
+            if strict and not isinstance(error, ZulipRejected):
+                raise error
+            return None
         if message_id in self.deleted:
             return None
         for (channel, topic), messages in self.topics.items():

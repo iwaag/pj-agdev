@@ -88,11 +88,18 @@ def already_delivered(client: ZulipClient, conversation, watch: anchor.Watch, se
 
 
 def route(client: ZulipClient, watch: anchor.Watch) -> dest.Resolved:
-    """Where this watch's notification goes now, resolved from its anchor."""
-    parsed = dest.parse(watch.destination)
-    if parsed is None:
-        return dest.Resolved(reason=f"{watch.destination!r} is not a destination")
-    return dest.resolve(client, parsed)
+    """Where this watch's notification goes now, resolved from its anchor.
+
+    The stored id first and the written name only as the fallback for a watch
+    accepted before destinations were anchored. A name is never consulted
+    once an id exists — that is the whole of the fix: the id answers "which
+    conversation", and the name only ever answered "which conversation is
+    called that today".
+    """
+    anchored_id = watch.destination_id
+    if anchored_id is not None:
+        return dest.resolve(client, dest.Destination(raw=watch.destination, message_id=anchored_id))
+    return dest.anchored(client, watch.destination)[1]
 
 
 def deliver(spec: AgentSpec, client: ZulipClient, watch: anchor.Watch, record: dict[str, Any]) -> bool:

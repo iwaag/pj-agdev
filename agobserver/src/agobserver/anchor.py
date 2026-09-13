@@ -121,7 +121,22 @@ class Watch:
 
     @property
     def destination(self) -> str:
+        """What the requester wrote. For explaining, never for looking up."""
         return str(self.accepted.get("destination") or "")
+
+    @property
+    def destination_id(self) -> int | None:
+        """The message the destination was anchored to at intake.
+
+        This is what a delivery lookup uses. `None` only for a watch accepted
+        before ex1, whose record holds a name and nothing else; such a watch
+        still resolves by name, and that is exactly the behaviour ex1 exists
+        to stop relying on.
+        """
+        try:
+            return int(self.accepted["destination_id"]) or None
+        except (KeyError, TypeError, ValueError):
+            return None
 
     @property
     def requester(self) -> str:
