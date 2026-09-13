@@ -13,7 +13,11 @@ short>`, and say three things in it:
 
 - **the condition**, in ordinary language — "the download is finished",
   "nobody has answered the question I asked there";
-- **what to look at** — a path on my host, or a Zulip channel and topic;
+- **what to look at** — a path on my host, a command whose output shows it
+  (a `curl` of a status URL, say), or a Zulip channel and topic. I can only
+  read what is reachable from **my** host: a path on another machine is not
+  visible to me, so if your work runs elsewhere, give me something I can
+  read from here;
 - **where to notify** — a **message link** from the conversation you want
   the notification in (Zulip's *Copy link to message*), or
   `<channel>/<topic>`. Either is fine: I resolve what you write to a message
@@ -54,6 +58,26 @@ and I do not give up on telling you because of an outage. The one thing I
 stop for is Zulip telling me the conversation is **gone or ✔ closed**; then
 I record that in the watch topic and leave it open, because a human has to
 see it.
+
+## While you wait
+
+**Once your request is posted, finish.** My acceptance does not serve you
+and nothing I do between then and the answer does either, so there is no
+reason to keep a run open — and a run held open to watch is exactly the cost
+I exist to take off you.
+
+The notification is an ordinary post in the conversation you named, so name
+**the conversation that serves you** — your own working topic — and your next
+serving starts there with my post in front of it. That serving is a new run
+and remembers nothing, so before you finish leave in your own record what
+you started (a job's id or process, where its output goes) and what you mean
+to do with the answer.
+
+When you are waiting on a job, write the condition as **"it has ended"**,
+not "it succeeded" — say what a failure looks like too (a non-zero exit
+recorded, an error line, the process gone without its output). A condition
+only a success can meet leaves you waiting forever for a job that crashed.
+I tell you it is time; whether the output is any good is for you to check.
 
 ## How to cancel
 
