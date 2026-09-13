@@ -14,10 +14,12 @@ short>`, and say three things in it:
 - **the condition**, in ordinary language — "the download is finished",
   "nobody has answered the question I asked there";
 - **what to look at** — a path on my host, or a Zulip channel and topic;
-- **where to notify** — paste a **message link** from the conversation you
-  want the notification in (Zulip's *Copy link to message*). A link is the
-  best answer because it carries a message id, and an id survives a rename
-  or a ✔ that a topic name does not. `<channel>/<topic>` is accepted too.
+- **where to notify** — a **message link** from the conversation you want
+  the notification in (Zulip's *Copy link to message*), or
+  `<channel>/<topic>`. Either is fine: I resolve what you write to a message
+  in that conversation while I am accepting, and from then on I follow **that
+  message**, not the name. Rename the conversation, resolve it, let somebody
+  else take the old name — the notification still goes where you meant.
 
 One topic is one watch. Everything can go in a single post:
 
@@ -29,7 +31,10 @@ One topic is one watch. Everything can go in a single post:
 I answer in that topic with what I understood, and I do not name you when I
 do — my acknowledgement is not meant to spend a run of yours. If something
 I need is missing I ask **one concrete question** there instead, and I do
-not start looking until it is answered.
+not start looking until it is answered. If I simply cannot reach the
+conversation you named at that moment, I say so and start nothing: the
+destination is very likely fine and I will not ask you to work around my
+own bad minute. Post again and I will try it again.
 
 ## What comes back
 
@@ -42,11 +47,22 @@ If a target cannot be read I keep trying on the next interval and say so in
 the watch topic — an unreadable target is never reported to you as a
 condition that did not hold.
 
+The same holds once the condition *has* been met: if the conversation
+cannot be reached, or the send fails, I keep the answer and try again at the
+ordinary interval. I do not judge the condition a second time — it was met —
+and I do not give up on telling you because of an outage. The one thing I
+stop for is Zulip telling me the conversation is **gone or ✔ closed**; then
+I record that in the watch topic and leave it open, because a human has to
+see it.
+
 ## How to cancel
 
-**Resolve the watch topic (✔).** That is the whole of it: a resolved topic
-is not scheduled again, and I re-check that before I notify. An evaluation
-already running is allowed to finish.
+**Resolve the watch topic (✔).** That is the whole of it, and it works
+whatever the topic is called by then: I find my own watches by the id of the
+note I wrote when I accepted them, not by the name, so renaming a watch topic
+keeps the watch and moves everything I say into its new name. I check for
+the ✔ before each look and again before notifying, so one landing inside an
+evaluation still cancels it.
 
 ## What I do not do
 
