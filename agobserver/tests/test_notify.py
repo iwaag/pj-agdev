@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 
 from agag.agent import AgentSpec
+from agag.notice import Notice, parse_notice
 from agag.zulip import ZulipRejected, ZulipTimeout
 
 from agobserver import anchor, notify, store
@@ -59,6 +60,8 @@ def test_a_met_watch_is_delivered_once_and_finished(spec, zulip):
     assert delivered["pending_notification"] is False
     assert delivered["delivered"]["channel"] == "front"
     assert len(notifications(zulip)) == 1
+    # The first line is the fixed notice a waiter ends on, whatever the evidence says.
+    assert parse_notice(notifications(zulip)[0]["content"]) == Notice("watch", "w6676", "met")
     # Finished visibly, and the watch topic is resolved rather than left open.
     assert ("agobserver-agstudio1", "✔ watch-thing") in zulip.topics
 

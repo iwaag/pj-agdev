@@ -51,6 +51,7 @@ from __future__ import annotations
 from typing import Any
 
 from agag.agent import AgentSpec
+from agag.notice import notice_line
 from agag.zulip import ZulipClient, log, topic_write
 
 from . import anchor, destination as dest, store
@@ -70,9 +71,15 @@ def message(watch: anchor.Watch, evidence: str) -> str:
     after an ambiguous send, and what lets the requester find the watch that
     produced it. It names nobody — the post itself is the requester's turn,
     and Zulip's own topic route is what serves them.
+
+    The first line is `agag.notice`'s machine line, written by this code and
+    never by the model: a waiter outside the realm (`agag wait`) ends on it
+    and on nothing else. The model's evidence is the only free text, and it
+    comes after the fixed lines.
     """
     body = " ".join(str(evidence or "").split())[:EVIDENCE_IN_POST]
     return (
+        f"{notice_line(watch.name)}\n"
         f"**Watch `{watch.name}` met** — {watch.condition}\n\n"
         f"{body or '(no evidence was recorded)'}\n\n"
         f"Observed at {watch.target or 'the target you named'}. "
