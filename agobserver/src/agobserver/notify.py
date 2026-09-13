@@ -17,19 +17,33 @@ on:
    them leaves the watch *owed* rather than silently finished. Owed is the
    safe side: the read-back above turns the retry into a no-op.
 
-The remaining crash window is small and named rather than engineered away: a
-crash after Zulip accepted the post but before either the read-back could see
-it or the store was written. The next attempt reads the destination back,
-finds the post, and records it — so the window costs a duplicate only if the
-post is also unreadable at that moment, which is a Zulip outage, not a race.
+The destination is resolved **from the id stored at intake**, at send time,
+so neither a rename nor somebody taking the freed name can redirect the
+notification.
 
-The destination is resolved from its anchor **at send time**, never from the
-name it had when the watch was accepted, so a rename in between does not
-redirect the notification into somebody else's conversation. A destination
-that is gone, or that has been closed with a ✔, is a terminal `undeliverable`
-outcome recorded in the watch topic. Observer does not open a conversation of
-its own to deliver into: a notification nobody asked to receive there is
-worse than a notification that did not arrive.
+**Uncertainty is never terminal.** Three things can go wrong here — the
+destination cannot be read, the read-back cannot be performed, the send
+fails — and all three keep the met result and the pending notification,
+record why, and let the ordinary interval try again. The condition is not
+re-judged: it was met, and a delivery problem is not evidence about the
+world. Only an answer *from Zulip* that the destination is gone or closed
+ends a watch as `undeliverable`, recorded in the watch topic; Observer does
+not open a conversation of its own to deliver into, because a notification
+nobody asked to receive there is worse than one that did not arrive.
+
+What is not claimed: exactly-once in general. Two bounds are worth stating
+plainly.
+
+- The read-back looks at the newest `READBACK_MESSAGES` of the destination.
+  An ambiguous send followed by more than that many messages arriving before
+  the retry would hide the delivery and produce a second one. For a
+  conversation quiet enough to be waited on, this is not a real window; for a
+  busy one it is.
+- A crash after Zulip accepted the post but before the store was written
+  leaves the watch owed. The next attempt reads the destination back, finds
+  the post, and records it — so this costs a duplicate only if the read-back
+  also fails at that moment, and a failing read-back now declines to send at
+  all.
 """
 
 from __future__ import annotations
@@ -72,14 +86,16 @@ def already_delivered(client: ZulipClient, conversation, watch: anchor.Watch, se
     The read-back that makes an ambiguous send safe. Only our own messages
     count, and the marker is the watch's own name — which is a message id, so
     nothing else in the realm can produce it by coincidence.
+
+    **A failed read raises.** `None` has to mean "I looked and there is no
+    delivery there", because the only thing the caller does with `None` is
+    send. Returning it for a read that never happened is how a notification
+    gets posted twice: the first send landed, the check that would have seen
+    it failed, and the failure was read as proof of absence.
     """
-    try:
-        history = client.topic_history(
-            conversation.channel, conversation.topic, num_before=READBACK_MESSAGES
-        )
-    except Exception as error:  # noqa: BLE001 - unknown is not "no"
-        log(f"could not read {conversation} back for {watch.name}: {error}")
-        return None
+    history = client.topic_history(
+        conversation.channel, conversation.topic, num_before=READBACK_MESSAGES
+    )
     marker = f"`{watch.name}`"
     for entry in reversed(history):
         if entry.get("sender_id") == self_id and marker in str(entry.get("content", "")):
@@ -107,9 +123,14 @@ def deliver(spec: AgentSpec, client: ZulipClient, watch: anchor.Watch, record: d
 
     False means *retry later* and nothing has been lost: the watch keeps
     `pending_notification`, stays out of judgment, and the next tick tries
-    again. Terminal failure — a destination that is gone or closed — returns
-    True, because there is nothing left to retry; it is recorded in the watch
-    topic as `undeliverable` and nobody is told.
+    again at the ordinary interval. The condition is never re-judged — it was
+    met, and a delivery problem is not evidence about the world.
+
+    Only a destination Zulip **says** is gone or closed returns True without
+    delivering: that is `undeliverable`, it is recorded in the watch topic,
+    and there is nothing left to retry. A lookup that got no answer is not
+    that, and used to be treated as if it were — which threw away the
+    notification a watch exists to produce because of one bad minute.
     """
     watches = spec.local / "watches"
     self_id = int(client.whoami()["user_id"])
@@ -118,7 +139,9 @@ def deliver(spec: AgentSpec, client: ZulipClient, watch: anchor.Watch, record: d
         return True
 
     resolved = route(client, watch)
-    if resolved.conversation is None or resolved.closed:
+    if resolved.failed:
+        return _retry_later(watches, watch, record, f"the destination could not be read: {resolved.reason}")
+    if resolved.terminal:
         reason = "it is closed (✔)" if resolved.closed else (resolved.reason or "it is gone")
         topic_write(
             watch.topic,
@@ -137,7 +160,15 @@ def deliver(spec: AgentSpec, client: ZulipClient, watch: anchor.Watch, record: d
         log(f"{watch.name} undeliverable: {reason}")
         return True
 
-    existing = already_delivered(client, resolved.conversation, watch, self_id)
+    try:
+        existing = already_delivered(client, resolved.conversation, watch, self_id)
+    except Exception as error:  # noqa: BLE001 - unknown is not "no"
+        # Sending now would risk the second notification the read-back exists
+        # to prevent. Waiting costs the requester one interval.
+        return _retry_later(
+            watches, watch, record,
+            f"could not check {resolved.conversation} for an earlier delivery: {error}",
+        )
     if existing is not None:
         log(f"{watch.name} was already delivered as message {existing}; not repeating")
         message_id = existing
@@ -150,12 +181,7 @@ def deliver(spec: AgentSpec, client: ZulipClient, watch: anchor.Watch, record: d
                 message(watch, evidence),
             )
         except Exception as error:  # noqa: BLE001 - a failed send is retried, not lost
-            store.update(
-                watches, watch.name,
-                delivery_error=str(error), delivery_attempts=int(record.get("delivery_attempts", 0)) + 1,
-            )
-            log(f"{watch.name} delivery failed, will retry: {error}")
-            return False
+            return _retry_later(watches, watch, record, f"the send failed: {error}")
 
     store.update(
         watches, watch.name, state=anchor.MET, pending_notification=False,
@@ -170,6 +196,24 @@ def deliver(spec: AgentSpec, client: ZulipClient, watch: anchor.Watch, record: d
     _finish(client, watch, watches, anchor.MET, resolved.conversation, message_id)
     log(f"{watch.name} delivered to {resolved.conversation} as message {message_id}")
     return True
+
+
+def _retry_later(watches, watch: anchor.Watch, record: dict[str, Any], reason: str) -> bool:
+    """Keep the met result and the pending notification, and say why.
+
+    The one shape every uncertain outcome takes, so that there is exactly one
+    place where "it did not work this time" is written down and exactly one
+    thing it does: nothing terminal. `pending_notification` is deliberately
+    not touched — it is already true, and a watch that owes a notification
+    keeps owing it.
+    """
+    store.update(
+        watches, watch.name,
+        delivery_error=reason,
+        delivery_attempts=int(record.get("delivery_attempts", 0)) + 1,
+    )
+    log(f"{watch.name} not delivered this time, will retry: {reason}")
+    return False
 
 
 def _finish(client, watch, watches, state, conversation=None, message_id=None) -> None:

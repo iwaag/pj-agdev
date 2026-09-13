@@ -336,15 +336,19 @@ class Worker:
             return 0
         evaluated = 0
         for record in due:
-            if record.get(PENDING):
-                # Met already; it owes a notification, not another judgment.
-                self._hand_over(self.watch_of(record), record)
-                continue
             try:
-                self.evaluate_one(record)
+                if record.get(PENDING):
+                    # Met already; it owes a notification, not another judgment.
+                    self._hand_over(self.watch_of(record), record)
+                else:
+                    self.evaluate_one(record)
+                    evaluated += 1
             except Exception as error:  # noqa: BLE001 - one watch never ends the loop
-                log(f"evaluating {record.get('watch')} failed: {error!r}")
-            evaluated += 1
+                # Delivery is inside the guard as well as evaluation: a watch
+                # whose destination is unreachable owes a notification for as
+                # long as that lasts, and it must not take the tick — and so
+                # every other watch — down with it.
+                log(f"{record.get('watch')} failed this tick: {error!r}")
         return evaluated
 
     def run(self, stop: threading.Event | None = None) -> None:

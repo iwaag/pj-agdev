@@ -336,3 +336,40 @@ def test_a_nonsense_interval_is_the_default_not_a_crash(monkeypatch):
     assert worker.interval_seconds() == worker.DEFAULT_INTERVAL_SECONDS
     monkeypatch.setenv(worker.INTERVAL_ENV, "15")
     assert worker.interval_seconds() == 15
+
+
+# --- a watch owing a notification (ex1 step 3) -----------------------------
+
+
+def test_an_undelivered_watch_is_not_re_judged_and_does_not_block_the_others(spec, zulip):
+    """Two properties of one tick, because they share a cause.
+
+    A met watch owes a notification, not another look — re-judging it would
+    spend a model call on a question already answered, and could answer it
+    differently. And a delivery that keeps failing must not take the tick
+    down with it: the other watches are waiting on their own conditions.
+    """
+    first = open_watch(zulip, "watch-a")
+    second = open_watch(zulip, "watch-b")
+    verdicts = {f"w{first}": observe.MET, f"w{second}": observe.NOT_MET}
+    looked = []
+
+    def evaluate(_spec, watch, previous):
+        looked.append(watch.name)
+        return observe.Observation(verdicts[watch.name], evidence="stub")
+
+    def deliver(client, watch, record):
+        raise RuntimeError("the destination is unreachable")
+
+    made = worker.Worker(spec, zulip, interval=60, evaluate=evaluate, deliver=deliver)
+    made.reconcile()
+    made.ticks = 1
+    made.tick()
+    assert sorted(looked) == sorted([f"w{first}", f"w{second}"])
+
+    made.ticks = 1
+    made.tick()
+    # The met watch was not looked at again; the other one was.
+    assert looked.count(f"w{first}") == 1
+    assert looked.count(f"w{second}") == 2
+    assert store.load(spec.local / "watches", f"w{first}")[worker.PENDING] is True

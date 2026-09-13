@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 
 from agag.agent import AgentSpec
+from agag.zulip import ZulipRejected, ZulipTimeout
 
 from agobserver import anchor, notify, store
 
@@ -149,3 +150,95 @@ def test_the_destination_follows_a_rename(spec, zulip):
     assert notify.deliver(spec, zulip, watch, record_for(spec, watch)) is True
     assert len(notifications(zulip, "front", "front-renamed")) == 1
     assert notifications(zulip, "front", "front-x") == []
+
+
+# --- uncertainty is retried, not concluded (ex1 step 3) --------------------
+
+
+def anchored(zulip, channel="front", topic="front-x"):
+    """A watch whose destination is an id, which is what intake now stores."""
+    anchor_id = zulip.post(channel, topic, "the request")
+    zulip.post(WATCH.channel, WATCH.topic, "please watch this")
+    return replace(
+        WATCH,
+        accepted={**WATCH.accepted, "destination_id": anchor_id},
+    ), anchor_id
+
+
+def test_a_destination_that_cannot_be_read_is_retried_not_abandoned(spec, zulip):
+    """The defect: one failed lookup threw the notification away for good."""
+    watch, _ = anchored(zulip)
+    zulip.fail_next_message = ZulipTimeout("timed out")
+
+    assert notify.deliver(spec, zulip, watch, record_for(spec, watch)) is False
+    held = store.load(spec.local / "watches", watch.name)
+    assert held["state"] == anchor.ACTIVE            # not undeliverable
+    assert held["pending_notification"] is True      # still owed
+    assert "could not be read" in held["delivery_error"]
+    assert notifications(zulip) == []
+    # And nothing was said in the watch topic about being unable to deliver.
+    said = " ".join(e["content"] for e in zulip.topic_history(watch.channel, watch.topic, 100))
+    assert "could not be delivered" not in said
+
+    assert notify.deliver(spec, zulip, watch, held) is True
+    assert len(notifications(zulip)) == 1
+
+
+def test_a_failed_read_back_does_not_send(spec, zulip):
+    """A read-back that could not run is not proof that nothing is there.
+
+    The ambiguous send already landed; treating the failed check as "no
+    delivery found" is exactly how the requester gets told twice.
+    """
+    watch, _ = anchored(zulip)
+    zulip.swallow_next_send = True
+    assert notify.deliver(spec, zulip, watch, record_for(spec, watch)) is False
+    assert len(notifications(zulip)) == 1            # it really did land
+
+    zulip.fail_next_history = ZulipTimeout("timed out")
+    held = store.load(spec.local / "watches", watch.name)
+    assert notify.deliver(spec, zulip, watch, held) is False
+    assert len(notifications(zulip)) == 1            # and was not repeated
+    assert "could not check" in store.load(spec.local / "watches", watch.name)["delivery_error"]
+
+    held = store.load(spec.local / "watches", watch.name)
+    assert notify.deliver(spec, zulip, watch, held) is True
+    assert len(notifications(zulip)) == 1
+    assert store.load(spec.local / "watches", watch.name)["state"] == anchor.MET
+
+
+def test_a_restart_while_delivery_is_pending_still_delivers_once(spec, zulip):
+    """Nothing is held in memory: the store is the whole of what carries over."""
+    watch, _ = anchored(zulip)
+    zulip.fail_next_send = ConnectionError("zulip is down")
+    assert notify.deliver(spec, zulip, watch, record_for(spec, watch)) is False
+
+    # The process ends here. What a new one has is the file.
+    revived = store.load(spec.local / "watches", watch.name)
+    assert revived["pending_notification"] is True
+    assert revived["last_result"] == RESULT             # the met result is intact
+    assert notify.deliver(spec, zulip, watch, revived) is True
+    assert len(notifications(zulip)) == 1
+
+
+def test_a_deleted_destination_is_still_terminal(spec, zulip):
+    """Retrying uncertainty must not make a real deletion retry forever."""
+    watch, anchor_id = anchored(zulip)
+    zulip.deleted.add(anchor_id)
+
+    assert notify.deliver(spec, zulip, watch, record_for(spec, watch)) is True
+    stored = store.load(spec.local / "watches", watch.name)
+    assert stored["state"] == anchor.UNDELIVERABLE
+    assert stored["pending_notification"] is False
+
+
+def test_a_refused_destination_lookup_is_terminal_and_a_silent_one_is_not(spec, zulip):
+    """The whole distinction, on one watch: Zulip's "no" ends it, silence does not."""
+    watch, _ = anchored(zulip)
+    zulip.fail_next_message = ZulipTimeout("timed out")
+    assert notify.deliver(spec, zulip, watch, record_for(spec, watch)) is False
+
+    zulip.fail_next_message = ZulipRejected("GET messages/1 -> HTTP 400: Invalid message(s)")
+    held = store.load(spec.local / "watches", watch.name)
+    assert notify.deliver(spec, zulip, watch, held) is True
+    assert store.load(spec.local / "watches", watch.name)["state"] == anchor.UNDELIVERABLE
