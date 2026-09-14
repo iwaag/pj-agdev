@@ -14,10 +14,15 @@ know which ComfyUI to poll. The host lives in the installed copy only.
 
 `com.agdev.agentroom.plist.in` is the agdevworld relay (`agdevworld/agentroom`,
 loopback `:8094`). It has no extra placeholder, but it does have a reason to
-exist that the others do not: its `/ops` half is a *running* reconstruction of
-the realm, so every restart costs a full sweep and a stretch of `unknown` rows.
-`ThrottleInterval` is therefore 30 s rather than launchd's default 10, so a
-crash loop cannot spend the agents' Zulip quota at full speed.
+exist that the others do not: its boards are a *running* reconstruction of
+the realm — since `better_zulip_call` p1 a persisted mirror on the relay's
+own credential (`OPSROOM_ZULIP_ENV`), whose event queue is delivered only
+while somebody polls it. A restart within Zulip's queue lifetime resumes the
+queue and reads nothing; a longer outage costs one paged read of the realm
+(62 calls on this realm). `ThrottleInterval` is 30 s rather than launchd's
+default 10 all the same, so a crash loop cannot spend the quota at speed.
+`AGENTROOM_ZULIP_ENV`, the former per-request read credential, is gone from
+the template; an installed copy that still sets it is told so at startup.
 
 Since `operation_room` p3 it also carries `AGENTROOM_CHAT_ZULIP_ENV`, the
 relay's **write** credential — the Developer's, because a post from the
