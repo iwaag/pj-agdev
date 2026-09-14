@@ -256,10 +256,24 @@ class CommandIntake:
                 if event.get("type") != "message":
                     continue
                 message = event.get("message") or {}
-                flagged = "mentioned" in (event.get("flags") or [])
-                if not flagged and not MENTION.search(str(message.get("content") or "")):
+                if not self.addressed(message, event.get("flags")):
                     continue
                 self.handle_event_message(message)
+
+    def addressed(self, message: dict[str, Any], flags=None) -> bool:
+        """Whether this message names **this bot** — Zulip's `mentioned` flag
+        on our own queue, or our own name in the text.
+
+        The narrow answered only our mentions, so nothing had to ask *who*
+        was mentioned. The queue carries every public message, and a post
+        naming somebody else is not a command: reading it as one posted a
+        refusal into Front's conversation and bought a paid run (met live,
+        `better_zulip_call` p1 step 7, on the first request after the switch).
+        """
+        if "mentioned" in (flags or []):
+            return True
+        content = str(message.get("content") or "")
+        return f"@**{self.bot_name}**" in content or f"@_**{self.bot_name}**" in content
 
     def handle_event_message(self, message: dict[str, Any]) -> int:
         """One message off the queue: a command if it is one and newer than

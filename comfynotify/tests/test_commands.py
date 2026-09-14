@@ -191,3 +191,19 @@ def test_a_failing_reaction_never_costs_the_ticket(tmp_path):
     assert intake.catch_up() == 1
     assert len(load_tickets(tmp_path / "tickets")) == 1
     assert any("ack failed" in line for line in log)
+
+
+def test_the_queue_path_reads_only_mentions_of_this_bot(tmp_path):
+    """The narrow used to answer only our mentions; the queue carries every
+    public message, and a post that names somebody else is not a command —
+    reading one as such posted a refusal into Front's conversation."""
+    from comfynotify.commands import CommandIntake
+
+    intake = CommandIntake(
+        object(), tickets_dir=tmp_path / "t", state_path=tmp_path / "s.json", comfyui_url="http://c",
+        bot_name="Comfy Notifier", self_id=21, send=lambda *a: None, log=lambda *a: None,
+    )
+    assert intake.addressed({"content": "@**Omni Agent** may I contact the Observer?"}) is False
+    assert intake.addressed({"content": "@**Comfy Notifier** watch abc"}) is True
+    assert intake.addressed({"content": "@_**Comfy Notifier** watch abc"}) is True
+    assert intake.addressed({"content": "nothing"}, flags=["mentioned"]) is True
