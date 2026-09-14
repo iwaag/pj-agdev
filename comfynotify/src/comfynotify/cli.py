@@ -92,12 +92,19 @@ def daemon(args: argparse.Namespace) -> int:
         from agag.zulip import live_topic_name
 
         notifier.live_topic = lambda channel, topic: live_topic_name(intake.client, channel, topic)
-    while True:
-        if intake is not None:
+    if intake is not None:
+        if args.once:
             try:
-                intake.sweep_once()
+                intake.catch_up()
             except Exception as error:  # noqa: BLE001 — Zulip being down is not fatal
-                notifier.log(f"command sweep failed: {error}")
+                notifier.log(f"command catch-up failed: {error}")
+        else:
+            # Commands arrive on their own thread, from the event queue; the
+            # ticket loop below touches ComfyUI and the local files only.
+            import threading
+
+            threading.Thread(target=intake.run, name="command-intake", daemon=True).start()
+    while True:
         notifier.sweep_once()
         if args.once:
             return 0

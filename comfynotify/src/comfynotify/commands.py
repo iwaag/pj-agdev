@@ -5,10 +5,12 @@ project's CLI on its PATH. So the command *is* a Zulip post:
 
     @**Comfy Notifier** watch <prompt_id> [free text kept as the note]
 
-The mention narrow (`is:mentioned`) is the intake because it reaches public
-channels the bot never subscribed to, and because a command posted while the
-daemon was down is still returned after a restart. Three rules shape the rest
-of this module:
+The intake is an **event queue** registered for every public channel
+(`better_zulip_call` p1 step 5): a command reaches the daemon the moment it
+is posted, in a channel the bot never joined. The mention narrow
+(`is:mentioned`) is read once at startup and after a queue expiry, because a
+command posted while the daemon was down is still returned by it. Three rules
+shape the rest of this module:
 
 - **The ack is a reaction, never a post.** A bot message in a `workrun-` topic
   re-serves that topic's owner — it is the resume mechanism — so acking with
@@ -148,7 +150,7 @@ def commandable(messages: Iterable[dict[str, Any]], self_id: int, mark: int) -> 
 
 
 class CommandIntake:
-    """The daemon's second sweep: Zulip mentions in, tickets out."""
+    """The daemon's command door: Zulip mentions in, tickets out."""
 
     def __init__(
         self,
@@ -173,7 +175,15 @@ class CommandIntake:
         self.log = log
         self.timeout_s = timeout_s
 
-    def sweep_once(self) -> int:
+    def catch_up(self) -> int:
+        """One `is:mentioned` read: what arrived while the daemon was down.
+
+        Startup and queue-expiry recovery, and the only place the narrow is
+        read any more — the steady state is the event queue in `run()`.
+        `better_zulip_call` p1 step 1 measured the old five-second poll of
+        this narrow at 696 calls an hour, 78 % of the realm's API traffic,
+        every one of them reading the same answer.
+        """
         state = read_state(self.state_path)
         messages = self.client.mentions()
         mark = state.get("last_message_id")
@@ -196,6 +206,74 @@ class CommandIntake:
             self._handle(message, state)
             handled += 1
         return handled
+
+    def run(self, stop=None, *, log_polls: bool = False) -> None:
+        """Follow the event queue: a message that mentions this bot is a
+        command the moment it lands. Blocks until `stop` is set.
+
+        Registered for every public channel (`all_public_streams`), so a
+        command in a channel the bot never joined reaches it — the same
+        reach the narrow had. A dead queue is recovered by one narrow read
+        (`catch_up`) and a fresh registration; a 429 is waited out with the
+        queue kept.
+        """
+        import threading
+
+        from agag.zulip import QueueExpired, RateLimited, ZulipError, ZulipTimeout, rate_limit_backoff
+
+        stop = stop if stop is not None else threading.Event()
+        queue_id = None
+        last_event_id = -1
+        strikes = 0
+        while not stop.is_set():
+            try:
+                if queue_id is None:
+                    self.catch_up()
+                    queue_id, last_event_id = self.client.register(
+                        ["message"], all_public_streams=True, fetch_event_types=[])
+                    self.log(f"command intake on the event queue {queue_id}")
+                events = self.client.poll(queue_id, last_event_id)
+            except ZulipTimeout:
+                continue
+            except QueueExpired:
+                self.log("command intake queue expired; catching up and re-registering")
+                queue_id = None
+                continue
+            except RateLimited as limited:
+                strikes += 1
+                delay = rate_limit_backoff(limited.retry_after, strikes)
+                self.log(f"command intake rate limited: {limited}; waiting {delay:.0f}s")
+                stop.wait(delay)
+                continue
+            except ZulipError as error:
+                self.log(f"command intake poll failed: {error}; retrying in 5s")
+                queue_id = None
+                stop.wait(5.0)
+                continue
+            strikes = 0
+            for event in events:
+                last_event_id = max(last_event_id, int(event.get("id", last_event_id)))
+                if event.get("type") != "message":
+                    continue
+                message = event.get("message") or {}
+                flagged = "mentioned" in (event.get("flags") or [])
+                if not flagged and not MENTION.search(str(message.get("content") or "")):
+                    continue
+                self.handle_event_message(message)
+
+    def handle_event_message(self, message: dict[str, Any]) -> int:
+        """One message off the queue: a command if it is one and newer than
+        the mark, handled exactly as the narrow's would be."""
+        state = read_state(self.state_path)
+        mark = state.get("last_message_id")
+        if not isinstance(mark, int):
+            mark = 0
+        found = commandable([message], self.self_id, mark)
+        for one in found:
+            state["last_message_id"] = int(one["id"])
+            write_state(self.state_path, state)
+            self._handle(one, state)
+        return len(found)
 
     def _handle(self, message: dict[str, Any], state: dict[str, Any]) -> None:
         channel = str(message.get("display_recipient") or "")

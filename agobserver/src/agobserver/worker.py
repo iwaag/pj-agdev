@@ -1,7 +1,7 @@
 """The due-watch trigger: the only thing in this agent that is a clock.
 
-Nothing posts when a file finishes downloading. `sweep_serve` reacts to
-posts and `on_sweep` fires on startup and queue re-registration, so a watch
+Nothing posts when a file finishes downloading. `agag.listen` reacts to
+posts and its recovery runs at startup and after a resync, so a watch
 served only by the listener's triggers is evaluated once and then never
 again. This is the missing trigger, and it is a thread beside the listener
 rather than a launchd change — a plist restarts a process, it does not make

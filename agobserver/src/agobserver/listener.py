@@ -7,9 +7,9 @@ never has to guess whether their topic name was the magic one. `watch-` is
 the recommended name and the prefix swept in any other subscribed channel,
 which is where a watch requested from somewhere else would arrive.
 
-Waiting is *not* here, and cannot be. `sweep_serve` reacts to posts, and
-`on_sweep` fires on startup and queue re-registration — neither is a timer,
-and nothing posts when a file finishes downloading. So a watch that only ever
+Waiting is *not* here, and cannot be. `agag.listen` reacts to posts, and
+its recovery runs at startup and after a resync — neither is a timer, and
+nothing posts when a file finishes downloading. So a watch that only ever
 ran on the listener's triggers would be evaluated once and then never again.
 The due-watch trigger is a separate periodic worker; this module is only the
 door a watch comes in through.
