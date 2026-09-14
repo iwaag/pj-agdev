@@ -18,7 +18,10 @@ Three properties the loop is built around:
   evaluating and once again immediately before notifying, because the ✔ may
   land during the evaluation it is meant to cancel. Asking the id rather than
   the remembered name is what makes a renamed watch continue, a renamed and
-  then resolved one cancel, and an outage conclude nothing at all.
+  then resolved one cancel, and an outage conclude nothing at all. Since
+  `better_zulip_call` p1 step 6 the first look is read off the listener's
+  mirror and costs no call; only a terminal answer, and the look right
+  before a notification, ask Zulip.
 
 Evaluation is sequential. One watch at a time, each bounded, is enough for
 this phase and it makes "why did nothing happen for two minutes" answerable
@@ -34,6 +37,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agag.agent import AgentSpec
+from agag.selfnote import Conversation
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
 
 from . import anchor, destination as dest, observe, store
@@ -83,9 +87,17 @@ class Worker:
         deliver: Callable[[ZulipClient, anchor.Watch, dict[str, Any]], bool] | None = None,
         evaluate=observe.evaluate,
         clock: Callable[[], float] = time.monotonic,
+        mirror=None,
     ) -> None:
         self.spec = spec
         self.client = client
+        #: The listener's mirror (`better_zulip_call` p1 step 6). With it the
+        #: schedule, a watch's location and its cancellation are read from
+        #: the index — no Zulip call per tick — and Zulip is asked only to
+        #: confirm a terminal answer: a ✔, a deleted anchor, and the location
+        #: right before a notification. Without it every look is a call, as
+        #: before.
+        self.mirror = mirror
         self.interval = interval if interval is not None else interval_seconds()
         #: Step 3 plugs delivery in here. Without one a met watch is recorded
         #: and held `pending_notification`; nothing is lost and nothing is sent.
@@ -116,17 +128,23 @@ class Worker:
         schedule with no previous observation, which is exactly right.
         """
         channel = self.spec.instance_name()
-        try:
-            topics = self.client.channel_topics(self.client.stream_id(channel))
-        except Exception as error:  # noqa: BLE001 - a failed read is not a cancelled watch
-            log(f"reconcile skipped: cannot list {channel!r}: {error}")
-            return 0
-        found = 0
-        for topic in topics:
-            if topic.startswith(RESOLVED_TOPIC_PREFIX):
-                continue
+        if self.mirror is not None:
+            # The index knows every open topic of the channel and holds each
+            # whole: the whole reconcile is local.
+            listed = [(t.live_name, self.mirror.history(channel, t.live_name, num_before=anchor.HISTORY,
+                                                          across_resolve=False))
+                      for t in self.mirror.topics(channel, include_resolved=False)]
+        else:
             try:
-                watch = anchor.read_watch(self.client, channel, topic, self.self_id)
+                names = self.client.channel_topics(self.client.stream_id(channel))
+            except Exception as error:  # noqa: BLE001 - a failed read is not a cancelled watch
+                log(f"reconcile skipped: cannot list {channel!r}: {error}")
+                return 0
+            listed = [(name, None) for name in names if not name.startswith(RESOLVED_TOPIC_PREFIX)]
+        found = 0
+        for topic, history in listed:
+            try:
+                watch = anchor.read_watch(self.client, channel, topic, self.self_id, history=history)
             except Exception as error:  # noqa: BLE001
                 log(f"reconcile skipped {channel!r}/{topic!r}: {error}")
                 continue
@@ -153,8 +171,15 @@ class Worker:
             found += 1
         return found
 
-    def locate(self, record: dict[str, Any]) -> dest.Resolved:
+    def locate(self, record: dict[str, Any], *, verify: bool = False) -> dest.Resolved:
         """Where this watch is now, asked of the watch's **own anchor id**.
+
+        With a mirror the answer is read from the index, and Zulip is asked
+        only when the answer would be terminal — a ✔ or a missing anchor —
+        or when `verify` says the moment is one (right before a
+        notification): the mirror may lag an event, and stopping a watch on
+        a lagging copy is the one mistake this must not make. An open answer
+        off the index costs nothing, which is what makes a tick free.
 
         The one question that answers cancellation, renaming and removal at
         once, because all three are facts about the anchor message:
@@ -180,6 +205,13 @@ class Worker:
             return dest.Resolved(
                 dest.FAILED, reason=f"{record.get('watch')!r} carries no anchor id"
             )
+        if self.mirror is None:
+            return dest.at_message(self.client, watch_id)
+        held = self.mirror.message(watch_id)
+        if held is not None and not held.resolved and not verify:
+            return dest.Resolved(dest.OPEN, conversation=Conversation(held.channel, held.topic),
+                                 message_id=watch_id)
+        # Terminal locally, or a moment that must be right: one targeted read.
         return dest.at_message(self.client, watch_id)
 
     def relocated(self, record: dict[str, Any], located: dest.Resolved) -> dict[str, Any]:
@@ -269,7 +301,7 @@ class Worker:
         except Exception as error:  # noqa: BLE001
             log(f"could not report the failure streak of {watch.name}: {error}")
 
-    def stand_down(self, record: dict[str, Any]) -> dict[str, Any] | None:
+    def stand_down(self, record: dict[str, Any], *, verify: bool = False) -> dict[str, Any] | None:
         """`record`, refreshed, or `None` when this watch must not go on.
 
         Both of the moments the plan names — before observing and again
@@ -284,7 +316,7 @@ class Worker:
           watch keeps its state and its pending notification.
         """
         name = str(record.get("watch"))
-        located = self.locate(record)
+        located = self.locate(record, verify=verify)
         if located.closed:
             store.update(
                 self.watches_dir, name,
@@ -315,7 +347,7 @@ class Worker:
         this watch goes into the watch's own topic, and that topic may have
         been renamed while the model was looking.
         """
-        record = self.stand_down(record)
+        record = self.stand_down(record, verify=True)
         if record is None:
             return
         watch = self.watch_of(record)
@@ -328,7 +360,8 @@ class Worker:
 
     def tick(self) -> int:
         """One pass. Returns how many watches were evaluated."""
-        if self.ticks % RECONCILE_EVERY == 0:
+        if self.mirror is not None or self.ticks % RECONCILE_EVERY == 0:
+            # Free off the index, so every tick; a call per topic without it.
             self.reconcile()
         self.ticks += 1
         due = self.scheduled()
@@ -371,7 +404,8 @@ def start(spec: AgentSpec, **kwargs) -> Worker:
     """Run the worker on its own daemon thread, with its own Zulip client.
 
     Its own client because the listener's is being polled on another thread;
-    the skeleton already does the same for its DM route.
+    the skeleton already does the same for its DM route. `mirror=` is the
+    listener's mirror, shared so the schedule is read off it.
     """
     worker = Worker(spec, ZulipClient.from_env(spec.zulip_env), **kwargs)
     threading.Thread(target=worker.run, name="observer-worker", daemon=True).start()

@@ -59,13 +59,21 @@ SPEC = AgentSpec(
 
 
 def main() -> None:
-    # The clock first: it recovers the schedule from the channel by itself, so
+    from agag.mirror import Mirror
+    from agag.zulip import log
+
+    # One mirror for both: the listener's intake and the worker's schedule
+    # read the same copy of the realm (`better_zulip_call` p1 step 6).
+    mirror = Mirror.open(SPEC.zulip_env, SPEC.local / "mirror", log=log)
+    # The clock first: it recovers the schedule from the index by itself, so
     # a restart resumes every active watch without waiting for anybody to post.
     worker.start(
         SPEC,
         deliver=lambda client, watch, record: notify.deliver(SPEC, client, watch, record),
+        mirror=mirror,
     )
-    listener_main(SPEC, {}, entrance=lambda client, channel, topic: handle_watch(SPEC, client, channel, topic))
+    listener_main(SPEC, {}, entrance=lambda client, channel, topic: handle_watch(SPEC, client, channel, topic),
+                  mirror=mirror)
 
 
 if __name__ == "__main__":
