@@ -43,3 +43,12 @@ allowed_tools = "Read,Write,Edit,Glob,Grep,Bash"
 profile = "local"
 requires = []
 allowed_tools = "Read,Write,Edit,Glob,Grep,Bash"
+
+# A contribution to an argue (`argue` p1): named in `#argue`, Observer
+# answers in place about what can be waited on and watched. One run per
+# invitation, on the paid model — an argue is a conversation, not a poll —
+# with the reading tools only; a watch is still opened in its own channel.
+[roles.argue]
+profile = "sonnet"
+requires = []
+allowed_tools = "Read,Glob,Grep"

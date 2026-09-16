@@ -72,8 +72,13 @@ def main() -> None:
         deliver=lambda client, watch, record: notify.deliver(SPEC, client, watch, record),
         mirror=mirror,
     )
+    from .argue import handle_mention
+
+    # The mention route answers argue invitations only (`agobserver.argue`);
+    # every other mention of this bot is logged and left, which is what kept
+    # Front's thank-you for a notification from buying a run here.
     listener_main(SPEC, {}, entrance=lambda client, channel, topic: handle_watch(SPEC, client, channel, topic),
-                  mirror=mirror)
+                  on_mention=handle_mention, mirror=mirror)
 
 
 if __name__ == "__main__":
