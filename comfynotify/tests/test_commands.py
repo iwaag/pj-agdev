@@ -207,3 +207,26 @@ def test_the_queue_path_reads_only_mentions_of_this_bot(tmp_path):
     assert intake.addressed({"content": "@**Comfy Notifier** watch abc"}) is True
     assert intake.addressed({"content": "@_**Comfy Notifier** watch abc"}) is True
     assert intake.addressed({"content": "nothing"}, flags=["mentioned"]) is True
+
+
+def test_a_memo_is_never_a_command_on_either_path(tmp_path):
+    """`argue` p2: a memo channel is presentation only. Front's re-voicing
+    quotes command lines and names this bot; a well-formed command and a
+    malformed one are both left alone there — no ticket, no reaction, no
+    refusal post — live, on catch-up, and under ✔."""
+    intake, client, posts, _ = build(tmp_path, [])
+    intake.catch_up()
+    memos = [
+        mention(800, f"@**{BOT}** watch abc-123", channel="memo", topic="argue-x-s1"),
+        mention(801, f"@**{BOT}** this is prose, not a command", channel="memo-frontdesk", topic="desk-s2"),
+        mention(802, f"@**{BOT}** watch abc-456", channel="memo", topic="✔ argue-x-s1"),
+    ]
+    for one in memos:
+        assert intake.addressed(one, flags=["mentioned"]) is False
+        assert intake.handle_event_message(one) == 0
+    client.messages += memos
+    assert intake.catch_up() == 0
+    assert load_tickets(tmp_path / "tickets") == [] and posts == [] and client.reactions == []
+    # The same line anywhere else is still a command.
+    client.messages.append(mention(803, f"@**{BOT}** watch abc-123"))
+    assert intake.catch_up() == 1

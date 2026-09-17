@@ -21,6 +21,13 @@ shape the rest of this module:
   it may answer by naming this bot again; `zulip_command` step 4 watched
   exactly that start between the notifier and Front, one paid run per lap.
   One line per topic is enough for a person and cannot become a loop.
+- **A memo is never a command** (`argue` p2, `agag.memo`). A conversation in
+  a memo channel is presentation only; Front's character re-voicing quotes
+  what agents said, this bot's name and whole command lines included. This
+  intake accepts commands under `✔ ` on purpose, so a checkmark could never
+  be that silence: the channel is, asked here on both the live queue and the
+  catch-up narrow, before the mark moves and before anything is parsed — no
+  ticket, no reaction, no refusal post.
 - **The mention is never consumed.** Answering it does not remove it from the
   narrow, so a high-water mark on disk is what stops a restart re-ticketing
   every command a topic ever carried.
@@ -32,6 +39,8 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Callable, Iterable
+
+from agag.memo import is_memo_message
 
 from .tickets import DEFAULT_TIMEOUT_S, now, replace_ticket, write_ticket
 
@@ -141,6 +150,8 @@ def commandable(messages: Iterable[dict[str, Any]], self_id: int, mark: int) -> 
             continue
         if SELFNOTE_MARK in str(message.get("content") or ""):
             continue
+        if is_memo_message(message):
+            continue  # presentation, not a request: quoted commands stay quotes
         if int(message.get("id") or 0) <= mark:
             continue
         if not str(message.get("subject") or "") or not str(message.get("display_recipient") or ""):
@@ -270,6 +281,8 @@ class CommandIntake:
         refusal into Front's conversation and bought a paid run (met live,
         `better_zulip_call` p1 step 7, on the first request after the switch).
         """
+        if is_memo_message(message):
+            return False
         if "mentioned" in (flags or []):
             return True
         content = str(message.get("content") or "")
