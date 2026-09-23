@@ -740,6 +740,14 @@ class Monitor:
             f"`{record['topic']}` in my channel; after that I report it and stop asking.",
         ])
         where = self.where(origin[2]) or (origin[0], origin[1])
+        if candidate.kind == "undelivered" and candidate.evidence:
+            # The answer, named for the requester's listener: the serving
+            # this request starts is its receipt once it replies (`owed`),
+            # which is what lets the next look see the recovery at all.
+            from agag.selfnote import Conversation, owed_note
+
+            self.post(where[0], where[1], owed_note(Conversation(candidate.channel, candidate.topic),
+                                                    int(candidate.evidence[0])))
         return self.post(where[0], where[1], text)
 
     def find(self, record: dict[str, Any], result):

@@ -353,3 +353,22 @@ def test_a_closed_origin_with_unfinished_work_is_reported_once(world):
     assert len(reports) == 1 and "✔" in reports[0]
     assert not [m for m in requests(world) if m["subject"].startswith("✔")], "nobody asked in the ✔ origin"
     assert posted
+
+
+def test_an_undelivered_answer_taken_up_on_request_is_verified_by_its_receipt(world, undelivered):
+    """The request names the answer (`[selfnote][owed]`); the requester's
+    listener marks it served after the serving that processed the request
+    replies; the next look sees the mark and records the rescue."""
+    watcher = world.make()
+    assert "undelivered" in [r["kind"] for r in watcher.tick()]
+    settle(world, lambda: requests(world))
+    owed = [m for m in requests(world) if m["content"].startswith("[selfnote][owed]")]
+    assert owed and str(undelivered) in owed[0]["content"]
+    # What Front's listener does after its reply to that request is delivered.
+    topic = f"workrun-task3-m{world.mission}"
+    post(world.realm, "front", "front-a", "@**Developer** task 3 is done (relayed).", FRONT)
+    mark = post(world.realm, "front", "front-a", f"[selfnote][served] work-m1/{topic} {undelivered}", FRONT)
+    settle(world, lambda: world.mirror.message(mark) is not None)
+    world.clock.now += 120
+    rescued = [r for r in watcher.tick() if r["kind"] == "undelivered"]
+    assert [r["state"] for r in rescued] == [monitoring.RESCUED]
