@@ -69,8 +69,9 @@ def test_a_stuck_judgment_holds_only_itself(world, tmp_path):
     release.set()
     deadline = time.time() + 5
     while time.time() < deadline and health(tmp_path)["judgment"]["running"]:
-        watcher.write_health()
-        time.sleep(0.05)
+        time.sleep(0.05)  # the judge rewrites the record itself when it ends
+    assert health(tmp_path)["judgment"]["running"] is None
+    assert health(tmp_path)["judgment"]["last"]["verdict"] == "stall"
     world.clock.now += 5
     silent = [r for r in watcher.tick() if r["kind"] == "silent"]
     assert silent and silent[0]["judgment"]["verdict"] == "stall"
@@ -98,3 +99,24 @@ def test_a_monitor_switched_off_says_so(tmp_path, monkeypatch):
     spec = SimpleNamespace(local=tmp_path / "local")
     assert monitoring.start(spec, mirror=None) is None
     assert health(tmp_path)["enabled"] is False
+
+
+def test_answers_from_before_the_monitor_began_are_not_judged_by_its_receipts(world):
+    """p2 step 5: the first live look flagged nine finished p1 tasks, whose
+    answers pre-p1 listeners had left unmarked. The service sets the boundary
+    once, at its first start."""
+    from test_monitor import ACK, AUTOLAB, FRONT, post
+
+    topic = f"workrun-task3-m{world.mission}"
+    post(world.realm, "work-m1", topic, f"[selfnote][task] {world.mission}#3", AUTOLAB)
+    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] front/front-a #{min(world.realm.messages)}", FRONT)
+    post(world.realm, "work-m1", topic, "Start task 3.", FRONT)
+    post(world.realm, "work-m1", topic, ACK, AUTOLAB)
+    answer = post(world.realm, "work-m1", topic, "@**Front** task 3 done", AUTOLAB)
+    settle(world, lambda: world.mirror.message(answer) is not None)
+    world.clock.now = world.realm.messages[answer]["timestamp"] + 400
+    watcher = world.make()
+    watcher.receipts_from = answer + 1
+    assert "undelivered" not in [r["kind"] for r in watcher.tick()]
+    watcher.receipts_from = answer
+    assert "undelivered" in [r["kind"] for r in watcher.tick()]

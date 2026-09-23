@@ -84,6 +84,8 @@ SUBSCRIBE_EVERY = 5
 #: this long without a readable look; before that nothing is concluded.
 UNOBSERVABLE_REPORT_SECONDS = 1800
 TRACKED_FILE = "tracked.json"
+#: Facts about this monitor's own history (`receipts_from`).
+STATE_FILE = "monitor-state.json"
 #: The monitor's own progress, read by processes that are not the monitor
 #: (robust_workflow p2 step 4): the relay's watchdog, and a human.
 HEALTH_FILE = "monitor-health.json"
@@ -98,7 +100,9 @@ FAULTS_DIR = "faults"
 DETECTED, RECOVERING, RESCUED, REPORTED, DISMISSED = "detected", "recovering", "rescued", "reported", "dismissed"
 #: The owner or the requester recorded a terminal decision: not a recovery.
 CANCELLED = "cancelled"
-CLOSED = (RESCUED, REPORTED, CANCELLED)
+#: An operator closed an incident the monitor should not have opened.
+WITHDRAWN = "withdrawn"
+CLOSED = (RESCUED, REPORTED, CANCELLED, WITHDRAWN)
 
 #: What the stalled conversation has to show before an incident of each kind
 #: is recovered — the transition it was waiting for, read on a fresh look
@@ -179,7 +183,8 @@ class Monitor:
     def __init__(self, spec: AgentSpec, client: ZulipClient, mirror, *,
                  judge: Callable[..., dict] = triage.judge, clock: Callable[[], float] = time.time,
                  interval: float | None = None, window_hours: float | None = None,
-                 report_to: list[str] | None = None, async_judge: bool = False) -> None:
+                 report_to: list[str] | None = None, async_judge: bool = False,
+                 receipts_from: int = 0) -> None:
         self.spec = spec
         self.client = client
         self.mirror = mirror
@@ -201,6 +206,14 @@ class Monitor:
         #: every other request must not wait for it (p2 step 4). Tests judge
         #: inline.
         self.async_judge = async_judge
+        #: Answers older than this id are not judged `undelivered`. Since p2
+        #: an answer counts as taken up only by a served mark covering it; the
+        #: listeners before p1's last fix (`87ac87e`) skipped a callback in a
+        #: ✔'d topic and left the mark on the post before it, so on their
+        #: records a delivered answer reads unmarked (p2 step 5: nine finished
+        #: p1 tasks flagged on the first look). The service sets it once, at
+        #: its first start, to the newest post it could see then.
+        self.receipts_from = int(receipts_from or 0)
         self._judge_lock = threading.Lock()
         self._judge_wake = threading.Event()
         self._pending_judgments: dict[str, tuple] = {}
@@ -236,7 +249,7 @@ class Monitor:
             return []
         found = []
         for path in sorted(self.store_dir.glob("*.json")):
-            if "~" in path.stem or path.name == TRACKED_FILE:
+            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE):
                 continue  # an ended episode, or the index of tracked requests
             try:
                 found.append(json.loads(path.read_text(encoding="utf-8")))
@@ -311,7 +324,8 @@ class Monitor:
                 gone.add(origin_key(anchor))
                 continue
             looked[origin_key(anchor)] = result
-            for candidate in primary(c for c in stall_candidates(result, now=int(now)) if not self.is_own(c)):
+            for candidate in primary(c for c in stall_candidates(result, now=int(now))
+                                     if not self.is_own(c) and not self.before_receipts(c)):
                 # Our own recovery request, not yet taken up, is the incident
                 # it belongs to — watched by its retry and report — never an
                 # incident of its own (`is_own`).
@@ -431,6 +445,10 @@ class Monitor:
         self.mirror.resync()
         return missing
 
+    def before_receipts(self, candidate: Candidate) -> bool:
+        return candidate.kind == "undelivered" and bool(candidate.evidence) \
+            and 0 < int(candidate.evidence[0]) < self.receipts_from
+
     def is_own(self, candidate: Candidate) -> bool:
         if candidate.kind != "unacknowledged" or not candidate.evidence:
             return False
@@ -441,7 +459,7 @@ class Monitor:
                fresh: bool = True) -> dict[str, Any]:
         key = incident_key(origin[2], candidate)
         record = self.load(key)
-        if record is not None and (record.get("state") in (RESCUED, CANCELLED) or record.get("cleared_at")):
+        if record is not None and (record.get("state") in (RESCUED, CANCELLED, WITHDRAWN) or record.get("cleared_at")):
             # That incident ended — the work moved, or a decision closed it —
             # and this is the same work stalling again: a new incident.
             self.archive(record)
@@ -637,6 +655,10 @@ class Monitor:
         started = self.clock()
         with self._judge_lock:
             self.judging = {"key": key, "topic": topic, "since": started}
+        # The record follows the judgment as well as the cycle: written only
+        # per cycle, a judgment that ended after the last write read as still
+        # running to the watchdog (p2 step 5: a false `judgment_stalled`).
+        self.write_health()
         try:
             if self.fault("triage-stall", consume=False):
                 log(f"monitor: fault injected: the judgment of {topic} is held until the fault file is removed")
@@ -648,6 +670,7 @@ class Monitor:
                 self.judging = None
         self.last_judgment = {"key": key, "topic": topic, "at": self.clock(),
                               "seconds": round(self.clock() - started, 1), "verdict": verdict.get("verdict")}
+        self.write_health()
         log(f"monitor: {topic} judged {verdict.get('verdict')} in {self.last_judgment['seconds']}s: "
             f"{verdict.get('evidence', '')[:200]}")
         return verdict
@@ -908,6 +931,27 @@ def write_health(spec: AgentSpec, record: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def receipts_from(spec: AgentSpec, mirror) -> int:
+    """The newest post this monitor could see when it first started, kept in
+    `STATE_FILE` so a restart does not move it."""
+    path = spec.local / "incidents" / STATE_FILE
+    try:
+        return int(json.loads(path.read_text(encoding="utf-8"))["receipts_from"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    newest = 0
+    deadline = time.time() + 120
+    while not newest and time.time() < deadline:
+        # The mirror fills on its own thread; its first answer is the one.
+        newest = int(mirror.store.newest_id() or 0) if getattr(mirror, "live", False) else 0
+        if not newest:
+            time.sleep(1.0)
+    if newest:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"receipts_from": newest, "since": time.time()}), encoding="utf-8")
+    return newest
+
+
 def start(spec: AgentSpec, mirror, **kwargs) -> Monitor | None:
     """Run the monitor beside the watch worker, on its own client, with its
     judgments on a worker of their own."""
@@ -920,6 +964,13 @@ def start(spec: AgentSpec, mirror, **kwargs) -> Monitor | None:
         return None
     monitor = Monitor(spec, ZulipClient.from_env(spec.zulip_env), mirror, async_judge=True, **kwargs)
     stop = threading.Event()
+
+    def begin() -> None:
+        # On the monitor's own thread: the first start waits for the mirror.
+        monitor.receipts_from = receipts_from(spec, mirror)
+        log(f"request monitor judges answers after #{monitor.receipts_from} by their served marks")
+        monitor.run(stop)
+
     threading.Thread(target=monitor.judge_forever, args=(stop,), name="observer-judge", daemon=True).start()
-    threading.Thread(target=monitor.run, args=(stop,), name="observer-monitor", daemon=True).start()
+    threading.Thread(target=begin, name="observer-monitor", daemon=True).start()
     return monitor
