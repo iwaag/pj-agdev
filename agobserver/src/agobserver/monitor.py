@@ -80,8 +80,30 @@ MAX_UNCLEAR = 2
 #: old names for ever (seen on this very monitor's first live look, below).
 SUBSCRIBE_EVERY = 5
 
+#: An incident whose stalled work the monitor cannot see is reported after
+#: this long without a readable look; before that nothing is concluded.
+UNOBSERVABLE_REPORT_SECONDS = 1800
+TRACKED_FILE = "tracked.json"
+
 DETECTED, RECOVERING, RESCUED, REPORTED, DISMISSED = "detected", "recovering", "rescued", "reported", "dismissed"
-CLOSED = (RESCUED, REPORTED)
+#: The owner or the requester recorded a terminal decision: not a recovery.
+CANCELLED = "cancelled"
+CLOSED = (RESCUED, REPORTED, CANCELLED)
+
+#: What the stalled conversation has to show before an incident of each kind
+#: is recovered — the transition it was waiting for, read on a fresh look
+#: (robust_workflow p2 step 3). The candidate no longer being produced is
+#: not on this list: it is absence, and absence is also what an unreadable
+#: target, a rename or a blockage still inside its grace look like.
+MOVED_ON = ("executing", "awaiting_requester", "awaiting_delivery", "awaiting_human", "done")
+RECOVERED_STATES = {
+    "unstarted": MOVED_ON,
+    "unacknowledged": MOVED_ON,
+    "failed": MOVED_ON,
+    "undelivered": ("executing", "awaiting_requester", "awaiting_human", "done"),
+    "silent": ("awaiting_requester", "awaiting_delivery", "awaiting_human", "done"),
+    "resolved_live": ("queued", *MOVED_ON),
+}
 
 __all__ = ["Monitor", "is_incident_topic", "start"]
 
@@ -189,6 +211,8 @@ class Monitor:
             return []
         found = []
         for path in sorted(self.store_dir.glob("*.json")):
+            if "~" in path.stem or path.name == TRACKED_FILE:
+                continue  # an ended episode, or the index of tracked requests
             try:
                 found.append(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, ValueError):
@@ -225,7 +249,7 @@ class Monitor:
     # --- the loop ---------------------------------------------------------------------
 
     def tick(self) -> list[dict[str, Any]]:
-        """One look at every active request. Returns the incidents touched."""
+        """One look at every tracked request. Returns the incidents touched."""
         if self.ticks % SUBSCRIBE_EVERY == 0:
             try:
                 self.ensure_subscribed()
@@ -233,15 +257,19 @@ class Monitor:
                 log(f"monitor: could not check subscriptions: {error!r}")
         self.ticks += 1
         now = self.clock()
+        fresh = self.fresh()
         touched: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
-        looked_origins: set[str] = set()
+        looked: dict[str, Any] = {}
+        gone: set[str] = set()
         reader = MirrorReader(self.mirror)
-        for channel, topic, anchor in self.origins(now):
+        tracked = self.load_tracked()
+        for channel, topic, anchor in self.requests(now, tracked):
             result = trace(reader, anchor, now=int(now))
             if result.root is None:
+                gone.add(origin_key(anchor))
                 continue
-            looked_origins.add(origin_key(anchor))
+            looked[origin_key(anchor)] = result
             for candidate in primary(c for c in stall_candidates(result, now=int(now)) if not self.is_own(c)):
                 # Our own recovery request, not yet taken up, is the incident
                 # it belongs to — watched by its retry and report — never an
@@ -249,18 +277,100 @@ class Monitor:
                 key = incident_key(anchor, candidate)
                 seen_keys.add(key)
                 try:
-                    touched.append(self.handle(candidate, result, (channel, topic, anchor), now))
+                    touched.append(self.handle(candidate, result, (channel, topic, anchor), now, fresh=fresh))
                 except Exception as error:  # noqa: BLE001 - one incident must not stop the look
                     log(f"monitor: incident {key} failed this tick: {error!r}")
         for record in self.records():
-            if record.get("state") in CLOSED or record.get("state") == DISMISSED:
-                continue
-            if record.get("origin", {}).get("key") in looked_origins and record["key"] not in seen_keys:
-                try:
-                    touched.append(self.rescued(record, now))
-                except Exception as error:  # noqa: BLE001
-                    log(f"monitor: closing {record['key']} failed: {error!r}")
+            okey = record.get("origin", {}).get("key")
+            try:
+                if record.get("state") == REPORTED and okey in looked and not record.get("cleared_at"):
+                    self.cleared(record, looked[okey], now, fresh)
+                if record.get("state") in CLOSED or record.get("state") == DISMISSED or record["key"] in seen_keys:
+                    continue
+                if okey in gone and fresh:
+                    touched.append(self.report(record, now, "the conversation the request came from no longer "
+                                                            "exists, so there is nobody there to ask"))
+                elif okey in looked:
+                    touched.append(self.verify(record, looked[okey], now, fresh))
+            except Exception as error:  # noqa: BLE001
+                log(f"monitor: checking {record['key']} failed: {error!r}")
+        self.retain(tracked, looked, gone if fresh else set(), now)
         return touched
+
+    # --- which requests are looked at -----------------------------------------------
+
+    def fresh(self) -> bool:
+        """Whether the mirror is live — a look that can conclude anything."""
+        try:
+            return self.mirror.health().get("state") == "live"
+        except Exception:  # noqa: BLE001 - a mirror that cannot say is not fresh
+            return False
+
+    def load_tracked(self) -> dict[str, dict[str, Any]]:
+        try:
+            return json.loads((self.store_dir / TRACKED_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def save_tracked(self, tracked: dict[str, dict[str, Any]]) -> None:
+        self.store_dir.mkdir(parents=True, exist_ok=True)
+        path = self.store_dir / TRACKED_FILE
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(tracked, indent=1, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+
+    def requests(self, now: float, tracked: dict[str, dict[str, Any]]) -> list[tuple[str, str, int]]:
+        """Recent requests (discovery) and every request already being
+        tracked (retention), each once, where its origin is now.
+
+        Discovery is the window over `#front`; retention is the index this
+        monitor keeps of requests it has seen with work outstanding, plus the
+        origin of every open incident — so a request that goes quiet for a
+        day, is ✔'d, renamed or outlives a restart is still looked at until
+        its outcome is established (robust_workflow p2 step 3). A lost index
+        is rebuilt from the incident records, whose origins are ids."""
+        found: dict[int, tuple[str, str, int]] = {}
+        for channel, topic, anchor in self.origins(now):
+            found[anchor] = (channel, topic, anchor)
+        anchors = {int(k[1:]) for k in tracked if k.startswith("o")}
+        anchors |= {int(r["origin"]["message_id"]) for r in self.records()
+                    if r.get("state") not in CLOSED and r.get("origin", {}).get("message_id")}
+        for anchor in sorted(anchors - set(found)):
+            where = self.where(anchor)
+            found[anchor] = (where[0], where[1], anchor) if where else (ORIGIN_CHANNEL, "", anchor)
+        return list(found.values())
+
+    def retain(self, tracked: dict[str, dict[str, Any]], looked: dict[str, Any], gone: set[str], now: float) -> None:
+        """Keep a request while anything below it is unfinished or an incident
+        of it is open; let it go once neither is true. The index holds only
+        what this monitor has looked at — never the realm's history."""
+        records = self.records()
+        open_origins = {r.get("origin", {}).get("key") for r in records
+                        if r.get("state") not in CLOSED and r.get("state") != DISMISSED}
+        #: ✔ conversations judged a deliberate close: finished by decision.
+        closed_by_decision = {int(r.get("node", {}).get("anchor") or 0) for r in records
+                              if r.get("state") == DISMISSED and r.get("kind") == "resolved_live"}
+        changed = False
+        for okey, result in looked.items():
+            outstanding = [n for n in result.nodes() if n is not result.root and n.state not in ("done", "cancelled")
+                           and n.anchor not in closed_by_decision]
+            if outstanding or okey in open_origins:
+                entry = tracked.get(okey)
+                if entry is None:
+                    tracked[okey] = {"since": now, "topic": result.root.topic}
+                    changed = True
+                elif entry.get("topic") != result.root.topic:
+                    entry["topic"] = result.root.topic
+                    changed = True
+            elif okey in tracked:
+                del tracked[okey]
+                changed = True
+        for okey in gone:
+            if okey in tracked and okey not in open_origins:
+                del tracked[okey]
+                changed = True
+        if changed:
+            self.save_tracked(tracked)
 
     def ensure_subscribed(self) -> list[str]:
         """Join every public channel the mirror knows and the bot has not,
@@ -285,12 +395,23 @@ class Monitor:
         message = self.mirror.message(int(candidate.evidence[0]))
         return message is not None and int(message.sender_id) == self.self_id
 
-    def handle(self, candidate: Candidate, result, origin: tuple[str, str, int], now: float) -> dict[str, Any]:
+    def handle(self, candidate: Candidate, result, origin: tuple[str, str, int], now: float, *,
+               fresh: bool = True) -> dict[str, Any]:
         key = incident_key(origin[2], candidate)
         record = self.load(key)
+        if record is not None and (record.get("state") in (RESCUED, CANCELLED) or record.get("cleared_at")):
+            # That incident ended — the work moved, or a decision closed it —
+            # and this is the same work stalling again: a new incident.
+            self.archive(record)
+            record = None
         if record is None:
-            record = self.open(candidate, origin, now)
+            if not fresh:
+                return {"key": key, "state": "unconfirmed", "kind": candidate.kind}
+            record = self.open(candidate, origin, now, episode=self.episodes(key) + 1)
         if record.get("state") in CLOSED:
+            return record
+        if not fresh:
+            # A look off a stale copy of the realm asks nobody anything.
             return record
         # Where things are *now*: a rename since the last look is display.
         record["origin"].update(channel=origin[0], topic=origin[1])
@@ -306,6 +427,11 @@ class Monitor:
         if record.get("state") == DISMISSED:
             if now - float(record.get("dismissed_at", 0)) < REJUDGE_SECONDS:
                 return record
+            if candidate.kind == "resolved_live" and int(record.get("judged_activity") or -1) == int(candidate.since):
+                # A ✔ judged a deliberate close, and nothing has been said in
+                # that conversation since: the same question gets the same
+                # answer, and each asking is a local-model run (30–130 s).
+                return record
             record["state"] = DETECTED
             record["rejudging"] = True
             record.pop("judgment", None)
@@ -314,6 +440,7 @@ class Monitor:
 
         if candidate.judgment and not record.get("judgment"):
             verdict = self.judged(candidate, result, record)
+            record["judged_activity"] = int(candidate.since)
             if verdict["verdict"] == "legit":
                 again = record.pop("rejudging", False)
                 record.update(state=DISMISSED, dismissed_at=now, judgment=verdict)
@@ -355,9 +482,12 @@ class Monitor:
 
     # --- the steps ---------------------------------------------------------------------
 
-    def open(self, candidate: Candidate, origin: tuple[str, str, int], now: float) -> dict[str, Any]:
+    def open(self, candidate: Candidate, origin: tuple[str, str, int], now: float, *,
+             episode: int = 1) -> dict[str, Any]:
         key = incident_key(origin[2], candidate)
         topic = f"{INCIDENT_PREFIX}{candidate.kind}-{candidate.anchor or origin[2]}"
+        if episode > 1:
+            topic = f"{topic}-{episode}"
         if candidate.responsible.startswith("the agent that owns") and candidate.channel == ORIGIN_CHANNEL:
             # A conversation nobody has acknowledged names no owner of its
             # own; the entrance's owner is whoever acknowledges there (seen
@@ -374,7 +504,7 @@ class Monitor:
             "node": {"channel": candidate.channel, "topic": candidate.topic, "identity": candidate.identity,
                      "anchor": candidate.anchor},
             "fact": candidate.fact, "responsible": candidate.responsible, "next_action": candidate.next_action,
-            "evidence": list(candidate.evidence),
+            "evidence": list(candidate.evidence), "episode": episode,
         }
         adopted = self.adopt(record, now)
         if adopted is not None:
@@ -391,7 +521,7 @@ class Monitor:
             f"- Evidence: message ids {', '.join(f'#{i}' for i in candidate.evidence if i) or '—'}; "
             f"`agentchat trace {origin[2]}`",
         ]))
-        self.post_incident(record, note(INCIDENT_TAG, f"{key} origin #{origin[2]}"))
+        self.post_incident(record, note(INCIDENT_TAG, f"{key} e{episode} origin #{origin[2]}"))
         self.save(record)
         log(f"monitor: incident {topic} opened for {key}")
         return record
@@ -403,8 +533,12 @@ class Monitor:
         requests already made count, and a closed incident stays closed.
         Never a second topic, never a request asked again blindly."""
         channel = self.spec.instance_name()
+        episode = f"e{record.get('episode', 1)}"
         for found in self.mirror.notes(tag=INCIDENT_TAG, sender_id=self.self_id, channel=channel):
-            if found.value.split()[0:1] != [record["key"]]:
+            words = found.value.split()
+            if words[0:1] != [record["key"]] or (words[1:2] != [episode] and episode != "e1"):
+                continue
+            if episode == "e1" and len(words) > 1 and words[1].startswith("e") and words[1] != "e1":
                 continue
             message = self.mirror.message(found.message_id)
             if message is None:
@@ -456,18 +590,105 @@ class Monitor:
         where = self.where(origin[2]) or (origin[0], origin[1])
         return self.post(where[0], where[1], text)
 
-    def rescued(self, record: dict[str, Any], now: float) -> dict[str, Any]:
-        """The candidate is gone on a later look: the work moved again."""
+    def find(self, record: dict[str, Any], result):
+        """The incident's conversation in this look, by its anchor."""
+        anchor = int(record.get("node", {}).get("anchor") or 0)
+        if not anchor:
+            return None
+        return next((node for node in result.nodes() if node.anchor == anchor), None)
+
+    def verify(self, record: dict[str, Any], result, now: float, fresh: bool) -> dict[str, Any]:
+        """The candidate is not produced on this look. That is absence, and
+        absence alone concludes nothing (robust_workflow p2 step 3): the
+        work may have moved, or it may be unreadable, blocked differently
+        inside that blockage's grace, or closed by somebody's decision. Only
+        a fresh look that reads the conversation and finds the transition
+        this incident was waiting for is a recovery."""
+        if not fresh:
+            record["stale_looks"] = int(record.get("stale_looks", 0)) + 1
+            self.save(record)
+            return record
+        node = self.find(record, result)
+        if node is None or node.state == "unobservable":
+            return self.unobservable(record, now, "it is not in the request's trace any more" if node is None
+                                     else node.detail)
+        if record.pop("unobservable_since", None) is not None:
+            self.post_incident(record, f"Readable again at {_when(now)}.")
+        if node.state == "cancelled":
+            return self.close(record, now, CANCELLED, f"`{node.note_state or 'cancelled'}` is recorded in "
+                                                      f"`{node.topic}`: a decision, not a recovery")
+        if node.state in RECOVERED_STATES.get(record.get("kind", ""), MOVED_ON) and not (
+                record.get("kind") == "resolved_live" and node.topic.startswith(RESOLVED_TOPIC_PREFIX)) and not (
+                record.get("kind") == "silent" and node.state == "executing"):
+            return self.rescued(record, now, node)
+        if record.get("kind") == "silent" and node.state == "executing" \
+                and node.last_activity > int(record.get("since") or 0):
+            return self.rescued(record, now, node)
+        # Still blocked, perhaps differently and not yet overdue: open, no
+        # request until a candidate says it is owed again.
+        if record.get("waiting") != node.state:
+            record["waiting"] = node.state
+            self.save(record)
+        return record
+
+    def unobservable(self, record: dict[str, Any], now: float, why: str) -> dict[str, Any]:
+        """The stalled work cannot be read. Nothing is concluded; said once,
+        and reported once it has lasted `UNOBSERVABLE_REPORT_SECONDS`."""
+        since = record.get("unobservable_since")
+        if since is None:
+            record["unobservable_since"] = now
+            self.post_incident(record, f"I cannot see `{record['node']['topic']}` on the look at {_when(now)} "
+                                       f"({why}); nothing is concluded until I can.")
+            self.save(record)
+            return record
+        if now - float(since) >= UNOBSERVABLE_REPORT_SECONDS:
+            return self.report(record, now, f"I have not been able to see `{record['node']['topic']}` since "
+                                            f"{_when(float(since))} ({why})")
+        return record
+
+    def rescued(self, record: dict[str, Any], now: float, node) -> dict[str, Any]:
+        """The transition this incident waited for is on record."""
         asked = len(record.get("requests", []))
-        record.update(state=RESCUED, rescued_at=now, cause="open")
+        record.update(state=RESCUED, rescued_at=now, cause="open", outcome=node.state)
         how = f"after {asked} request(s)" if asked else "with nothing asked (it recovered by itself)"
-        self.post_incident(record, f"**Rescued** {how}: on the look at {_when(now)} "
-                                   f"`{record['node']['topic']}` is no longer {record['kind']}. The cause is not "
-                                   "removed by this — it stays open as a defect to fix.")
+        self.post_incident(record, f"**Rescued** {how}: on the look at {_when(now)} `{node.topic}` is "
+                                   f"{node.state.replace('_', ' ')} ({node.detail}). The cause is not removed by this "
+                                   "— it stays open as a defect to fix.")
         self.post_incident(record, note("state", "rescued"))
         self.save(record)
-        log(f"monitor: {record['topic']} rescued {how}")
+        log(f"monitor: {record['topic']} rescued {how} ({node.state})")
         return record
+
+    def close(self, record: dict[str, Any], now: float, state: str, why: str) -> dict[str, Any]:
+        record.update(state=state, closed_at=now, why=why)
+        self.post_incident(record, f"**Closed, {state}**: {why}.")
+        self.post_incident(record, note("state", state))
+        self.save(record)
+        log(f"monitor: {record['topic']} {state}: {why}")
+        return record
+
+    def cleared(self, record: dict[str, Any], result, now: float, fresh: bool) -> None:
+        """A reported incident whose work moved again afterwards: said, and
+        a later stall of the same work may open a new incident."""
+        node = self.find(record, result) if fresh else None
+        if node is None or node.state not in RECOVERED_STATES.get(record.get("kind", ""), MOVED_ON):
+            return
+        record["cleared_at"] = now
+        self.post_incident(record, f"Moving again at {_when(now)}: `{node.topic}` is "
+                                   f"{node.state.replace('_', ' ')}.")
+        self.save(record)
+
+    def episodes(self, key: str) -> int:
+        return len(list(self.store_dir.glob(f"{self._path(key).stem}~*.json")))
+
+    def archive(self, record: dict[str, Any]) -> None:
+        """Move an ended incident aside so the same work can have a new one."""
+        path = self._path(record["key"])
+        n = self.episodes(record["key"]) + 1
+        try:
+            path.replace(path.with_name(f"{path.stem}~{n}.json"))
+        except OSError:
+            pass
 
     def report(self, record: dict[str, Any], now: float, why: str) -> dict[str, Any]:
         """Nobody left to ask: tell the realm's owners, by name, and stop."""

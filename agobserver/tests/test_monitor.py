@@ -92,10 +92,12 @@ def stalled_realm():
     post(realm, "work-m1", task1, f"[selfnote][rootchat] front/front-a #{ask}", FRONT)
     post(realm, "work-m1", task1, "Start task 1.", FRONT)
     post(realm, "work-m1", task1, ACK, AUTOLAB)
-    post(realm, "work-m1", task1, "@**Front** task 1 done", AUTOLAB)
+    done = post(realm, "work-m1", task1, "@**Front** task 1 done", AUTOLAB)
     post(realm, "work-m1", task1, "Accepted.", FRONT)
     post(realm, "work-m1", task1, "[selfnote][state] completed", AUTOLAB)
     post(realm, "front", "front-a", "@**Developer** task 1 is accepted; task 2 is next.", FRONT)
+    # Front's listener marks the callback it served (the receipt p2 requires).
+    post(realm, "front", "front-a", f"[selfnote][served] work-m1/{task1} {done}", FRONT)
     return realm, ask, mission
 
 

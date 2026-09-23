@@ -1,7 +1,7 @@
 """robust_workflow p2 step 1: the gaps in the request monitor, reproduced.
 
-Each test asserts the outcome p2 requires and is marked `xfail(strict=True)`
-while the defect stands, so the fix that removes it has to remove the mark.
+Each test asserts the outcome p2 requires; step 1 committed them as
+`xfail(strict=True)` and steps 2 and 3 removed each mark with the fix.
 They run the p1 monitor over a fake realm and a real mirror, exactly like
 `test_monitor.py`, whose `stalled_realm` (p3's F2 in miniature) they reuse.
 """
@@ -13,9 +13,6 @@ import pytest
 from agag.mirror.store import bare_topic
 
 from agobserver import monitor as monitoring
-
-#: A reproduced defect: the test states the required outcome and fails today.
-defect = pytest.mark.xfail(strict=True, reason="reproduced in robust_workflow p2 step 1; not fixed yet")
 
 from test_monitor import (  # noqa: F401 - the fixture is used by name
     ACK, AUTOLAB, CHANNEL, DEV, FRONT, incident_posts, post, requests, settle, world,
@@ -52,7 +49,6 @@ def rename(world, channel: str, old: str, new: str) -> None:
 # --- R1: a target that cannot be read is reported as rescued ---------------------
 
 
-@defect
 def test_r1_an_unreadable_target_is_not_a_rescue(world):
     watcher = open_incident(world)
     real = world.mirror.history
@@ -89,7 +85,6 @@ def test_r2_a_different_blockage_is_not_a_rescue(world):
 # --- R3: a request that ages out of discovery is abandoned ---------------------------
 
 
-@defect
 def test_r3_an_open_incident_survives_the_discovery_window(world):
     watcher = open_incident(world)
     world.clock.now += 13 * 3600
@@ -100,7 +95,6 @@ def test_r3_an_open_incident_survives_the_discovery_window(world):
 # --- R4: an origin resolved while its work remains ------------------------------------
 
 
-@defect
 def test_r4_a_resolved_origin_does_not_abandon_its_incident(world):
     watcher = open_incident(world)
     world.realm.resolve("front", "front-a")
@@ -183,7 +177,6 @@ def undelivered(world):
     return answer
 
 
-@defect
 def test_r8_an_unrelated_home_reply_does_not_consume_an_answer(world, undelivered):
     watcher = world.make()
     kinds = [r["kind"] for r in watcher.tick()]
@@ -241,3 +234,97 @@ def test_a_recovery_request_goes_where_the_origin_is_now(world):
     watcher.tick()
     settle(world, lambda: requests(world))
     assert [m["subject"] for m in requests(world)] == ["front-a-renamed"]
+
+
+# --- step 3: recovery is a transition on record, not an absence ------------------------
+
+
+def test_a_new_blockage_inside_its_grace_is_not_a_rescue(world):
+    """R2 without the luck of timing: posted into, not yet overdue."""
+    watcher = open_incident(world)
+    posted = post(world.realm, "work-m1", task2(world), "Start task 2.", FRONT)
+    settle(world, lambda: world.mirror.message(posted) is not None)
+    world.clock.now = world.realm.messages[posted]["timestamp"] + 60
+    watcher.tick()
+    (record,) = watcher.records()
+    assert record["state"] == monitoring.RECOVERING and record["waiting"] == "queued"
+
+
+def test_a_cancelled_task_closes_the_incident_as_a_decision(world):
+    watcher = open_incident(world)
+    note = post(world.realm, "work-m1", task2(world), "[selfnote][state] cancelled", AUTOLAB)
+    settle(world, lambda: world.mirror.message(note) is not None)
+    world.clock.now += 120
+    watcher.tick()
+    (record,) = watcher.records()
+    assert record["state"] == monitoring.CANCELLED
+    assert not any("**Rescued**" in text for text in incident_posts(world))
+
+
+def test_a_stale_mirror_asks_nobody_and_concludes_nothing(world):
+    world.mirror.health = lambda: {"state": "stale"}
+    watcher = world.make()
+    touched = watcher.tick()
+    settle(world)
+    assert not requests(world) and not incident_posts(world)
+    assert [r["state"] for r in touched] == ["unconfirmed"]
+
+
+def test_unobservable_work_is_reported_once_after_the_bound_and_never_rescued(world):
+    watcher = open_incident(world)
+    real = world.mirror.history
+    world.mirror.history = lambda channel, topic, *a, **k: [] if bare_topic(topic) == task2(world) \
+        else real(channel, topic, *a, **k)
+    for _ in range(3):
+        world.clock.now += monitoring.UNOBSERVABLE_REPORT_SECONDS / 2 + 1
+        watcher.tick()
+    settle(world)
+    (record,) = watcher.records()
+    assert record["state"] == monitoring.REPORTED and "not been able to see" in record["why"]
+    posts = incident_posts(world)
+    assert sum("I cannot see" in text for text in posts) == 1
+    assert sum("Stopped: I could not get this moving" in text for text in posts) == 1
+    assert not any("**Rescued**" in text for text in posts)
+
+
+def test_a_tracked_request_is_kept_past_the_window_and_across_a_restart(world, tmp_path):
+    first = open_incident(world)
+    assert "o" + str(ask(world)) in first.load_tracked()
+    world.clock.now += 20 * 3600
+    again = world.make()  # a restart, a day later: the window no longer finds it
+    assert again.origins(world.clock.now) == []
+    touched = again.tick()
+    settle(world)
+    assert touched and len(requests(world)) == 2, "the second request, once — not a fresh allowance"
+    world.clock.now += monitoring.RETRY_SECONDS + 5
+    again.tick()
+    settle(world)
+    assert len(requests(world)) == 2
+    (record,) = again.records()
+    assert record["state"] == monitoring.REPORTED
+
+
+def test_a_request_with_nothing_outstanding_is_let_go(world):
+    watcher = world.make()
+    post(world.realm, "work-m1", task2(world), "[selfnote][state] completed", AUTOLAB)
+    done = post(world.realm, "pj-x", "workplan-a", "[selfnote][state] done", AUTOLAB)
+    settle(world, lambda: world.mirror.message(done) is not None)
+    watcher.tick()
+    assert watcher.load_tracked() == {}
+
+
+def test_the_same_work_stalling_after_a_rescue_is_a_new_incident(world):
+    watcher = open_incident(world)
+    posted = post(world.realm, "work-m1", task2(world), "Start task 2.", FRONT)
+    acked = post(world.realm, "work-m1", task2(world), ACK, AUTOLAB)
+    settle(world, lambda: world.mirror.message(acked) is not None)
+    world.clock.now += 120
+    assert [r["state"] for r in watcher.tick()] == [monitoring.RESCUED]
+    # …and then autolab goes quiet for longer than the silence threshold.
+    world.clock.now = world.realm.messages[acked]["timestamp"] + 3 * 3600
+    watcher.judge = lambda *args: {"verdict": "stall", "evidence": "no word in hours"}
+    touched = watcher.tick()
+    settle(world)
+    assert [(r["kind"], r["episode"]) for r in touched] == [("silent", 2)]
+    assert sum(text.startswith("**Incident:") for text in incident_posts(world)) == 2
+    assert posted
