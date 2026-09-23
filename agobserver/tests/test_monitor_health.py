@@ -115,8 +115,18 @@ def test_answers_from_before_the_monitor_began_are_not_judged_by_its_receipts(wo
     answer = post(world.realm, "work-m1", topic, "@**Front** task 3 done", AUTOLAB)
     settle(world, lambda: world.mirror.message(answer) is not None)
     world.clock.now = world.realm.messages[answer]["timestamp"] + 400
+    reply = post(world.realm, "front", "front-a", "@**Developer** task 3 is done.", FRONT)
+    settle(world, lambda: world.mirror.message(reply) is not None)
     watcher = world.make()
     watcher.receipts_from = answer + 1
     assert "undelivered" not in [r["kind"] for r in watcher.tick()]
+    # As autolab closes a task: its state, then the ✔.
+    post(world.realm, "work-m1", topic, "[selfnote][state] completed", AUTOLAB)
+    world.realm.resolve("work-m1", topic)
+    settle(world, lambda: any(t.resolved for t in world.mirror.topics("work-m1")))
+    world.clock.now += 120
+    assert not [r for r in watcher.tick() if r["kind"] in ("undelivered", "resolved_live")], \
+        "nor as a ✔ on work awaiting delivery"
     watcher.receipts_from = answer
-    assert "undelivered" in [r["kind"] for r in watcher.tick()]
+    world.clock.now += 120
+    assert {r["kind"] for r in watcher.tick()} & {"undelivered", "resolved_live"}

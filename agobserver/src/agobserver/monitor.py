@@ -206,13 +206,14 @@ class Monitor:
         #: every other request must not wait for it (p2 step 4). Tests judge
         #: inline.
         self.async_judge = async_judge
-        #: Answers older than this id are not judged `undelivered`. Since p2
-        #: an answer counts as taken up only by a served mark covering it; the
-        #: listeners before p1's last fix (`87ac87e`) skipped a callback in a
-        #: ✔'d topic and left the mark on the post before it, so on their
-        #: records a delivered answer reads unmarked (p2 step 5: nine finished
-        #: p1 tasks flagged on the first look). The service sets it once, at
-        #: its first start, to the newest post it could see then.
+        #: Answers older than this id are read as p1 read them (the trace's
+        #: `receipts_from`). Since p2 an answer counts as taken up only by a
+        #: served mark covering it; the listeners before p1's last fix
+        #: (`87ac87e`) skipped a callback in a ✔'d topic and left the mark on
+        #: the post before it, so on their records a delivered answer reads
+        #: unmarked (p2 step 5: nine finished p1 tasks flagged on the first
+        #: look, then again as ✔-while-awaiting-delivery). The service sets it
+        #: once, at its first start, to the newest post it could see then.
         self.receipts_from = int(receipts_from or 0)
         self._judge_lock = threading.Lock()
         self._judge_wake = threading.Event()
@@ -319,13 +320,12 @@ class Monitor:
         reader = MirrorReader(self.mirror)
         tracked = self.load_tracked()
         for channel, topic, anchor in self.requests(now, tracked):
-            result = trace(reader, anchor, now=int(now))
+            result = trace(reader, anchor, now=int(now), receipts_from=self.receipts_from)
             if result.root is None:
                 gone.add(origin_key(anchor))
                 continue
             looked[origin_key(anchor)] = result
-            for candidate in primary(c for c in stall_candidates(result, now=int(now))
-                                     if not self.is_own(c) and not self.before_receipts(c)):
+            for candidate in primary(c for c in stall_candidates(result, now=int(now)) if not self.is_own(c)):
                 # Our own recovery request, not yet taken up, is the incident
                 # it belongs to — watched by its retry and report — never an
                 # incident of its own (`is_own`).
@@ -444,10 +444,6 @@ class Monitor:
         log(f"monitor: joined {len(missing)} channel(s) so their renames and ✔ reach the mirror; re-reading the realm")
         self.mirror.resync()
         return missing
-
-    def before_receipts(self, candidate: Candidate) -> bool:
-        return candidate.kind == "undelivered" and bool(candidate.evidence) \
-            and 0 < int(candidate.evidence[0]) < self.receipts_from
 
     def is_own(self, candidate: Candidate) -> bool:
         if candidate.kind != "unacknowledged" or not candidate.evidence:
