@@ -372,3 +372,22 @@ def test_an_undelivered_answer_taken_up_on_request_is_verified_by_its_receipt(wo
     world.clock.now += 120
     rescued = [r for r in watcher.tick() if r["kind"] == "undelivered"]
     assert [r["state"] for r in rescued] == [monitoring.RESCUED]
+
+
+def test_a_dismissed_judgment_does_not_hide_a_mechanical_stall_on_the_same_work(world, undelivered):
+    """Trial A2: a task ✔'d with its report unmarked is first `resolved_live`
+    (60 s grace, judged: a deliberate close) and then `undelivered` (300 s);
+    the dismissal must not swallow the second."""
+    topic = f"workrun-task3-m{world.mission}"
+    post(world.realm, "work-m1", topic, "[selfnote][state] completed", AUTOLAB)
+    world.realm.resolve("work-m1", topic)
+    settle(world, lambda: any(t.resolved for t in world.mirror.topics("work-m1")))
+    world.clock.now = world.realm.messages[undelivered]["timestamp"] + 90
+    watcher = world.make()
+    first = [r for r in watcher.tick() if r["node"]["anchor"] and r["kind"] == "resolved_live"]
+    assert first and first[0]["state"] == monitoring.DISMISSED
+    world.clock.now = world.realm.messages[undelivered]["timestamp"] + 400
+    after = [r for r in watcher.tick() if r["key"] == first[0]["key"]]
+    assert after and after[0]["kind"] == "undelivered" and after[0]["state"] == monitoring.RECOVERING
+    settle(world)
+    assert any(m["content"].startswith("[selfnote][owed]") for m in requests(world))

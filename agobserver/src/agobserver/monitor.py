@@ -517,6 +517,14 @@ class Monitor:
             record["kind"] = candidate.kind
             record.pop("judgment", None)
             record["next_action"], record["responsible"] = candidate.next_action, candidate.responsible
+        if record.get("state") == DISMISSED and not candidate.judgment:
+            # The dismissal answered a judged question (was that ✔ a
+            # mistake? is that silence a long job?). A mechanical fact on the
+            # same work — an answer nobody served — is not covered by it
+            # (p2 step 5, trial A2: a ✔ judged a deliberate close hid the
+            # undelivered report behind it).
+            record["state"] = DETECTED
+            record.pop("dismissed_at", None)
         if record.get("state") == DISMISSED:
             if now - float(record.get("dismissed_at", 0)) < REJUDGE_SECONDS:
                 return record
