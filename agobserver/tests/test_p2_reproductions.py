@@ -328,3 +328,28 @@ def test_the_same_work_stalling_after_a_rescue_is_a_new_incident(world):
     assert [(r["kind"], r["episode"]) for r in touched] == [("silent", 2)]
     assert sum(text.startswith("**Incident:") for text in incident_posts(world)) == 2
     assert posted
+
+
+def test_a_closed_origin_with_unfinished_work_is_reported_once(world):
+    """A ✔ stops nothing, and Front does not deliver into a finished
+    conversation: work still open under a ✔ request is said once, to the
+    owners — never asked about there."""
+    watcher = world.make()
+    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a #{ask(world)}", FRONT)
+    posted = post(world.realm, "work-m1", task2(world), "Start task 2.", FRONT)
+    acked = post(world.realm, "work-m1", task2(world), ACK, AUTOLAB)
+    settle(world, lambda: world.mirror.message(acked) is not None)
+    world.clock.now = world.realm.messages[acked]["timestamp"] + 30
+    watcher.tick()  # tracked: task 2 is executing
+    world.realm.resolve("front", "front-a")
+    settle(world, lambda: any(t.resolved for t in world.mirror.topics("front")))
+    world.clock.now += 60
+    assert watcher.tick() == [], "inside the grace"
+    for _ in range(3):
+        world.clock.now += monitoring.ORIGIN_CLOSED_GRACE
+        watcher.tick()
+    settle(world)
+    reports = [t for t in incident_posts(world) if "Stopped: I could not get this moving" in t]
+    assert len(reports) == 1 and "✔" in reports[0]
+    assert not [m for m in requests(world) if m["subject"].startswith("✔")], "nobody asked in the ✔ origin"
+    assert posted

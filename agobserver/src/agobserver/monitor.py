@@ -117,6 +117,7 @@ RECOVERED_STATES = {
     "undelivered": ("executing", "awaiting_requester", "awaiting_human", "done"),
     "silent": ("awaiting_requester", "awaiting_delivery", "awaiting_human", "done"),
     "resolved_live": ("queued", *MOVED_ON),
+    "origin_closed": ("queued", "awaiting_human", *MOVED_ON),
 }
 
 __all__ = ["Monitor", "is_incident_topic", "start"]
@@ -162,7 +163,11 @@ def incident_key(origin_anchor: int, candidate: Candidate) -> str:
 
 #: When one conversation fails several checks at once, the incident is
 #: named after the one a reader should worry about first.
-PRIORITY = ("failed", "unacknowledged", "undelivered", "unstarted", "resolved_live", "silent")
+PRIORITY = ("failed", "unacknowledged", "undelivered", "unstarted", "resolved_live", "silent", "origin_closed")
+#: A request's own conversation ✔'d while work opened for it is unfinished,
+#: seen for this long: reported, because a ✔ stops nothing and Front does
+#: not reopen a finished conversation to deliver into it.
+ORIGIN_CLOSED_GRACE = 300
 
 
 def primary(candidates) -> list[Candidate]:
@@ -325,7 +330,13 @@ class Monitor:
                 gone.add(origin_key(anchor))
                 continue
             looked[origin_key(anchor)] = result
-            for candidate in primary(c for c in stall_candidates(result, now=int(now)) if not self.is_own(c)):
+            found = [c for c in stall_candidates(result, now=int(now)) if not self.is_own(c)]
+            closed = self.origin_closed(result, tracked.get(origin_key(anchor)), now)
+            if closed is not None and not found:
+                # Anything else found here is reported through the ✔ origin
+                # already; this is for the work nothing else would flag.
+                found.append(closed)
+            for candidate in primary(found):
                 # Our own recovery request, not yet taken up, is the incident
                 # it belongs to — watched by its retry and report — never an
                 # incident of its own (`is_own`).
@@ -352,6 +363,32 @@ class Monitor:
         self.retain(tracked, looked, gone if fresh else set(), now)
         self.looked_last = len(looked)
         return touched
+
+    def origin_closed(self, result, entry: dict[str, Any] | None, now: float) -> Candidate | None:
+        """The request's own conversation is ✔ and work opened for it is not
+        finished — nothing below would ever say so (robust_workflow p2 step
+        5): answers are not delivered into a finished conversation, and a ✔
+        cancels nothing. Seen for `ORIGIN_CLOSED_GRACE`, it is a candidate;
+        its incident is reported, since there is nobody there to ask."""
+        root = result.root
+        if entry is None or not root.topic.startswith(RESOLVED_TOPIC_PREFIX):
+            if entry is not None:
+                entry.pop("closed_seen", None)
+            return None
+        unfinished = [n for n in result.nodes() if n is not root and n.state not in ("done", "cancelled")]
+        if not unfinished:
+            return None
+        seen = float(entry.setdefault("closed_seen", now))
+        if now - seen < ORIGIN_CLOSED_GRACE:
+            return None
+        listed = ", ".join(f"`{n.topic}` {n.state.replace('_', ' ')}" for n in unfinished[:4])
+        return Candidate(
+            "origin_closed", root.channel, root.topic, root.identity,
+            f"the request's conversation is ✔ while {len(unfinished)} conversation(s) opened for it are unfinished: "
+            f"{listed}", "whoever resolved it",
+            "un-✔ it if the work should go on (`agentchat unresolve`), or record a decision on the unfinished work",
+            int(seen), (root.anchor,), anchor=root.anchor,
+        )
 
     # --- which requests are looked at -----------------------------------------------
 
@@ -417,7 +454,7 @@ class Monitor:
                 if entry is None:
                     entry = tracked[okey] = {"since": now, "topic": result.root.topic}
                 entry.update(topic=result.root.topic, last_looked=now)
-                changed = True
+                changed = True  # `last_looked` (and `closed_seen`) move every look
             elif okey in tracked:
                 del tracked[okey]
                 changed = True
@@ -732,12 +769,7 @@ class Monitor:
         if node.state == "cancelled":
             return self.close(record, now, CANCELLED, f"`{node.note_state or 'cancelled'}` is recorded in "
                                                       f"`{node.topic}`: a decision, not a recovery")
-        if node.state in RECOVERED_STATES.get(record.get("kind", ""), MOVED_ON) and not (
-                record.get("kind") == "resolved_live" and node.topic.startswith(RESOLVED_TOPIC_PREFIX)) and not (
-                record.get("kind") == "silent" and node.state == "executing"):
-            return self.rescued(record, now, node)
-        if record.get("kind") == "silent" and node.state == "executing" \
-                and node.last_activity > int(record.get("since") or 0):
+        if self.recovered(record, node):
             return self.rescued(record, now, node)
         # Still blocked, perhaps differently and not yet overdue: open, no
         # request until a candidate says it is owed again.
@@ -745,6 +777,16 @@ class Monitor:
             record["waiting"] = node.state
             self.save(record)
         return record
+
+    @staticmethod
+    def recovered(record: dict[str, Any], node) -> bool:
+        """Whether `node` shows the transition this incident waited for."""
+        kind = record.get("kind", "")
+        if kind in ("resolved_live", "origin_closed") and node.topic.startswith(RESOLVED_TOPIC_PREFIX):
+            return False
+        if kind == "silent" and node.state == "executing":
+            return node.last_activity > int(record.get("since") or 0)
+        return node.state in RECOVERED_STATES.get(kind, MOVED_ON)
 
     def unobservable(self, record: dict[str, Any], now: float, why: str) -> dict[str, Any]:
         """The stalled work cannot be read. Nothing is concluded; said once,
@@ -786,7 +828,7 @@ class Monitor:
         """A reported incident whose work moved again afterwards: said, and
         a later stall of the same work may open a new incident."""
         node = self.find(record, result) if fresh else None
-        if node is None or node.state not in RECOVERED_STATES.get(record.get("kind", ""), MOVED_ON):
+        if node is None or not self.recovered(record, node):
             return
         record["cleared_at"] = now
         self.post_incident(record, f"Moving again at {_when(now)}: `{node.topic}` is "
