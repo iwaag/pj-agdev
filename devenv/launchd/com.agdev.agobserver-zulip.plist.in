@@ -13,6 +13,11 @@
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>AGOBSERVER_INTERVAL_SECONDS</key><string>60</string>
+    <!-- Observer's declared workspace is the superproject (it is a plain
+         directory, not a submodule), and nodeutils reads the listener status
+         file at `<workspace>/.local/agag-status.json`: written anywhere else,
+         nctl reports Observer `unobserved` (robust_workflow p2 step 1). -->
+    <key>AGAG_STATUS_PATH</key><string>__PROJECTS_ROOT__/pj-agdev/.local/agag-status.json</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

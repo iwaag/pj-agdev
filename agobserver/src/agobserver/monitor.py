@@ -84,6 +84,16 @@ SUBSCRIBE_EVERY = 5
 #: this long without a readable look; before that nothing is concluded.
 UNOBSERVABLE_REPORT_SECONDS = 1800
 TRACKED_FILE = "tracked.json"
+#: The monitor's own progress, read by processes that are not the monitor
+#: (robust_workflow p2 step 4): the relay's watchdog, and a human.
+HEALTH_FILE = "monitor-health.json"
+HEALTH_SCHEMA = "agobserver.monitor-health.v1"
+#: Operator fault injection for trials, one file each under `.local/faults/`:
+#: `monitor-stop` ends the monitor thread at its next cycle (the process and
+#: the listener stay up); `triage-stall` holds the next judgment until the
+#: file is removed; `mirror-stale` makes the monitor treat its source as stale
+#: while the file exists. Nothing creates them but a person.
+FAULTS_DIR = "faults"
 
 DETECTED, RECOVERING, RESCUED, REPORTED, DISMISSED = "detected", "recovering", "rescued", "reported", "dismissed"
 #: The owner or the requester recorded a terminal decision: not a recovery.
@@ -169,7 +179,7 @@ class Monitor:
     def __init__(self, spec: AgentSpec, client: ZulipClient, mirror, *,
                  judge: Callable[..., dict] = triage.judge, clock: Callable[[], float] = time.time,
                  interval: float | None = None, window_hours: float | None = None,
-                 report_to: list[str] | None = None) -> None:
+                 report_to: list[str] | None = None, async_judge: bool = False) -> None:
         self.spec = spec
         self.client = client
         self.mirror = mirror
@@ -186,6 +196,21 @@ class Monitor:
         #: reads cost nothing — they are the mirror's.
         self.posts = 0
         self.judgments = 0
+        #: Judgments run on their own worker when `async_judge` (the running
+        #: service): a local-model judgment takes 30–130 s, and a look at
+        #: every other request must not wait for it (p2 step 4). Tests judge
+        #: inline.
+        self.async_judge = async_judge
+        self._judge_lock = threading.Lock()
+        self._judge_wake = threading.Event()
+        self._pending_judgments: dict[str, tuple] = {}
+        self._verdicts: dict[str, dict] = {}
+        self.judging: dict[str, Any] | None = None
+        self.last_judgment: dict[str, Any] | None = None
+        self.cycle: dict[str, Any] = {"count": 0, "started_at": None, "completed_at": None,
+                                      "duration_seconds": None, "in_progress": False}
+        self.latest_failure: dict[str, Any] | None = None
+        self.looked_last = 0
 
     # --- the store -------------------------------------------------------------------
 
@@ -249,7 +274,23 @@ class Monitor:
     # --- the loop ---------------------------------------------------------------------
 
     def tick(self) -> list[dict[str, Any]]:
-        """One look at every tracked request. Returns the incidents touched."""
+        """One look at every tracked request. Returns the incidents touched.
+        The health record says when it began and, afterwards, how it went."""
+        started = self.clock()
+        self.cycle.update(started_at=started, in_progress=True)
+        self.write_health()
+        try:
+            return self._tick()
+        except Exception as error:  # noqa: BLE001 - recorded, then the loop's to handle
+            self.latest_failure = {"at": self.clock(), "error": repr(error)[:500]}
+            raise
+        finally:
+            done = self.clock()
+            self.cycle.update(count=self.cycle["count"] + 1, completed_at=done,
+                              duration_seconds=round(done - started, 3), in_progress=False)
+            self.write_health()
+
+    def _tick(self) -> list[dict[str, Any]]:
         if self.ticks % SUBSCRIBE_EVERY == 0:
             try:
                 self.ensure_subscribed()
@@ -295,12 +336,15 @@ class Monitor:
             except Exception as error:  # noqa: BLE001
                 log(f"monitor: checking {record['key']} failed: {error!r}")
         self.retain(tracked, looked, gone if fresh else set(), now)
+        self.looked_last = len(looked)
         return touched
 
     # --- which requests are looked at -----------------------------------------------
 
     def fresh(self) -> bool:
         """Whether the mirror is live — a look that can conclude anything."""
+        if self.fault("mirror-stale", consume=False):
+            return False
         try:
             return self.mirror.health().get("state") == "live"
         except Exception:  # noqa: BLE001 - a mirror that cannot say is not fresh
@@ -357,11 +401,9 @@ class Monitor:
             if outstanding or okey in open_origins:
                 entry = tracked.get(okey)
                 if entry is None:
-                    tracked[okey] = {"since": now, "topic": result.root.topic}
-                    changed = True
-                elif entry.get("topic") != result.root.topic:
-                    entry["topic"] = result.root.topic
-                    changed = True
+                    entry = tracked[okey] = {"since": now, "topic": result.root.topic}
+                entry.update(topic=result.root.topic, last_looked=now)
+                changed = True
             elif okey in tracked:
                 del tracked[okey]
                 changed = True
@@ -440,6 +482,11 @@ class Monitor:
 
         if candidate.judgment and not record.get("judgment"):
             verdict = self.judged(candidate, result, record)
+            if verdict is None:
+                record.setdefault("judging_since", now)
+                self.save(record)
+                return record
+            record.pop("judging_since", None)
             record["judged_activity"] = int(candidate.since)
             if verdict["verdict"] == "legit":
                 again = record.pop("rejudging", False)
@@ -566,12 +613,61 @@ class Monitor:
                     return message.sender_name
         return ""
 
-    def judged(self, candidate: Candidate, result, record: dict[str, Any]) -> dict[str, str]:
-        self.judgments += 1
+    def judged(self, candidate: Candidate, result, record: dict[str, Any]) -> dict[str, str] | None:
+        """The verdict on this candidate, or None while it is being judged.
+
+        Inline in tests; on the service a judgment is queued for the judge
+        worker with a snapshot of what it is to read, and the look moves on
+        to the other requests — the verdict is picked up by a later look."""
         tail = [m.as_zulip() for m in self.mirror.messages(candidate.channel, candidate.topic)[-10:]]
-        verdict = self.judge(self.spec, candidate, "\n".join(trace_lines(result)), tail, record["topic"])
-        log(f"monitor: {record['topic']} judged {verdict.get('verdict')}: {verdict.get('evidence', '')[:200]}")
+        job = (candidate, "\n".join(trace_lines(result)), tail, record["topic"])
+        if not self.async_judge:
+            return self._run_judgment(record["key"], job)
+        with self._judge_lock:
+            verdict = self._verdicts.pop(record["key"], None)
+            if verdict is None and record["key"] not in self._pending_judgments \
+                    and (self.judging or {}).get("key") != record["key"]:
+                self._pending_judgments[record["key"]] = job
+                self._judge_wake.set()
         return verdict
+
+    def _run_judgment(self, key: str, job: tuple) -> dict[str, str]:
+        candidate, trace_text, tail, topic = job
+        self.judgments += 1
+        started = self.clock()
+        with self._judge_lock:
+            self.judging = {"key": key, "topic": topic, "since": started}
+        try:
+            if self.fault("triage-stall", consume=False):
+                log(f"monitor: fault injected: the judgment of {topic} is held until the fault file is removed")
+                while self.fault("triage-stall", consume=False):
+                    time.sleep(1.0)
+            verdict = self.judge(self.spec, candidate, trace_text, tail, topic)
+        finally:
+            with self._judge_lock:
+                self.judging = None
+        self.last_judgment = {"key": key, "topic": topic, "at": self.clock(),
+                              "seconds": round(self.clock() - started, 1), "verdict": verdict.get("verdict")}
+        log(f"monitor: {topic} judged {verdict.get('verdict')} in {self.last_judgment['seconds']}s: "
+            f"{verdict.get('evidence', '')[:200]}")
+        return verdict
+
+    def judge_forever(self, stop: threading.Event) -> None:
+        """The judge worker: one judgment at a time, off the look loop."""
+        while not stop.is_set():
+            self._judge_wake.wait(5.0)
+            with self._judge_lock:
+                if not self._pending_judgments:
+                    self._judge_wake.clear()
+                    continue
+                key = next(iter(self._pending_judgments))
+                job = self._pending_judgments.pop(key)
+            try:
+                verdict = self._run_judgment(key, job)
+            except Exception as error:  # noqa: BLE001 - a failed judgment is an answer
+                verdict = {"verdict": "unclear", "evidence": f"the judgment failed: {error!r}"}
+            with self._judge_lock:
+                self._verdicts[key] = verdict
 
     def request(self, record: dict[str, Any], candidate: Candidate, origin: tuple[str, str, int],
                 number: int, now: float) -> int:
@@ -737,6 +833,9 @@ class Monitor:
         log(f"request monitor starting (every {self.interval:g}s, requests active in the last "
             f"{self.window / 3600:g} h)")
         while not stop.is_set():
+            if self.fault("monitor-stop"):
+                log("monitor: fault injected: the monitor thread stops here; the process stays up")
+                return
             started = self.clock()
             try:
                 self.tick()
@@ -744,12 +843,83 @@ class Monitor:
                 log(f"monitor tick failed: {error!r}")
             stop.wait(max(1.0, self.interval - max(0.0, self.clock() - started)))
 
+    # --- health ----------------------------------------------------------------------------
+
+    def fault(self, name: str, *, consume: bool = True) -> bool:
+        path = self.spec.local / FAULTS_DIR / name
+        if not path.exists():
+            return False
+        if consume:
+            path.unlink(missing_ok=True)
+        return True
+
+    def health(self) -> dict[str, Any]:
+        """What this monitor has been doing, for somebody who is not it."""
+        now = self.clock()
+        tracked = self.load_tracked()
+        looked = [float(entry.get("last_looked") or entry.get("since") or now) for entry in tracked.values()]
+        try:
+            source = self.mirror.health()
+        except Exception as error:  # noqa: BLE001
+            source = {"state": "unknown", "reason": repr(error)}
+        if self.fault("mirror-stale", consume=False):
+            source = {**source, "state": "stale", "reason": "fault injected (mirror-stale)"}
+        with self._judge_lock:
+            judging, pending = dict(self.judging or {}), len(self._pending_judgments)
+        records = self.records()
+        return {
+            "schema": HEALTH_SCHEMA,
+            "written_at": now,
+            "pid": os.getpid(),
+            "enabled": True,
+            "interval_seconds": self.interval,
+            "window_hours": self.window / 3600,
+            "cycle": dict(self.cycle),
+            "source": {"state": source.get("state"), "reason": source.get("reason"),
+                       "stale_since": source.get("stale_since"), "last_event_at": source.get("last_event_at")},
+            "requests": {
+                "tracked": len(tracked),
+                "looked_last_cycle": self.looked_last,
+                "oldest_unchecked_seconds": round(max((now - t for t in looked), default=0.0), 1),
+                "open_incidents": sum(1 for r in records if r.get("state") not in CLOSED and r.get("state") != DISMISSED),
+            },
+            "judgment": {
+                "running": judging or None,
+                "pending": pending,
+                "last": self.last_judgment,
+                "timeout_seconds": triage.TIMEOUT_SECONDS,
+            },
+            "latest_failure": self.latest_failure,
+            "spent": {"posts": self.posts, "judgments": self.judgments},
+        }
+
+    def write_health(self) -> None:
+        try:
+            write_health(self.spec, self.health())
+        except Exception as error:  # noqa: BLE001 - a health file must never stop the monitor
+            log(f"monitor: could not write its health record: {error!r}")
+
+
+def write_health(spec: AgentSpec, record: dict[str, Any]) -> None:
+    path = spec.local / HEALTH_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record, indent=1, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
 
 def start(spec: AgentSpec, mirror, **kwargs) -> Monitor | None:
-    """Run the monitor beside the watch worker, on its own client."""
+    """Run the monitor beside the watch worker, on its own client, with its
+    judgments on a worker of their own."""
     if os.environ.get(ENABLED_ENV, "1").strip() in ("0", "false", "off"):
         log("request monitor is off")
+        # Said in the record too: off is a state a watchdog must tell apart
+        # from stopped.
+        write_health(spec, {"schema": HEALTH_SCHEMA, "written_at": time.time(), "pid": os.getpid(),
+                            "enabled": False})
         return None
-    monitor = Monitor(spec, ZulipClient.from_env(spec.zulip_env), mirror, **kwargs)
-    threading.Thread(target=monitor.run, name="observer-monitor", daemon=True).start()
+    monitor = Monitor(spec, ZulipClient.from_env(spec.zulip_env), mirror, async_judge=True, **kwargs)
+    stop = threading.Event()
+    threading.Thread(target=monitor.judge_forever, args=(stop,), name="observer-judge", daemon=True).start()
+    threading.Thread(target=monitor.run, args=(stop,), name="observer-monitor", daemon=True).start()
     return monitor

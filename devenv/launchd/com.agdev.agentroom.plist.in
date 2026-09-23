@@ -33,6 +33,14 @@
          how often a vendor is asked, whatever the page polls. -->
     <key>AGENTROOM_CODEX_BIN</key><string>__HOME__/.local/bin/codex</string>
     <key>AGENTROOM_AGY_BIN</key><string>__HOME__/.local/bin/agy</string>
+    <!-- Observer's request monitor, watched from outside it (robust_workflow
+         p2 step 4): its health record, its listener's status file (to tell a
+         stopped thread in a live process from a dead process), and `dm` to
+         tell the realm's owners by direct message from the relay's bot when
+         it goes into a failing state and when it comes back. -->
+    <key>AGENTROOM_MONITOR_HEALTH</key><string>__PROJECTS_ROOT__/pj-agdev/agobserver/.local/monitor-health.json</string>
+    <key>AGENTROOM_MONITOR_STATUS</key><string>__PROJECTS_ROOT__/pj-agdev/.local/agag-status.json</string>
+    <key>AGENTROOM_MONITOR_ALERT</key><string>dm</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer>
   <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/agdevworld/agentroom/.local/out/agentroom.log</string>
