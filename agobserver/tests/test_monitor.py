@@ -26,8 +26,9 @@ CHANNEL = "agobserver-agstudio1"
 class Client:
     """What the monitor posts with: into the fake realm, as Observer."""
 
-    def __init__(self, realm):
+    def __init__(self, realm, clock=None):
         self.realm = realm
+        self.clock = clock
         self.sent = []
 
     def whoami(self):
@@ -35,7 +36,10 @@ class Client:
 
     def send_to_channel(self, channel, topic, content):
         self.sent.append((channel, topic, content))
-        return self.realm.post(channel, topic, content, sender_id=OBS, sender_name="agobserver-agstudio1")
+        # Stamped with the monitor's clock, as Zulip stamps a post with now.
+        when = int(self.clock.now) if self.clock is not None else None
+        return self.realm.post(channel, topic, content, sender_id=OBS, sender_name="agobserver-agstudio1",
+                               timestamp=when)
 
     def subscriptions(self):
         return [{"name": name} for name in ("front", "pj-x", "work-m1", CHANNEL)]
@@ -72,7 +76,9 @@ def stalled_realm():
     realm.add_channel(9, CHANNEL)
     ask = post(realm, "front", "front-a", "Build the locations.", DEV)
     post(realm, "front", "front-a", ACK, FRONT)
-    post(realm, "pj-x", "workplan-a", "[selfnote][rootchat] front/front-a", FRONT)
+    # Root notes as their writers produce them since robust_workflow p2:
+    # anchored by a post in the home they name.
+    post(realm, "pj-x", "workplan-a", f"[selfnote][rootchat] front/front-a #{ask}", FRONT)
     post(realm, "pj-x", "workplan-a", "Mission: build the locations.", FRONT)
     mission = post(realm, "pj-x", "workplan-a", "[selfnote][mission] x", AUTOLAB)
     post(realm, "pj-x", "workplan-a", "# Plan\n\nTwo tasks.", AUTOLAB)
@@ -80,10 +86,10 @@ def stalled_realm():
     for serial in (1, 2):
         topic = f"workrun-task{serial}-m{mission}"
         post(realm, "work-m1", topic, f"[selfnote][task] {mission}#{serial}", AUTOLAB)
-        post(realm, "work-m1", topic, "[selfnote][rootchat] pj-x/workplan-a", AUTOLAB)
+        post(realm, "work-m1", topic, f"[selfnote][rootchat] pj-x/workplan-a #{mission}", AUTOLAB)
         post(realm, "work-m1", topic, f"# Task {serial}", AUTOLAB)
     task1 = f"workrun-task1-m{mission}"
-    post(realm, "work-m1", task1, "[selfnote][rootchat] front/front-a", FRONT)
+    post(realm, "work-m1", task1, f"[selfnote][rootchat] front/front-a #{ask}", FRONT)
     post(realm, "work-m1", task1, "Start task 1.", FRONT)
     post(realm, "work-m1", task1, ACK, AUTOLAB)
     post(realm, "work-m1", task1, "@**Front** task 1 done", AUTOLAB)
@@ -111,7 +117,7 @@ def world(tmp_path):
         return {"verdict": "legit", "evidence": "a deliberate close"}
 
     def make():
-        return monitoring.Monitor(spec(tmp_path), Client(realm), mirror, judge=judge, clock=lambda: clock.now,
+        return monitoring.Monitor(spec(tmp_path), Client(realm, clock), mirror, judge=judge, clock=lambda: clock.now,
                                   interval=60, window_hours=12)
 
     yield SimpleNamespace(realm=realm, mirror=mirror, clock=clock, make=make, mission=mission, judged=judged)

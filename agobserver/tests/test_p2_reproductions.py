@@ -22,6 +22,11 @@ from test_monitor import (  # noqa: F401 - the fixture is used by name
 )
 
 
+def ask(world) -> int:
+    """The request's first post: what the root notes are anchored by."""
+    return min(i for i, m in world.realm.messages.items() if m["display_recipient"] == "front")
+
+
 def task2(world) -> str:
     return f"workrun-task2-m{world.mission}"
 
@@ -69,11 +74,10 @@ def test_r1_an_unreadable_target_is_not_a_rescue(world):
 # --- R2: a change of failure kind is reported as rescued ------------------------------
 
 
-@defect
 def test_r2_a_different_blockage_is_not_a_rescue(world):
     watcher = open_incident(world)
     # Somebody posts into task 2; autolab's listener never picks it up.
-    post(world.realm, "work-m1", task2(world), "[selfnote][rootchat] front/front-a", FRONT)
+    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a #{ask(world)}", FRONT)
     started = post(world.realm, "work-m1", task2(world), "Start task 2.", FRONT)
     settle(world, lambda: world.mirror.message(started) is not None)
     world.clock.now += 120
@@ -111,11 +115,10 @@ def test_r4_a_resolved_origin_does_not_abandon_its_incident(world):
 # --- R5: an origin renamed while its work remains -------------------------------------
 
 
-@defect
 def test_r5_a_renamed_origin_keeps_its_incident(world):
     watcher = open_incident(world)
     rename(world, "front", "front-a", "front-a-renamed")
-    post(world.realm, "work-m1", task2(world), "[selfnote][rootchat] front/front-a-renamed", FRONT)
+    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a-renamed #{ask(world)}", FRONT)
     post(world.realm, "work-m1", task2(world), "Start task 2.", FRONT)
     acked = post(world.realm, "work-m1", task2(world), ACK, AUTOLAB)
     settle(world, lambda: world.mirror.message(acked) is not None)
@@ -129,7 +132,6 @@ def test_r5_a_renamed_origin_keeps_its_incident(world):
 # --- R6: the old origin name reused by another request ----------------------------------
 
 
-@defect
 def test_r6_a_reused_origin_name_does_not_capture_the_incident(world):
     watcher = open_incident(world)
     rename(world, "front", "front-a", "front-a-renamed")
@@ -146,7 +148,6 @@ def test_r6_a_reused_origin_name_does_not_capture_the_incident(world):
 # --- R7: the stalled conversation itself renamed --------------------------------------
 
 
-@defect
 def test_r7_a_renamed_stalled_conversation_is_one_incident(world):
     watcher = open_incident(world)
     rename(world, "work-m1", task2(world), f"{task2(world)}-renamed")
@@ -171,8 +172,8 @@ def undelivered(world):
     # Undo the acceptance in stalled_realm: a fresh task 3 carries the case.
     topic = f"workrun-task3-m{mission}"
     post(world.realm, "work-m1", topic, f"[selfnote][task] {mission}#3", AUTOLAB)
-    post(world.realm, "work-m1", topic, "[selfnote][rootchat] pj-x/workplan-a", AUTOLAB)
-    post(world.realm, "work-m1", topic, "[selfnote][rootchat] front/front-a", FRONT)
+    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] pj-x/workplan-a #{mission}", AUTOLAB)
+    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] front/front-a #{ask(world)}", FRONT)
     post(world.realm, "work-m1", topic, "Start task 3.", FRONT)
     post(world.realm, "work-m1", topic, ACK, AUTOLAB)
     answer = post(world.realm, "work-m1", topic, "@**Front** task 3 done", AUTOLAB)
@@ -201,7 +202,6 @@ def test_r8_an_unrelated_home_reply_does_not_consume_an_answer(world, undelivere
 # --- R9: a served mark written before the remote conversation was renamed ------------
 
 
-@defect
 def test_r9_a_served_mark_survives_a_rename_of_the_answering_conversation(world, undelivered):
     topic = f"workrun-task3-m{world.mission}"
     mark = post(world.realm, "front", "front-a", f"[selfnote][served] work-m1/{topic} {undelivered}", FRONT)
@@ -212,3 +212,32 @@ def test_r9_a_served_mark_survives_a_rename_of_the_answering_conversation(world,
     world.clock.now += 120
     kinds = [r["kind"] for r in watcher.tick()]
     assert "undelivered" not in kinds, "the served mark names the old topic name and no longer matches"
+
+
+# --- step 2: identity survives what used to re-key it ---------------------------------
+
+
+def test_a_lost_store_adopts_a_renamed_incident_topic_with_its_requests(world, tmp_path):
+    watcher = open_incident(world)
+    settle(world, lambda: world.mirror.topics(CHANNEL))
+    (record,) = watcher.records()
+    rename(world, CHANNEL, record["topic"], f"{record['topic']}-by-hand")
+    for path in (tmp_path / "local" / "incidents").glob("*.json"):
+        path.unlink()
+    world.clock.now += 60
+    again = world.make()
+    again.tick()
+    settle(world)
+    (adopted,) = again.records()
+    assert adopted["adopted"] and adopted["topic"].endswith("-by-hand")
+    assert len(adopted["requests"]) == 1, "the request already made is counted, not asked again"
+    assert len(requests(world)) == 1
+    assert sum("Incident: unstarted" in text for text in incident_posts(world)) == 1
+
+
+def test_a_recovery_request_goes_where_the_origin_is_now(world):
+    watcher = world.make()
+    rename(world, "front", "front-a", "front-a-renamed")
+    watcher.tick()
+    settle(world, lambda: requests(world))
+    assert [m["subject"] for m in requests(world)] == ["front-a-renamed"]

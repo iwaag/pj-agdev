@@ -108,6 +108,39 @@ def _age(seconds: float) -> str:
     return f"{seconds // 60} min" if seconds < 5400 else f"{seconds // 3600} h {(seconds % 3600) // 60:02d} min"
 
 
+def origin_key(anchor: int) -> str:
+    """A tracked request: its origin conversation's first post."""
+    return f"o{int(anchor)}"
+
+
+def incident_key(origin_anchor: int, candidate: Candidate) -> str:
+    """One incident per request and stalled conversation, both by anchor.
+
+    Not the kind: the same work blocked a different way is the same
+    incident with the same allowance of requests (p2 step 1, R2). Not a
+    name: a rename is display, and a reused name is another conversation
+    (R5–R7)."""
+    node = candidate.anchor or (candidate.evidence[0] if candidate.evidence else 0)
+    return f"{origin_key(origin_anchor)}:n{int(node)}"
+
+
+#: When one conversation fails several checks at once, the incident is
+#: named after the one a reader should worry about first.
+PRIORITY = ("failed", "unacknowledged", "undelivered", "unstarted", "resolved_live", "silent")
+
+
+def primary(candidates) -> list[Candidate]:
+    """One candidate per stalled conversation (by anchor), the most urgent."""
+    best: dict[int, Candidate] = {}
+    for candidate in candidates:
+        node = candidate.anchor or (candidate.evidence[0] if candidate.evidence else 0)
+        current = best.get(node)
+        rank = PRIORITY.index(candidate.kind) if candidate.kind in PRIORITY else len(PRIORITY)
+        if current is None or rank < (PRIORITY.index(current.kind) if current.kind in PRIORITY else len(PRIORITY)):
+            best[node] = candidate
+    return list(best.values())
+
+
 class Monitor:
     """The request monitor. One instance, one thread."""
 
@@ -165,7 +198,11 @@ class Monitor:
     # --- discovery -------------------------------------------------------------------
 
     def origins(self, now: float) -> list[tuple[str, str, int]]:
-        """`(channel, live topic, newest message id)` of every active request."""
+        """`(channel, live topic, anchor)` of every active request.
+
+        A request **is** its conversation's first post (robust_workflow p2
+        step 2): the name it is shown under changes with a rename or a ✔ and
+        can be taken by another request; the id cannot."""
         found = []
         for index in self.mirror.topics(ORIGIN_CHANNEL, include_resolved=False):
             if not index.name.startswith(ORIGIN_PREFIX):
@@ -176,8 +213,14 @@ class Monitor:
             newest = messages[-1]
             if now - int(newest.timestamp or 0) > self.window:
                 continue
-            found.append((ORIGIN_CHANNEL, index.live_name, int(newest.id)))
+            found.append((ORIGIN_CHANNEL, index.live_name, int(messages[0].id)))
         return found
+
+    def where(self, message_id: int) -> tuple[str, str] | None:
+        """Where a post is now, off the mirror: `(channel, live topic)`."""
+        from agag.identity import whereabouts
+
+        return whereabouts(self.mirror, int(message_id or 0))
 
     # --- the loop ---------------------------------------------------------------------
 
@@ -194,23 +237,21 @@ class Monitor:
         seen_keys: set[str] = set()
         looked_origins: set[str] = set()
         reader = MirrorReader(self.mirror)
-        for channel, topic, newest in self.origins(now):
-            result = trace(reader, newest, now=int(now))
+        for channel, topic, anchor in self.origins(now):
+            result = trace(reader, anchor, now=int(now))
             if result.root is None:
                 continue
-            origin_key = f"{channel}/{topic}"
-            looked_origins.add(origin_key)
-            for candidate in stall_candidates(result, now=int(now)):
-                if self.is_own(candidate):
-                    # Our own recovery request, not yet taken up: that is the
-                    # incident it belongs to, watched by its retry and report
-                    # — never an incident of its own.
-                    continue
-                seen_keys.add(candidate.key)
+            looked_origins.add(origin_key(anchor))
+            for candidate in primary(c for c in stall_candidates(result, now=int(now)) if not self.is_own(c)):
+                # Our own recovery request, not yet taken up, is the incident
+                # it belongs to — watched by its retry and report — never an
+                # incident of its own (`is_own`).
+                key = incident_key(anchor, candidate)
+                seen_keys.add(key)
                 try:
-                    touched.append(self.handle(candidate, result, (channel, topic, newest), now))
+                    touched.append(self.handle(candidate, result, (channel, topic, anchor), now))
                 except Exception as error:  # noqa: BLE001 - one incident must not stop the look
-                    log(f"monitor: incident {candidate.key} failed this tick: {error!r}")
+                    log(f"monitor: incident {key} failed this tick: {error!r}")
         for record in self.records():
             if record.get("state") in CLOSED or record.get("state") == DISMISSED:
                 continue
@@ -245,11 +286,23 @@ class Monitor:
         return message is not None and int(message.sender_id) == self.self_id
 
     def handle(self, candidate: Candidate, result, origin: tuple[str, str, int], now: float) -> dict[str, Any]:
-        record = self.load(candidate.key)
+        key = incident_key(origin[2], candidate)
+        record = self.load(key)
         if record is None:
             record = self.open(candidate, origin, now)
         if record.get("state") in CLOSED:
             return record
+        # Where things are *now*: a rename since the last look is display.
+        record["origin"].update(channel=origin[0], topic=origin[1])
+        record["node"].update(channel=candidate.channel, topic=candidate.topic)
+        if candidate.kind != record.get("kind"):
+            # The same stalled work, blocked differently: the same incident,
+            # the same allowance of requests (robust_workflow p2 step 1, R2).
+            self.post_incident(record, f"Now **{candidate.kind}**: {candidate.fact}")
+            record.setdefault("kinds", [record.get("kind")]).append(candidate.kind)
+            record["kind"] = candidate.kind
+            record.pop("judgment", None)
+            record["next_action"], record["responsible"] = candidate.next_action, candidate.responsible
         if record.get("state") == DISMISSED:
             if now - float(record.get("dismissed_at", 0)) < REJUDGE_SECONDS:
                 return record
@@ -303,8 +356,8 @@ class Monitor:
     # --- the steps ---------------------------------------------------------------------
 
     def open(self, candidate: Candidate, origin: tuple[str, str, int], now: float) -> dict[str, Any]:
-        anchor = candidate.evidence[0] if candidate.evidence else origin[2]
-        topic = f"{INCIDENT_PREFIX}{candidate.kind}-{anchor or origin[2]}"
+        key = incident_key(origin[2], candidate)
+        topic = f"{INCIDENT_PREFIX}{candidate.kind}-{candidate.anchor or origin[2]}"
         if candidate.responsible.startswith("the agent that owns") and candidate.channel == ORIGIN_CHANNEL:
             # A conversation nobody has acknowledged names no owner of its
             # own; the entrance's owner is whoever acknowledges there (seen
@@ -314,25 +367,20 @@ class Monitor:
                 candidate = replace(candidate, responsible=f"{owner} (its listener owns every `{ORIGIN_PREFIX}…` "
                                                           f"conversation in #{ORIGIN_CHANNEL})")
         record = {
-            "key": candidate.key, "kind": candidate.kind, "state": DETECTED, "detected_at": now,
+            "key": key, "kind": candidate.kind, "state": DETECTED, "detected_at": now,
             "topic": topic, "since": candidate.since,
             "origin": {"channel": origin[0], "topic": origin[1], "message_id": origin[2],
-                       "key": f"{origin[0]}/{origin[1]}"},
-            "node": {"channel": candidate.channel, "topic": candidate.topic, "identity": candidate.identity},
+                       "key": origin_key(origin[2])},
+            "node": {"channel": candidate.channel, "topic": candidate.topic, "identity": candidate.identity,
+                     "anchor": candidate.anchor},
             "fact": candidate.fact, "responsible": candidate.responsible, "next_action": candidate.next_action,
             "evidence": list(candidate.evidence),
         }
-        existing = self.mirror.messages(self.spec.instance_name(), topic, across_resolve=True)
-        if existing:
-            # The store was lost; the record in Zulip was not. Adopt it rather
-            # than open a second one — and do not ask again blindly.
-            record["adopted"] = True
-            record["requests"] = [{"at": now, "message_id": 0}]
-            record["state"] = RECOVERING
-            self.save(record)
-            return record
+        adopted = self.adopt(record, now)
+        if adopted is not None:
+            return adopted
         where = f"`#{candidate.channel} › {candidate.topic}`" + (f" ({candidate.identity})" if candidate.identity else "")
-        self.post(self.spec.instance_name(), topic, "\n".join([
+        record["incident_anchor"] = self.post(self.spec.instance_name(), topic, "\n".join([
             f"**Incident: {candidate.kind}** in {where}, for the request in "
             f"`#{origin[0]} › {origin[1]}` (#{origin[2]}).",
             "",
@@ -343,10 +391,36 @@ class Monitor:
             f"- Evidence: message ids {', '.join(f'#{i}' for i in candidate.evidence if i) or '—'}; "
             f"`agentchat trace {origin[2]}`",
         ]))
-        self.post(self.spec.instance_name(), topic, note(INCIDENT_TAG, f"{candidate.key} origin #{origin[2]}"))
+        self.post_incident(record, note(INCIDENT_TAG, f"{key} origin #{origin[2]}"))
         self.save(record)
-        log(f"monitor: incident {topic} opened for {candidate.key}")
+        log(f"monitor: incident {topic} opened for {key}")
         return record
+
+    def adopt(self, record: dict[str, Any], now: float) -> dict[str, Any] | None:
+        """The store was lost; the record in Zulip was not. Find the incident
+        by its `[selfnote][incident] <key>` note — wherever its topic is now
+        and whatever it is called — and carry on from what it says: the
+        requests already made count, and a closed incident stays closed.
+        Never a second topic, never a request asked again blindly."""
+        channel = self.spec.instance_name()
+        for found in self.mirror.notes(tag=INCIDENT_TAG, sender_id=self.self_id, channel=channel):
+            if found.value.split()[0:1] != [record["key"]]:
+                continue
+            message = self.mirror.message(found.message_id)
+            if message is None:
+                continue
+            history = self.mirror.messages(channel, message.topic, across_resolve=True)
+            own = [m for m in history if m.sender_id == self.self_id]
+            asked = [m for m in own if m.content.startswith("Asked for recovery (")]
+            states = [m.content.split("[selfnote][state]", 1)[1].strip() for m in own
+                      if m.content.startswith("[selfnote][state]")]
+            record.update(adopted=True, topic=message.topic, incident_anchor=int(found.message_id),
+                          requests=[{"at": float(m.timestamp), "message_id": 0} for m in asked])
+            record["state"] = states[-1] if states and states[-1] in CLOSED else (RECOVERING if asked else DETECTED)
+            self.save(record)
+            log(f"monitor: adopted {message.topic} for {record['key']} ({len(asked)} request(s) on record)")
+            return record
+        return None
 
     def entrance_owner(self) -> str:
         """Who acknowledged posts in the origin channel most recently."""
@@ -379,7 +453,8 @@ class Monitor:
             f"Please get it moving, or say here why it should wait. Request {number} of {MAX_REQUESTS} for "
             f"`{record['topic']}` in my channel; after that I report it and stop asking.",
         ])
-        return self.post(origin[0], origin[1], text)
+        where = self.where(origin[2]) or (origin[0], origin[1])
+        return self.post(where[0], where[1], text)
 
     def rescued(self, record: dict[str, Any], now: float) -> dict[str, Any]:
         """The candidate is gone on a later look: the work moved again."""
@@ -389,7 +464,7 @@ class Monitor:
         self.post_incident(record, f"**Rescued** {how}: on the look at {_when(now)} "
                                    f"`{record['node']['topic']}` is no longer {record['kind']}. The cause is not "
                                    "removed by this — it stays open as a defect to fix.")
-        self.post(self.spec.instance_name(), record["topic"], note("state", "rescued"))
+        self.post_incident(record, note("state", "rescued"))
         self.save(record)
         log(f"monitor: {record['topic']} rescued {how}")
         return record
@@ -407,7 +482,7 @@ class Monitor:
             f"- The request: `#{record['origin']['channel']} › {record['origin']['topic']}` "
             f"(`agentchat trace {record['origin']['message_id']}`)",
         ]))
-        self.post(self.spec.instance_name(), record["topic"], note("state", "reported"))
+        self.post_incident(record, note("state", "reported"))
         self.save(record)
         log(f"monitor: {record['topic']} reported: {why}")
         return record
@@ -430,7 +505,11 @@ class Monitor:
         return int(deliver(self.client, channel, topic, text, self_id=self.self_id, after_id=0, log=log) or 0)
 
     def post_incident(self, record: dict[str, Any], text: str) -> int:
-        return self.post(self.spec.instance_name(), record["topic"], text)
+        where = self.where(int(record.get("incident_anchor") or 0))
+        topic = where[1] if where is not None and where[0] == self.spec.instance_name() else record["topic"]
+        message_id = self.post(self.spec.instance_name(), topic, text)
+        record.setdefault("incident_anchor", message_id)
+        return message_id
 
     def run(self, stop: threading.Event | None = None) -> None:
         stop = stop or threading.Event()
