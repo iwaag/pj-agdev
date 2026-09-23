@@ -241,3 +241,17 @@ def test_a_channel_the_bot_has_not_joined_is_joined_and_the_realm_re_read(world)
     added = watcher.ensure_subscribed()
     assert "pj-x" in added and "work-m1" in added and "front" not in added
     assert ("subscribe", tuple(added)) in watcher.client.sent and resyncs == [True]
+
+
+def test_a_post_nobody_acknowledged_at_the_entrance_is_reported_naming_its_owner(world):
+    """Trial S1: Front's listener was down; the stop report could only say
+    'the agent that owns this conversation'."""
+    asked = post(world.realm, "front", "front-b", "A question.", DEV)
+    settle(world, lambda: world.mirror.message(asked) is not None)
+    world.clock.now = world.realm.messages[asked]["timestamp"] + 400
+    watcher = world.make()
+    touched = [r for r in watcher.tick() if r["kind"] == "unacknowledged"]
+    assert touched and touched[0]["state"] == monitoring.REPORTED
+    assert touched[0]["responsible"].startswith("Front")
+    settle(world)
+    assert not [m for m in requests(world) if m["subject"] == "front-b"], "nobody to ask: no request"

@@ -43,6 +43,7 @@ import json
 import os
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -304,6 +305,14 @@ class Monitor:
     def open(self, candidate: Candidate, origin: tuple[str, str, int], now: float) -> dict[str, Any]:
         anchor = candidate.evidence[0] if candidate.evidence else origin[2]
         topic = f"{INCIDENT_PREFIX}{candidate.kind}-{anchor or origin[2]}"
+        if candidate.responsible.startswith("the agent that owns") and candidate.channel == ORIGIN_CHANNEL:
+            # A conversation nobody has acknowledged names no owner of its
+            # own; the entrance's owner is whoever acknowledges there (seen
+            # in trial S1: a stop report that could only say "the agent").
+            owner = self.entrance_owner()
+            if owner:
+                candidate = replace(candidate, responsible=f"{owner} (its listener owns every `{ORIGIN_PREFIX}…` "
+                                                          f"conversation in #{ORIGIN_CHANNEL})")
         record = {
             "key": candidate.key, "kind": candidate.kind, "state": DETECTED, "detected_at": now,
             "topic": topic, "since": candidate.since,
@@ -338,6 +347,16 @@ class Monitor:
         self.save(record)
         log(f"monitor: incident {topic} opened for {candidate.key}")
         return record
+
+    def entrance_owner(self) -> str:
+        """Who acknowledged posts in the origin channel most recently."""
+        from agag.agent import is_ack
+
+        for index in sorted(self.mirror.topics(ORIGIN_CHANNEL), key=lambda t: -t.max_id)[:20]:
+            for message in reversed(self.mirror.messages(ORIGIN_CHANNEL, index.live_name, limit=40)):
+                if is_ack(message.content.strip()):
+                    return message.sender_name
+        return ""
 
     def judged(self, candidate: Candidate, result, record: dict[str, Any]) -> dict[str, str]:
         self.judgments += 1
