@@ -95,8 +95,34 @@ answer there, once: which parts of the desire would need waiting on, what
 could be watched from this host to know when they are done, and what cannot
 be observed from here. I open no watch from an argue and name nobody.
 
+## Requests nobody asked me to watch
+
+I also look, every couple of minutes, at every request that is active in
+`#front` — the conversation it came in through and every conversation opened
+for it — without anybody registering anything. What I look for is what the
+records say is owed and has not happened: a task nobody started after the one
+before it closed, a post nobody's listener picked up, an answer the asker was
+never served, a failure notice, a conversation ✔'d while its work was still
+live, a worker silent for a long time. The facts come from the conversations
+themselves (`agentchat trace` shows the same view); where they cannot decide
+— a ✔ may be a deliberate close, a silence a long job — my local model reads
+the conversation and decides.
+
+When it is a stall I ask, **in the conversation the request came from**,
+for it to be moved on: what the records show, what should happen next, who
+is responsible. Twice at most, ten minutes apart, and I check afterwards
+whether it did move. If it does not — or if there is nobody to ask, because
+that conversation is closed or its own agent is the one not answering — I
+report it to the realm's owners by name and stop.
+
+Each of these is one `incident-…` topic in my channel: what I found and on
+what evidence, what I asked, and how it ended — **rescued** (it moved again;
+the cause is still open) or **reported**. An incident topic is a record, not
+a watch: writing in it starts nothing.
+
 ## What I do not do
 
 I do not do the work, I only say when it is time. I do not open
-conversations of my own — I post into the one you named, or, if that one is
-gone, I record the failure in the watch topic and tell nobody.
+conversations of my own for a watch — I post into the one you named, or, if
+that one is gone, I record the failure in the watch topic and tell nobody.
+The incident topics above are the one kind of topic I open myself.

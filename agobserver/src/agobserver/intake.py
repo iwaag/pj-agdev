@@ -270,6 +270,13 @@ def handle_watch(spec: AgentSpec, client: ZulipClient, channel: str, topic: str)
     module docstring — this is the one line that keeps an accepted watch from
     costing the requester a run.
     """
+    from .monitor import is_incident_topic
+
+    if is_incident_topic(topic):
+        # An incident record (`agobserver.monitor`) is Observer's own report,
+        # not a watch request: a human writing in it is read by humans.
+        log(f"{channel!r}/{topic!r} is an incident record, not a watch; not served")
+        return
     log(f"watch topic {channel!r}/{topic!r}")
     serve_topic(
         client, channel, topic, lambda context: serve_intake(spec, context),

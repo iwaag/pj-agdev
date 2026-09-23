@@ -72,6 +72,11 @@ def main() -> None:
         deliver=lambda client, watch, record: notify.deliver(SPEC, client, watch, record),
         mirror=mirror,
     )
+    # The second clock (`robust_workflow` p1 step 4): every active request,
+    # looked at without anybody registering a watch for it.
+    from . import monitor
+
+    monitor.start(SPEC, mirror)
     from .argue import handle_mention
 
     # The mention route answers argue invitations only (`agobserver.argue`);

@@ -52,3 +52,13 @@ allowed_tools = "Read,Write,Edit,Glob,Grep,Bash"
 profile = "sonnet"
 requires = []
 allowed_tools = "Read,Glob,Grep"
+
+# One judgment about one stall candidate (`robust_workflow` p1 step 4): is a
+# ✔ on live work a mistake, is a long silence a dead worker? Run by the
+# request monitor only for what the records cannot decide, on the local model
+# for the same reason the watch evaluations are. It reads what its prompt
+# carries and writes one result file.
+[roles.triage]
+profile = "local"
+requires = []
+allowed_tools = "Read,Write"
