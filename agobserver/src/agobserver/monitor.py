@@ -517,6 +517,7 @@ class Monitor:
             record["kind"] = candidate.kind
             record.pop("judgment", None)
             record["next_action"], record["responsible"] = candidate.next_action, candidate.responsible
+            self.save(record)  # said once: every path below may return early
         if record.get("state") == DISMISSED and not candidate.judgment:
             # The dismissal answered a judged question (was that ✔ a
             # mistake? is that silence a long job?). A mechanical fact on the
