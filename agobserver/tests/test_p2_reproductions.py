@@ -322,7 +322,7 @@ def test_the_same_work_stalling_after_a_rescue_is_a_new_incident(world):
     assert [r["state"] for r in watcher.tick()] == [monitoring.RESCUED]
     # …and then autolab goes quiet for longer than the silence threshold.
     world.clock.now = world.realm.messages[acked]["timestamp"] + 3 * 3600
-    watcher.judge = lambda *args: {"verdict": "stall", "evidence": "no word in hours"}
+    watcher.judge = lambda *args, **_: {"verdict": "stall", "evidence": "no word in hours"}
     touched = watcher.tick()
     settle(world)
     assert [(r["kind"], r["episode"]) for r in touched] == [("silent", 2)]

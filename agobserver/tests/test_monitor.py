@@ -114,7 +114,7 @@ def world(tmp_path):
     clock = SimpleNamespace(now=max(m["timestamp"] for m in realm.messages.values()) + 600)
     judged = []
 
-    def judge(spec, candidate, trace_text, tail, incident):
+    def judge(spec, candidate, trace_text, tail, incident, **_):
         judged.append(candidate.kind)
         return {"verdict": "legit", "evidence": "a deliberate close"}
 

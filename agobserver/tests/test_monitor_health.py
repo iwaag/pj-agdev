@@ -38,7 +38,7 @@ def test_a_stuck_judgment_holds_only_itself(world, tmp_path):
     release = threading.Event()
     calls = []
 
-    def slow_judge(spec, candidate, trace_text, tail, incident):
+    def slow_judge(spec, candidate, trace_text, tail, incident, **_):
         calls.append(incident)
         release.wait(10)
         return {"verdict": "stall", "evidence": "no word for hours"}

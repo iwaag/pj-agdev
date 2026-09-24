@@ -766,8 +766,12 @@ class Monitor:
         counted, and an incident whose evidence keeps moving under its
         judgment is named in the health record (`CHURN_LIMIT`)."""
         tail = [m.as_zulip() for m in self.mirror.messages(candidate.channel, candidate.topic)[-10:]]
+        root = result.root
+        home = [] if root is None or (root.channel, root.topic) == (candidate.channel, candidate.topic) else \
+            [m.as_zulip() for m in self.mirror.messages(root.channel, root.topic)[-5 * triage.HOME_MESSAGES:]]
         snapshot = self.snapshot(candidate, result)
-        job = (candidate, "\n".join(trace_lines(result)), tail, record["topic"], snapshot)
+        job = (candidate, "\n".join(trace_lines(result)), tail, record["topic"], snapshot,
+               home, f"#{root.channel} › {root.topic}" if root is not None else "")
         key = record["key"]
         if not self.async_judge:
             return self._run_judgment(key, job)
@@ -793,7 +797,7 @@ class Monitor:
         return None
 
     def _run_judgment(self, key: str, job: tuple) -> dict[str, str]:
-        candidate, trace_text, tail, topic, snapshot = job
+        candidate, trace_text, tail, topic, snapshot, home, home_name = job
         self.judgments += 1
         started = self.clock()
         with self._judge_lock:
@@ -807,7 +811,8 @@ class Monitor:
                 log(f"monitor: fault injected: the judgment of {topic} is held until the fault file is removed")
                 while self.fault("triage-stall", consume=False):
                     time.sleep(1.0)
-            verdict = dict(self.judge(self.spec, candidate, trace_text, tail, topic))
+            verdict = dict(self.judge(self.spec, candidate, trace_text, tail, topic, home=home, home_name=home_name,
+                                      snapshot=snapshot))
         finally:
             with self._judge_lock:
                 self.judging = None

@@ -10,6 +10,7 @@ whose owner answered and now waits for the human.
 
 from __future__ import annotations
 
+import json
 import time
 from types import SimpleNamespace
 
@@ -59,7 +60,7 @@ def waiting(tmp_path):
     verdicts: list[str] = []
     judged: list[tuple[str, int]] = []
 
-    def judge(spec_, candidate, trace_text, tail, incident):
+    def judge(spec_, candidate, trace_text, tail, incident, **_):
         judged.append((candidate.kind, candidate.since))
         verdict = verdicts.pop(0) if verdicts else "legit"
         return {"verdict": verdict, "evidence": "the owner asked the human a question and nobody answered yet"}
@@ -210,3 +211,45 @@ def test_evidence_that_keeps_moving_under_a_judgment_is_visible_in_health(waitin
     assert health["churning"] == [key]
     assert health["pending"] == 1 and health["oldest_pending_seconds"] is not None
     assert not requests(waiting)
+
+
+# --- step 6: what a judgment reads, and that it is kept ----------------------------
+
+
+def test_a_judgment_reads_the_request_s_own_conversation(waiting):
+    """p3 step 5, trial C: a ✔ on a task waiting for the human's acceptance
+    was judged a stall twice; the judgment saw the task and a one-line trace
+    of the origin, not that Front had just put the question to the human."""
+    resolve_plan(waiting)
+    seen = {}
+    watcher = waiting.make()
+
+    def judge(spec_, candidate, trace_text, tail, incident, **extra):
+        seen.update(extra)
+        return {"verdict": "legit", "evidence": "the human was asked"}
+
+    watcher.judge = judge
+    watcher.tick()
+    assert seen["home_name"] == "#front › front-h"
+    assert any("which one do you want?" in m["content"] for m in seen["home"])
+    assert seen["snapshot"].startswith("resolved_live|")
+
+
+def test_the_prompt_and_its_input_are_kept_beside_the_verdict(tmp_path, monkeypatch):
+    from agag.trace import Candidate
+
+    from agobserver import triage
+
+    spec_ = spec(tmp_path)
+    monkeypatch.setattr(triage, "run_role", lambda *a, **k: ('{"verdict": "legit", "evidence": "asked"}', None, 0))
+    candidate = Candidate("resolved_live", "pj-x", "✔ t", "task 1#1", "✔ while awaiting requester", "x", "y", 5,
+                          (7,), judgment=True, anchor=3)
+    home = [{"id": 9, "sender_full_name": "Front", "content": "@**Developer** Do you accept task 1?"}]
+    verdict = triage.judge(spec_, candidate, "trace text", [], "incident-x", home=home, home_name="#front › f",
+                           snapshot="s1")
+    assert verdict["verdict"] == "legit"
+    (workspace,) = list((tmp_path / "topics").rglob("triage"))
+    prompt = (workspace / triage.PROMPT_FILE).read_text(encoding="utf-8")
+    assert "request's own conversation (#front › f)" in prompt and "Do you accept task 1?" in prompt
+    kept = json.loads((workspace / triage.INPUT_FILE).read_text(encoding="utf-8"))
+    assert kept["snapshot"] == "s1" and kept["home"][0]["id"] == 9

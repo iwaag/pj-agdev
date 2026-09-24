@@ -31,11 +31,38 @@ TIMEOUT_SECONDS = 150.0
 DEADLINE_MARGIN_SECONDS = 20.0
 MAX_TURNS = 6
 LINE_LIMIT = 600
+#: How many of the request's own conversation's newest posts a judgment
+#: reads beside the stalled conversation (robust_workflow p3 step 6).
+HOME_MESSAGES = 6
+PROMPT_FILE = "prompt.md"
+INPUT_FILE = "input.json"
 
 __all__ = ["judge", "triage_prompt"]
 
 
-def triage_prompt(candidate, trace_text: str, tail: list[dict]) -> str:
+def _clip(text: str) -> str:
+    """At most `LINE_LIMIT` characters, keeping the beginning **and the
+    end**: a report or a relay ends with its question ("Do you accept task
+    1?"), and a cut that kept only the head dropped exactly that
+    (robust_workflow p3 step 6, trial C)."""
+    if len(text) <= LINE_LIMIT:
+        return text
+    half = (LINE_LIMIT - 5) // 2
+    return f"{text[:half]} […] {text[-half:]}"
+
+
+def _lines(messages: list[dict]) -> list[str]:
+    lines = []
+    for message in messages:
+        if not is_speech(message):
+            continue
+        text = _clip(" ".join(str(message.get("content") or "").split()))
+        lines.append(f"[{message.get('sender_full_name')} #{message.get('id')}] {text}")
+    return lines
+
+
+def triage_prompt(candidate, trace_text: str, tail: list[dict], home: list[dict] | None = None,
+                  home_name: str = "") -> str:
     lines = [
         f"A possible stall, kind `{candidate.kind}`, in `#{candidate.channel} › {candidate.topic}`"
         + (f" ({candidate.identity})" if candidate.identity else "") + ".",
@@ -50,11 +77,18 @@ def triage_prompt(candidate, trace_text: str, tail: list[dict]) -> str:
         "The last messages of that conversation, oldest first:",
         "",
     ]
-    for message in tail:
-        if not is_speech(message):
-            continue
-        text = " ".join(str(message.get("content") or "").split())[:LINE_LIMIT]
-        lines.append(f"[{message.get('sender_full_name')} #{message.get('id')}] {text}")
+    lines.extend(_lines(tail))
+    if home:
+        # Where the request came from — the requester and the person who
+        # decides speak here. Without it a judgment of a ✔ on work that waits
+        # for somebody's decision saw only "answered 2m ago" in the trace, and
+        # not that the question had been put to the human (p3 step 5, C:
+        # judged a stall twice, one needless request).
+        lines += ["", f"The newest messages of the request's own conversation ({home_name}), oldest first:", ""]
+        from agag.agent import is_ack
+
+        spoken = [m for m in home if is_speech(m) and not is_ack(str(m.get("content") or "").strip())]
+        lines.extend(_lines(spoken[-HOME_MESSAGES:]))
     return prompt_with_guide(lines, guide(GUIDES, ROLE, "guide.md"))
 
 
@@ -76,14 +110,32 @@ def _parse(workspace: Path, output: str) -> dict[str, Any]:
     return {}
 
 
-def judge(spec: AgentSpec, candidate, trace_text: str, tail: list[dict], incident: str) -> dict[str, str]:
-    """`{"verdict": stall|legit|unclear, "evidence": …}`. Never raises."""
+def judge(spec: AgentSpec, candidate, trace_text: str, tail: list[dict], incident: str, *,
+          home: list[dict] | None = None, home_name: str = "", snapshot: str = "") -> dict[str, str]:
+    """`{"verdict": stall|legit|unclear, "evidence": …}`. Never raises.
+
+    The exact prompt and what it was built from are kept in the workspace
+    (`prompt.md`, `input.json`) beside the transcript, so a verdict can be
+    re-asked on the same input — of this model or another (p3 step 6)."""
     workspace = generation_dir(spec.topics_root, spec.instance_name(), incident,
                                next_generation(topic_workspace(spec.topics_root, spec.instance_name(), incident)),
                                ROLE)
+    prompt = triage_prompt(candidate, trace_text, tail, home, home_name)
+    try:
+        (workspace / PROMPT_FILE).write_text(prompt, encoding="utf-8")
+        (workspace / INPUT_FILE).write_text(json.dumps({
+            "incident": incident, "snapshot": snapshot,
+            "candidate": {"kind": candidate.kind, "channel": candidate.channel, "topic": candidate.topic,
+                          "identity": candidate.identity, "fact": candidate.fact,
+                          "next_action": candidate.next_action, "since": candidate.since,
+                          "evidence": list(candidate.evidence), "anchor": candidate.anchor},
+            "trace": trace_text, "tail": tail, "home": home or [], "home_name": home_name,
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass  # the judgment does not depend on its own record
     try:
         output, record, exit_code = run_role(
-            spec, ROLE, triage_prompt(candidate, trace_text, tail),
+            spec, ROLE, prompt,
             cwd=workspace, timeout=TIMEOUT_SECONDS,
             record=next_record_path(spec.records_root / ROLE),
             transcript=workspace / "transcript.jsonl", stream=True,
