@@ -101,7 +101,10 @@ I also look, every couple of minutes, at every request that comes in through
 `#front` — the conversation it came in through and every conversation opened
 for it — without anybody registering anything. A request is its first post,
 not its name: I keep following it through a rename, a ✔, a day of quiet or my
-own restart, until everything opened for it is finished. What I look for is
+own restart, until everything opened for it is **recorded** finished or called
+off — a task closed by its run, a mission whose acceptance its requester
+recorded, a cancellation. A ✔, a long wait or my own "this is fine" ends
+nothing. What I look for is
 what the records say is owed and has not happened: a task nobody started after
 the one before it closed, a post nobody's listener picked up, an answer the
 asker was never served, a failure notice, a conversation ✔'d while its work
@@ -109,7 +112,11 @@ was still live — the request's own conversation included — and a worker sile
 for a long time. The facts come from the conversations themselves (`agentchat
 trace` shows the same view); where they cannot decide — a ✔ may be a
 deliberate close, a silence a long job — my local model reads the
-conversation and decides.
+conversation and the request's own conversation, and decides. Work that waits
+for somebody's decision, with that decision asked of them, is a wait: I ask
+nobody about it, and I keep following it. A verdict counts only for the
+state it was about; if an answer or a record lands while it is being judged,
+the new state is judged instead.
 
 When it is a stall I ask, **in the conversation the request came from**,
 for it to be moved on: what the records show, what should happen next, who
@@ -125,7 +132,8 @@ Each of these is one `incident-…` topic in my channel, one per piece of stalle
 work: what I found and on what evidence, what I asked, and how it ended. I
 write **rescued** only when a fresh look shows the step that was missing
 (started, acknowledged, served, answered, reopened); **cancelled** when the
-owner or the requester recorded a decision; **reported** when I stopped
+owner or the requester recorded a decision; **finished** when a wait I left
+alone ended with the work's own record; **reported** when I stopped
 asking. A conversation I cannot read is said once and reported if it stays
 unreadable — never taken for recovered. An incident topic is a record, not a
 watch: writing in it starts nothing.
