@@ -1,8 +1,9 @@
 """robust_workflow p3 step 1: waiting and judgment gaps in the request
 monitor, reproduced.
 
-Each test states the outcome p3 requires and is `xfail(strict=True)` while
-the defect stands; the fix removes the mark. Same fake realm and real mirror
+Each test states the outcome p3 requires. Step 1 committed them as
+`xfail(strict=True)`; step 2 removed each mark with the fix, and added the
+tests after them for what the fix promises beyond the reproduction. Same fake realm and real mirror
 as `test_monitor.py`, with a request of its own: one delegated conversation
 whose owner answered and now waits for the human.
 """
@@ -20,8 +21,6 @@ from agag.mirror.testing import FakeRealm
 from agobserver import monitor as monitoring
 
 from test_monitor import ACK, AUTOLAB, CHANNEL, DEV, FRONT, Client, post, requests, settle, spec
-
-defect = pytest.mark.xfail(strict=True, reason="reproduced in robust_workflow p3 step 1; not fixed yet")
 
 OWNER_CHANNEL = "pj-x"
 PLAN = "assetplan-icon"
@@ -83,7 +82,6 @@ def resolve_plan(world):
 # --- W1: a legitimate human wait after a ✔ is dropped from tracking --------------------
 
 
-@defect
 def test_w1_a_human_wait_judged_legitimate_stays_tracked(waiting):
     """The review's reproduction: `retain()` counts a ✔ conversation judged a
     deliberate close as finished (`closed_by_decision`), and a dismissed
@@ -107,7 +105,6 @@ def test_w1_a_human_wait_judged_legitimate_stays_tracked(waiting):
 # --- J1: a verdict computed on superseded evidence is applied to the new state ---------
 
 
-@defect
 def test_j1_a_verdict_on_superseded_evidence_is_not_applied(waiting):
     """`judged()` pops whatever verdict the worker left under the incident's
     key. The Developer answers inside the ✔ conversation while the
@@ -128,3 +125,88 @@ def test_j1_a_verdict_on_superseded_evidence_is_not_applied(waiting):
     settle(waiting)
     assert not requests(waiting), "a recovery request went out on a verdict about the state before the answer"
     assert watcher._pending_judgments or len(waiting.judged) > 1, "the new state was never judged"
+
+
+# --- step 2: what the fix promises beyond the reproductions ---------------------------
+
+
+def record_state(world, word, sender):
+    post(world.realm, OWNER_CHANNEL, f"✔ {PLAN}", f"[selfnote][state] {word}", sender)
+    settle(world)
+
+
+@pytest.mark.parametrize("word, sender, closed", [
+    ("cancelled", AUTOLAB, monitoring.CANCELLED),
+    ("accepted", FRONT, monitoring.FINISHED),
+])
+def test_a_recorded_outcome_ends_the_wait_and_the_tracking(waiting, word, sender, closed):
+    """Completion and cancellation have their own evidence: the owner's
+    `cancelled`, the requester's `accepted`. Either closes the dismissed
+    incident — not as a rescue, nothing had stopped — and the request leaves
+    the index on the same look."""
+    resolve_plan(waiting)
+    watcher = waiting.make()
+    watcher.tick()
+    okey = monitoring.origin_key(waiting.ask)
+    assert okey in watcher.load_tracked()
+    record_state(waiting, word, sender)
+    waiting.clock.now += 120
+    touched = watcher.tick()
+    assert [r["state"] for r in touched] == [closed]
+    assert okey not in watcher.load_tracked()
+    assert not requests(waiting)
+
+
+def test_a_dismissal_does_not_hide_a_later_blockage_of_the_same_work(waiting):
+    """The owner answers again after the ✔ and nobody serves it: an
+    `undelivered` is a mechanical fact the dismissal did not judge."""
+    resolve_plan(waiting)
+    watcher = waiting.make()
+    watcher.tick()
+    again = post(waiting.realm, OWNER_CHANNEL, f"✔ {PLAN}", "@**Front** A third draft is up too.", AUTOLAB)
+    settle(waiting, lambda: waiting.mirror.message(again) is not None)
+    waiting.clock.now = waiting.realm.messages[again]["timestamp"] + 400
+    touched = watcher.tick()
+    assert [(r["kind"], r["state"]) for r in touched] == [("undelivered", monitoring.RECOVERING)]
+    visible = [m for m in requests(waiting) if not m["content"].startswith("[selfnote]")]
+    assert len(visible) == 1 and "[selfnote][owed]" in requests(waiting)[0]["content"]
+
+
+def test_a_stall_verdict_on_record_is_judged_again_when_its_evidence_moves(waiting):
+    """A `stall` kept in the incident drives the second request and the
+    report. The human answering in between is new evidence: the verdict is
+    asked again before anything more is done on it — and the request already
+    made still counts."""
+    resolve_plan(waiting)
+    waiting.verdicts.extend(["stall", "legit"])
+    watcher = waiting.make()
+    (record,) = watcher.tick()
+    assert record["state"] == monitoring.RECOVERING and len(requests(waiting)) == 1
+    post(waiting.realm, "front", "front-h", "I will pick a draft tomorrow; leave it closed until then.", DEV)
+    post(waiting.realm, "front", "front-h", ACK, FRONT)
+    said = post(waiting.realm, "front", "front-h", "@**Developer** Understood; it stays closed until then.", FRONT)
+    settle(waiting, lambda: waiting.mirror.message(said) is not None)
+    waiting.clock.now += monitoring.RETRY_SECONDS + 5
+    (record,) = watcher.tick()
+    assert len(waiting.judged) == 2, "the stored verdict was used on evidence it never saw"
+    assert record["state"] == monitoring.DISMISSED and len(requests(waiting)) == 1
+    assert len(record["requests"]) == 1, "re-judging spent or reset the allowance"
+
+
+def test_evidence_that_keeps_moving_under_a_judgment_is_visible_in_health(waiting):
+    resolve_plan(waiting)
+    watcher = waiting.make(async_judge=True)
+    watcher.tick()
+    (key,) = list(watcher._pending_judgments)
+    for n in range(monitoring.CHURN_LIMIT):
+        job = watcher._pending_judgments.pop(key)
+        watcher._verdicts[key] = watcher._run_judgment(key, job)
+        said = post(waiting.realm, "front", "front-h", f"still thinking ({n})", DEV)
+        settle(waiting, lambda: waiting.mirror.message(said) is not None)
+        waiting.clock.now += 120
+        watcher.tick()
+    health = watcher.health()["judgment"]
+    assert health["invalidated"] == monitoring.CHURN_LIMIT
+    assert health["churning"] == [key]
+    assert health["pending"] == 1 and health["oldest_pending_seconds"] is not None
+    assert not requests(waiting)

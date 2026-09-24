@@ -100,9 +100,25 @@ FAULTS_DIR = "faults"
 DETECTED, RECOVERING, RESCUED, REPORTED, DISMISSED = "detected", "recovering", "rescued", "reported", "dismissed"
 #: The owner or the requester recorded a terminal decision: not a recovery.
 CANCELLED = "cancelled"
+#: A wait judged legitimate ended with the work's own finished record — the
+#: acceptance or the owner's `done` — with nobody asked (robust_workflow p3
+#: step 2). Not a rescue: nothing had stopped.
+FINISHED = "finished"
 #: An operator closed an incident the monitor should not have opened.
 WITHDRAWN = "withdrawn"
-CLOSED = (RESCUED, REPORTED, CANCELLED, WITHDRAWN)
+CLOSED = (RESCUED, REPORTED, CANCELLED, FINISHED, WITHDRAWN)
+#: Node states that end tracking: the owner's or the requester's record says
+#: the work is over. Nothing else does — not a ✔, not a `legit` verdict, not
+#: the request going quiet (robust_workflow p3 step 2).
+TERMINAL = ("done", "cancelled")
+#: A judgment whose evidence changed this many times in a row before a
+#: verdict could be used is said in the health record: the relay's watchdog
+#: reads it as degraded rather than letting re-evaluation churn unseen.
+CHURN_LIMIT = 3
+#: Selfnotes that change what a judged conversation means. Every other note
+#: (a continuation, an exec snapshot, a root note) is bookkeeping, and
+#: bookkeeping moving on does not make a verdict stale.
+RELEVANT_NOTES = ("state", "served", "start", "owed", "task", "mission", "asset", "assetrun", "change")
 
 #: What the stalled conversation has to show before an incident of each kind
 #: is recovered — the transition it was waiting for, read on a fresh look
@@ -223,7 +239,14 @@ class Monitor:
         self._judge_lock = threading.Lock()
         self._judge_wake = threading.Event()
         self._pending_judgments: dict[str, tuple] = {}
+        #: When each pending judgment was first asked for (a replacement with
+        #: newer evidence keeps the original time: the backlog is the wait).
+        self._queued_at: dict[str, float] = {}
         self._verdicts: dict[str, dict] = {}
+        #: Verdicts thrown away because the evidence they judged had changed
+        #: (robust_workflow p3 step 2), in total and per incident in a row.
+        self.invalidated = 0
+        self._invalidations: dict[str, int] = {}
         self.judging: dict[str, Any] | None = None
         self.last_judgment: dict[str, Any] | None = None
         self.cycle: dict[str, Any] = {"count": 0, "started_at": None, "completed_at": None,
@@ -351,6 +374,9 @@ class Monitor:
             try:
                 if record.get("state") == REPORTED and okey in looked and not record.get("cleared_at"):
                     self.cleared(record, looked[okey], now, fresh)
+                if record.get("state") == DISMISSED and record["key"] not in seen_keys and okey in looked and fresh:
+                    touched.append(self.settle(record, looked[okey], now))
+                    continue
                 if record.get("state") in CLOSED or record.get("state") == DISMISSED or record["key"] in seen_keys:
                     continue
                 if okey in gone and fresh:
@@ -438,17 +464,20 @@ class Monitor:
     def retain(self, tracked: dict[str, dict[str, Any]], looked: dict[str, Any], gone: set[str], now: float) -> None:
         """Keep a request while anything below it is unfinished or an incident
         of it is open; let it go once neither is true. The index holds only
-        what this monitor has looked at — never the realm's history."""
+        what this monitor has looked at — never the realm's history.
+
+        Unfinished means not `TERMINAL`, and only a record makes a
+        conversation terminal (robust_workflow p3 step 2). Until then a ✔
+        judged a legitimate wait was counted as finished here, and a request
+        whose one task waited on the human left the index in the same look
+        (step 1, W1): "nobody needs to be asked" was read as "this is over".
+        A dismissal stops the nudges; it ends nothing."""
         records = self.records()
         open_origins = {r.get("origin", {}).get("key") for r in records
                         if r.get("state") not in CLOSED and r.get("state") != DISMISSED}
-        #: ✔ conversations judged a deliberate close: finished by decision.
-        closed_by_decision = {int(r.get("node", {}).get("anchor") or 0) for r in records
-                              if r.get("state") == DISMISSED and r.get("kind") == "resolved_live"}
         changed = False
         for okey, result in looked.items():
-            outstanding = [n for n in result.nodes() if n is not result.root and n.state not in ("done", "cancelled")
-                           and n.anchor not in closed_by_decision]
+            outstanding = [n for n in result.nodes() if n is not result.root and n.state not in TERMINAL]
             if outstanding or okey in open_origins:
                 entry = tracked.get(okey)
                 if entry is None:
@@ -492,7 +521,8 @@ class Monitor:
                fresh: bool = True) -> dict[str, Any]:
         key = incident_key(origin[2], candidate)
         record = self.load(key)
-        if record is not None and (record.get("state") in (RESCUED, CANCELLED, WITHDRAWN) or record.get("cleared_at")):
+        if record is not None and (record.get("state") in (RESCUED, CANCELLED, FINISHED, WITHDRAWN)
+                                   or record.get("cleared_at")):
             # That incident ended — the work moved, or a decision closed it —
             # and this is the same work stalling again: a new incident.
             self.archive(record)
@@ -540,6 +570,15 @@ class Monitor:
         record["last_seen"] = now
         record["fact"] = candidate.fact
 
+        if candidate.judgment and record.get("judgment") \
+                and record["judgment"].get("snapshot") != self.snapshot(candidate, result):
+            # A `stall` on record drives the next request and the report.
+            # Judged on a state that has since moved (somebody answered,
+            # a record landed), it is asked again before it is acted on —
+            # the requests already made still count.
+            log(f"monitor: {record['topic']}: the evidence behind its `{record['judgment'].get('verdict')}` "
+                "verdict changed; judging it again")
+            record.pop("judgment", None)
         if candidate.judgment and not record.get("judgment"):
             verdict = self.judged(candidate, result, record)
             if verdict is None:
@@ -673,30 +712,92 @@ class Monitor:
                     return message.sender_name
         return ""
 
+    def snapshot(self, candidate: Candidate, result) -> str:
+        """What a judgment of `candidate` rests on, as one comparable string.
+
+        robust_workflow p3 step 2. A local-model judgment takes 30–130 s on
+        its own worker, and the conversation it reads can move meanwhile —
+        the human answers, the owner records a cancellation, an acceptance
+        lands. A verdict is an answer about *that* state, so it travels with
+        the identity of that state and is used only while the state is the
+        same (step 1, J1: a `stall` about the conversation before the human's
+        answer went out as a recovery request after it).
+
+        The smallest thing that notices a meaningful change: the kind and
+        the stalled conversation's traced state and ✔, the newest relevant
+        post there (speech by anybody but Observer, or a note that changes
+        what the work is — a state, a receipt, a start), and the same for the
+        request's own conversation, where the human answers. Observer's own
+        posts and other agents' bookkeeping notes do not make a verdict
+        stale."""
+        node = next((n for n in result.nodes() if candidate.anchor and n.anchor == candidate.anchor), None)
+        state = node.state if node is not None else "?"
+        resolved = int(candidate.topic.startswith(RESOLVED_TOPIC_PREFIX))
+        here = self._newest_relevant(candidate.channel, candidate.topic)
+        root = result.root
+        home = self._newest_relevant(root.channel, root.topic) if root is not None else 0
+        return f"{candidate.kind}|{state}|{resolved}|n{here}|o{home}"
+
+    def _newest_relevant(self, channel: str, topic: str) -> int:
+        from agag.selfnote import is_selfnote, is_speech, parse_note
+
+        for message in reversed(self.mirror.messages(channel, topic)):
+            if int(message.sender_id) == self.self_id:
+                continue
+            content = message.content
+            if is_speech(message.as_zulip()) or (
+                    is_selfnote(content) and any(parse_note(content, tag) is not None for tag in RELEVANT_NOTES)):
+                return int(message.id)
+        return 0
+
     def judged(self, candidate: Candidate, result, record: dict[str, Any]) -> dict[str, str] | None:
         """The verdict on this candidate, or None while it is being judged.
 
         Inline in tests; on the service a judgment is queued for the judge
         worker with a snapshot of what it is to read, and the look moves on
-        to the other requests — the verdict is picked up by a later look."""
+        to the other requests — the verdict is picked up by a later look.
+
+        A verdict is used only for the evidence it judged (`snapshot`). One
+        that comes back about a state that has since changed is discarded
+        and the current state is queued instead — the incident keeps its
+        allowance of requests, since nothing was asked on it. A pending job
+        is replaced by the newer one rather than queued beside it, so one
+        incident never has more than one judgment waiting; every discard is
+        counted, and an incident whose evidence keeps moving under its
+        judgment is named in the health record (`CHURN_LIMIT`)."""
         tail = [m.as_zulip() for m in self.mirror.messages(candidate.channel, candidate.topic)[-10:]]
-        job = (candidate, "\n".join(trace_lines(result)), tail, record["topic"])
+        snapshot = self.snapshot(candidate, result)
+        job = (candidate, "\n".join(trace_lines(result)), tail, record["topic"], snapshot)
+        key = record["key"]
         if not self.async_judge:
-            return self._run_judgment(record["key"], job)
+            return self._run_judgment(key, job)
         with self._judge_lock:
-            verdict = self._verdicts.pop(record["key"], None)
-            if verdict is None and record["key"] not in self._pending_judgments \
-                    and (self.judging or {}).get("key") != record["key"]:
-                self._pending_judgments[record["key"]] = job
+            verdict = self._verdicts.pop(key, None)
+            if verdict is not None and verdict.get("snapshot") != snapshot:
+                self.invalidated += 1
+                self._invalidations[key] = self._invalidations.get(key, 0) + 1
+                log(f"monitor: the verdict on {record['topic']} ({verdict.get('verdict')}) judged evidence that has "
+                    f"changed ({verdict.get('snapshot')} → {snapshot}); judging the current state instead")
+                verdict = None
+            if verdict is not None:
+                self._invalidations.pop(key, None)
+                return verdict
+            running = self.judging or {}
+            if running.get("key") == key and running.get("snapshot") == snapshot:
+                return None  # the current evidence is being judged right now
+            pending = self._pending_judgments.get(key)
+            if pending is None or pending[4] != snapshot:
+                self._pending_judgments[key] = job
+                self._queued_at.setdefault(key, self.clock())
                 self._judge_wake.set()
-        return verdict
+        return None
 
     def _run_judgment(self, key: str, job: tuple) -> dict[str, str]:
-        candidate, trace_text, tail, topic = job
+        candidate, trace_text, tail, topic, snapshot = job
         self.judgments += 1
         started = self.clock()
         with self._judge_lock:
-            self.judging = {"key": key, "topic": topic, "since": started}
+            self.judging = {"key": key, "topic": topic, "since": started, "snapshot": snapshot}
         # The record follows the judgment as well as the cycle: written only
         # per cycle, a judgment that ended after the last write read as still
         # running to the watchdog (p2 step 5: a false `judgment_stalled`).
@@ -706,10 +807,11 @@ class Monitor:
                 log(f"monitor: fault injected: the judgment of {topic} is held until the fault file is removed")
                 while self.fault("triage-stall", consume=False):
                     time.sleep(1.0)
-            verdict = self.judge(self.spec, candidate, trace_text, tail, topic)
+            verdict = dict(self.judge(self.spec, candidate, trace_text, tail, topic))
         finally:
             with self._judge_lock:
                 self.judging = None
+        verdict["snapshot"] = snapshot
         self.last_judgment = {"key": key, "topic": topic, "at": self.clock(),
                               "seconds": round(self.clock() - started, 1), "verdict": verdict.get("verdict")}
         self.write_health()
@@ -727,10 +829,11 @@ class Monitor:
                     continue
                 key = next(iter(self._pending_judgments))
                 job = self._pending_judgments.pop(key)
+                self._queued_at.pop(key, None)
             try:
                 verdict = self._run_judgment(key, job)
             except Exception as error:  # noqa: BLE001 - a failed judgment is an answer
-                verdict = {"verdict": "unclear", "evidence": f"the judgment failed: {error!r}"}
+                verdict = {"verdict": "unclear", "evidence": f"the judgment failed: {error!r}", "snapshot": job[4]}
             with self._judge_lock:
                 self._verdicts[key] = verdict
 
@@ -786,6 +889,11 @@ class Monitor:
         if node.state == "cancelled":
             return self.close(record, now, CANCELLED, f"`{node.note_state or 'cancelled'}` is recorded in "
                                                       f"`{node.topic}`: a decision, not a recovery")
+        if node.state == "done" and record.get("kind") in ("resolved_live", "origin_closed") \
+                and node.topic.startswith(RESOLVED_TOPIC_PREFIX):
+            # A ✔ on work that is now recorded finished is the ordinary
+            # close, not a stall that somebody broke.
+            return self.close(record, now, FINISHED, f"`{node.note_state or 'done'}` is recorded in `{node.topic}`")
         if self.recovered(record, node):
             return self.rescued(record, now, node)
         # Still blocked, perhaps differently and not yet overdue: open, no
@@ -832,6 +940,22 @@ class Monitor:
         self.save(record)
         log(f"monitor: {record['topic']} rescued {how} ({node.state})")
         return record
+
+    def settle(self, record: dict[str, Any], result, now: float) -> dict[str, Any]:
+        """A dismissed incident — a wait judged legitimate — whose candidate
+        is not produced on this look. It ends only when the work records an
+        outcome: `done` closes it as finished, a cancellation as cancelled.
+        Anything else (the ✔ undone, the grace of a new post, the work still
+        waiting) leaves it dismissed, and a later stall of the same work
+        re-opens it by the ordinary path (robust_workflow p3 step 2)."""
+        node = self.find(record, result)
+        if node is None or node.state not in TERMINAL:
+            return record
+        if node.state == "cancelled":
+            return self.close(record, now, CANCELLED, f"`{node.note_state or 'cancelled'}` is recorded in "
+                                                      f"`{node.topic}`: a decision, after a wait nobody had to break")
+        return self.close(record, now, FINISHED, f"`{node.note_state or 'done'}` is recorded in `{node.topic}`: "
+                                                 "the wait ended with the work's own record, and nobody was asked")
 
     def close(self, record: dict[str, Any], now: float, state: str, why: str) -> dict[str, Any]:
         record.update(state=state, closed_at=now, why=why)
@@ -944,6 +1068,8 @@ class Monitor:
             source = {**source, "state": "stale", "reason": "fault injected (mirror-stale)"}
         with self._judge_lock:
             judging, pending = dict(self.judging or {}), len(self._pending_judgments)
+            waiting = min(self._queued_at.values(), default=None)
+            churning = sorted(key for key, count in self._invalidations.items() if count >= CHURN_LIMIT)
         records = self.records()
         return {
             "schema": HEALTH_SCHEMA,
@@ -964,6 +1090,9 @@ class Monitor:
             "judgment": {
                 "running": judging or None,
                 "pending": pending,
+                "oldest_pending_seconds": round(now - waiting, 1) if waiting is not None else None,
+                "invalidated": self.invalidated,
+                "churning": churning,
                 "last": self.last_judgment,
                 "timeout_seconds": triage.TIMEOUT_SECONDS,
             },
