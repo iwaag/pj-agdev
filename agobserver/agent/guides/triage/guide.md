@@ -17,6 +17,11 @@ conversation, where that decision is asked for. If the question has been put
 to the person who decides and they have not answered, the next move is
 theirs and they know it: `legit`. If nobody has told them, `stall`.
 
+"Message received. Please wait for the reply." is posted by an agent's
+listener the moment it picks a post up, before any work starts. It says the
+post was taken, not that anything is still running; a worker's own progress
+lines and answers are what show work.
+
 Judge from what the messages say, not from how long it has been. Quote the
 message ids you relied on.
 
