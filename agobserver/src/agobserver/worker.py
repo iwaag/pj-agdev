@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from agag.post import PROGRESS, PostMeta, compose
 from agag.agent import AgentSpec
 from agag.selfnote import Conversation
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
@@ -294,9 +295,9 @@ class Worker:
         try:
             self.client.send_to_channel(
                 watch.channel, watch.topic,
-                f"I have not been able to look at this {streak} times in a row: "
-                f"{observation.evidence}\n\nStill watching — I will keep trying, "
-                f"and this is not an answer about the condition.",
+                compose(f"I have not been able to look at this {streak} times in a row: "
+                        f"{observation.evidence}\n\nStill watching — I will keep trying, "
+                        f"and this is not an answer about the condition.", PostMeta(intent=PROGRESS)),
             )
         except Exception as error:  # noqa: BLE001
             log(f"could not report the failure streak of {watch.name}: {error}")

@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from agag.post import REPORT, RESPONSE_REQUEST, PostMeta
 from agag.agent import AgentSpec, SWEEP_ACK, exec_options_for, is_ack, run_role
 from agag.topics import (
     TopicContext,
@@ -145,7 +146,8 @@ def serve_intake(spec: AgentSpec, context: TopicContext) -> TopicResult:
     )
     if watch.state in (anchor.MET, anchor.UNDELIVERABLE):
         return TopicResult(
-            [f"`{watch.name}` is finished ({watch.state}). Open a new topic for a new watch."]
+            [f"`{watch.name}` is finished ({watch.state}). Open a new topic for a new watch."],
+            meta=PostMeta(intent=REPORT),
         )
 
     workspace_root = topic_workspace(spec.topics_root, context.channel, context.topic)
@@ -240,7 +242,7 @@ def serve_intake(spec: AgentSpec, context: TopicContext) -> TopicResult:
         accepted_at=store.now(), evaluations=0,
     )
     log(f"watch {name} active: {accepted['condition']!r} -> {resolved.conversation}")
-    return TopicResult([_accepted_body(name, accepted, resolved)])
+    return TopicResult([_accepted_body(name, accepted, resolved)], meta=PostMeta(intent=REPORT))
 
 
 def _needs_input(
@@ -260,7 +262,9 @@ def _needs_input(
     if watch.watch_id:
         store.update(spec.local / "watches", watch.name, state=anchor.NEEDS_INPUT)
     log(f"watch request in {context.channel!r}/{context.topic!r} needs input: {question}")
-    return TopicResult([question])
+    # The watch cannot be set up until the requester answers: a request for
+    # their answer, addressed by the listener to the requester it recorded.
+    return TopicResult([question], meta=PostMeta(intent=RESPONSE_REQUEST, ask="question"))
 
 
 def handle_watch(spec: AgentSpec, client: ZulipClient, channel: str, topic: str) -> None:

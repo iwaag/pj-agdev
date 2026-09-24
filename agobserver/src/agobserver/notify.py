@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agag.post import REPORT, PostMeta, compose
 from agag.agent import AgentSpec
 from agag.notice import notice_line
 from agag.zulip import ZulipClient, log, topic_write
@@ -185,7 +186,7 @@ def deliver(spec: AgentSpec, client: ZulipClient, watch: anchor.Watch, record: d
             message_id = client.send_to_channel(
                 resolved.conversation.channel,
                 resolved.conversation.topic,
-                message(watch, evidence),
+                compose(message(watch, evidence), PostMeta(intent=REPORT)),
             )
         except Exception as error:  # noqa: BLE001 - a failed send is retried, not lost
             return _retry_later(watches, watch, record, f"the send failed: {error}")
@@ -245,7 +246,7 @@ def _finish(client, watch, watches, state, conversation=None, message_id=None) -
         body = f"**Finished — `{watch.name}` ({state}).**"
     try:
         topic_write(watch.topic, anchor.state_note(state), channel=watch.channel, client=client)
-        last = client.send_to_channel(watch.channel, watch.topic, body)
+        last = client.send_to_channel(watch.channel, watch.topic, compose(body, PostMeta(intent=REPORT)))
     except Exception as error:  # noqa: BLE001 - the delivery already happened
         log(f"could not finish {watch.name} visibly: {error}")
         return

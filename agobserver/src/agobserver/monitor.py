@@ -125,15 +125,15 @@ RELEVANT_NOTES = ("state", "served", "start", "owed", "task", "mission", "asset"
 #: (robust_workflow p2 step 3). The candidate no longer being produced is
 #: not on this list: it is absence, and absence is also what an unreadable
 #: target, a rename or a blockage still inside its grace look like.
-MOVED_ON = ("executing", "awaiting_requester", "awaiting_delivery", "awaiting_human", "done")
+MOVED_ON = ("executing", "awaiting_requester", "awaiting_delivery", "awaiting_human", "answered", "done")
 RECOVERED_STATES = {
     "unstarted": MOVED_ON,
     "unacknowledged": MOVED_ON,
     "failed": MOVED_ON,
-    "undelivered": ("executing", "awaiting_requester", "awaiting_human", "done"),
-    "silent": ("awaiting_requester", "awaiting_delivery", "awaiting_human", "done"),
+    "undelivered": ("executing", "awaiting_requester", "awaiting_human", "answered", "done"),
+    "silent": ("awaiting_requester", "awaiting_delivery", "awaiting_human", "answered", "done"),
     "resolved_live": ("queued", *MOVED_ON),
-    "origin_closed": ("queued", "awaiting_human", *MOVED_ON),
+    "origin_closed": ("queued", *MOVED_ON),
 }
 
 __all__ = ["Monitor", "is_incident_topic", "start"]
