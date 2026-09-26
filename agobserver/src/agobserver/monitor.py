@@ -16,10 +16,14 @@ topics by hand. This loop needs nobody to register anything:
 3. **Judge** only what the facts cannot decide — a ✔ on live work (a
    correction or a mistake?), a long silence while executing (a long job or a
    dead worker?) — with the `triage` role on this host's model.
-4. **Ask the responsible side to recover**, in the conversation the request
-   came from: Front owns it, holds every tool the recovery needs (`agentchat
-   send`, `unresolve`, `trace`), and the human reads it there. At most
-   `MAX_REQUESTS`, `RETRY_SECONDS` apart, each preceded by a fresh look.
+4. **Ask the responsible side to recover**, in a conversation Front holds —
+   the request's own, or (failsafe p1, for `unheld`/`quiet`/`silent`) the one
+   Front holds closest above the stalled work, where its answer reaches the
+   run that waits for it. Front holds every tool the recovery needs
+   (`agentchat send`, `unresolve`, `trace`). At most `MAX_REQUESTS`,
+   `RETRY_SECONDS` apart, each preceded by a fresh look.
+   A judgment only postpones the next look (failsafe p1): unfinished work
+   stays due for review until a record ends it.
 5. **Verify.** A request is not recovery. The incident is *rescued* only when
    a later look no longer finds the candidate; otherwise, when the requests
    are spent — or when there is nobody to ask (the request's own conversation
