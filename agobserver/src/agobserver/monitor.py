@@ -188,6 +188,49 @@ def _age(seconds: float) -> str:
     return f"{seconds // 60} min" if seconds < 5400 else f"{seconds // 3600} h {(seconds % 3600) // 60:02d} min"
 
 
+def _bare(topic: str) -> str:
+    return topic[len(RESOLVED_TOPIC_PREFIX):] if topic.startswith(RESOLVED_TOPIC_PREFIX) else topic
+
+
+def _path_to(root, anchor: int) -> list:
+    """The nodes from `root` down to the one anchored at `anchor`."""
+    if root.anchor == anchor:
+        return [root]
+    for child in root.children:
+        below = _path_to(child, anchor)
+        if below:
+            return [root, *below]
+    return []
+
+
+def _execution_words(node) -> str:
+    serving = {"open": f"a serving is open since its acknowledgement #{node.ack}, and nothing has said it ended",
+               "ended": f"its last serving ended with #{node.ended_by}",
+               "unknown": "no serving of it is on record"}[node.execution]
+    holder = {"none": "nothing holds the work now", "delegate": "a conversation opened from it holds the work",
+              "owner": "its owner holds the work", "requester": "the move is with whoever asked for it",
+              "human": "a person was asked", "unknown": "who holds the work cannot be read"}.get(node.holder, "")
+    return f"{serving}; {holder}" if holder else serving
+
+
+def _owed_words(node) -> str:
+    if node.identity:
+        return (f"{node.identity} is unfinished until its owner's record says it ended (done, accepted, "
+                "cancelled or replaced) — a reply, a ✔ or this request ends nothing")
+    return "an answer in that conversation, handed back to whoever asked"
+
+
+def _unknown_words(candidate: Candidate, node) -> str:
+    if node is not None and node.execution == "ended":
+        return ("whether anything the last serving started (a background job, a subagent) is still running is not "
+                "in Zulip — check before starting the work again, and continue from what it left rather than "
+                "redoing it.")
+    if node is not None and node.execution == "open":
+        return ("whether the open serving is still alive is not in Zulip: it may be a long job. Ask its owner or "
+                "wait; do not start a second run of the same work beside it.")
+    return "why it stopped; the records show only that it did."
+
+
 def origin_key(anchor: int) -> str:
     """A tracked request: its origin conversation's first post."""
     return f"o{int(anchor)}"
@@ -714,11 +757,12 @@ class Monitor:
             return record
         if len(attempts) >= MAX_REQUESTS:
             return self.report(record, now, f"{len(attempts)} requests did not get it moving")
-        message_id = self.request(record, candidate, origin, len(attempts) + 1, now)
-        attempts.append({"at": now, "message_id": message_id})
+        where = self.asked_where(result, candidate, origin)
+        message_id = self.request(record, candidate, origin, len(attempts) + 1, now, where=where, result=result)
+        attempts.append({"at": now, "message_id": message_id, "where": f"{where[0]}/{where[1]}"})
         record["state"] = RECOVERING
         self.post_incident(record, f"Asked for recovery ({len(attempts)}/{MAX_REQUESTS}) in "
-                                   f"`#{origin[0]} › {origin[1]}` (#{message_id}).")
+                                   f"`#{where[0]} › {where[1]}` (#{message_id}).")
         self.save(record)
         return record
 
@@ -952,21 +996,53 @@ class Monitor:
             with self._judge_lock:
                 self._verdicts[key] = verdict
 
+    def asked_where(self, result, candidate: Candidate, origin: tuple[str, str, int]) -> tuple[str, str]:
+        """Where a recovery request goes: the conversation closest above the
+        stalled work that the request's owner (Front) itself holds — a
+        routine's run rather than the Front Desk above it (failsafe p1).
+        Whatever Front sends while serving a conversation is anchored to it,
+        so an answer to a resumption asked for from the Front Desk would
+        come back there and never reach the run that is waiting for it.
+        Only the failsafe kinds and a silence are routed this way; the
+        older kinds keep the request's own conversation."""
+        where = self.where(origin[2]) or (origin[0], origin[1])
+        root = result.root if result is not None else None
+        if root is None or candidate.kind not in (*WORK_KINDS, "silent") or not root.owner:
+            return where
+        path = _path_to(root, int(candidate.anchor or 0))
+        for node in reversed(path[:-1]):
+            if node is root:
+                break
+            if node.owner == root.owner and not node.topic.startswith(RESOLVED_TOPIC_PREFIX) \
+                    and node.state not in TERMINAL:
+                return (node.channel, node.topic)
+        return where
+
     def request(self, record: dict[str, Any], candidate: Candidate, origin: tuple[str, str, int],
-                number: int, now: float) -> int:
-        where = f"`#{candidate.channel} › {candidate.topic}`" + (f" ({candidate.identity})" if candidate.identity else "")
-        text = "\n".join([
-            f"**[Observer] Something this request depends on has stopped** — {where}.",
+                number: int, now: float, *, where: tuple[str, str] | None = None, result=None) -> int:
+        stalled = f"#**{candidate.channel}>{_bare(candidate.topic)}**" + (
+            f" ({candidate.identity})" if candidate.identity else "")
+        node = self.find({"node": {"anchor": candidate.anchor}}, result) if result is not None else None
+        lines = [
+            f"**[Observer] Something this request depends on has stopped** — {stalled}.",
             "",
+            f"- The request: #**{origin[0]}>{_bare(origin[1])}** (#{origin[2]}).",
             f"- What the records show: {candidate.fact} (since {_when(candidate.since)}, {_age(now - candidate.since)}).",
+        ]
+        if node is not None:
+            lines.append(f"- Execution: {_execution_words(node)}.")
+            lines.append(f"- What is still owed: {_owed_words(node)}.")
+        lines += [
             f"- Expected next: {candidate.next_action}.",
             f"- Responsible: {candidate.responsible}.",
             f"- Evidence: `agentchat trace {origin[2]}`, observed {_when(now)}.",
+            f"- Not known: {_unknown_words(candidate, node)}",
             "",
             f"Please get it moving, or say here why it should wait. Request {number} of {MAX_REQUESTS} for "
             f"`{record['topic']}` in my channel; after that I report it and stop asking.",
-        ])
-        where = self.where(origin[2]) or (origin[0], origin[1])
+        ]
+        text = "\n".join(lines)
+        where = where or self.where(origin[2]) or (origin[0], origin[1])
         if candidate.kind == "undelivered" and candidate.evidence:
             # The answer, named for the requester's listener: the serving
             # this request starts is its receipt once it replies (`owed`),

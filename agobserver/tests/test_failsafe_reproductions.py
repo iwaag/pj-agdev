@@ -155,8 +155,10 @@ def open_world(tmp_path, fixed, verdict, end=True):
 
 
 def asked_front(case):
+    """Observer's recovery requests: into a conversation Front holds —
+    the routine run above the task, not the Front Desk above that."""
     return [m for m in case.realm.messages.values()
-            if m["display_recipient"] == "front" and m["sender_id"] == OBS and "[selfnote]" not in m["content"]]
+            if m["display_recipient"] != CHANNEL and m["sender_id"] == OBS and "[selfnote]" not in m["content"]]
 
 
 def run_for(case, watcher, seconds, step=120):
@@ -217,7 +219,12 @@ def test_fixed_posts_reach_front_without_a_judgment(world):
     target = monitoring.DETECTION_TARGET["unheld"]
     detected = run_for(case, case.make(), target + 240)
     assert detected is not None and detected <= target, detected
-    assert case.task in asked_front(case)[0]["content"]
+    asked = asked_front(case)[0]
+    assert case.task in asked["content"]
+    assert (asked["display_recipient"], asked["subject"]) == ("routine-study-x", "routinerun-20260926-2225"), \
+        "asked where Front's answer reaches the run that waits for the task"
+    assert "nothing holds the work now" in asked["content"] and "is still running is not in Zulip" in asked["content"]
+    assert "#**front>front-desk-20260926-221323**" in asked["content"]
     assert case.judged == []
 
 
