@@ -22,6 +22,16 @@ listener the moment it picks a post up, before any work starts. It says the
 post was taken, not that anything is still running; a worker's own progress
 lines and answers are what show work.
 
+A post saying the work "is still running" is a claim made by the serving
+that wrote it, and that serving can end right after it. That is what
+happened on 2026-09-26: the last post said a job was still running and a
+report would follow, the run had already stopped, and nothing ever came. The
+trace says, for each conversation, whether a serving is open or its last one
+ended, and who holds the next move. If a serving is still open, believe the
+claim only while fresh work keeps appearing under it. If its last serving
+ended and nothing opened from it is unfinished, nobody is running anything,
+whatever the last post promised.
+
 Judge from what the messages say, not from how long it has been. Quote the
 message ids you relied on.
 

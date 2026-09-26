@@ -50,7 +50,7 @@ from typing import Any, Callable
 from agag.agent import AgentSpec
 from agag.delivery import deliver
 from agag.selfnote import note
-from agag.trace import Candidate, MirrorReader, stall_candidates, trace, trace_lines
+from agag.trace import FAILSAFE_KINDS, THRESHOLDS, Candidate, MirrorReader, stall_candidates, trace, trace_lines
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
 
 from . import triage
@@ -70,10 +70,22 @@ INCIDENT_PREFIX = "incident-"
 INCIDENT_TAG = "incident"
 MAX_REQUESTS = 2
 RETRY_SECONDS = 600
-#: A wait judged legitimate is looked at again after this long.
+#: A wait judged legitimate is looked at again after this long, and each
+#: further `legit` on the same unmoving evidence doubles it, up to
+#: `MAX_REJUDGE_SECONDS` (failsafe p1: a judgment postpones a review; it
+#: never ends it).
 REJUDGE_SECONDS = 3600
+MAX_REJUDGE_SECONDS = 4 * 3600
+#: A wait judged legitimate again and again while nothing moves is told to
+#: the realm's owners once it has lasted this long: a person confirms it.
+#: Not for a ✔ judged deliberate — that is a decision, not a wait.
+MAX_POSTPONED_SECONDS = 6 * 3600
+POSTPONABLE = ("silent", "quiet")
 #: Two unclear judgments and the human decides.
 MAX_UNCLEAR = 2
+#: A judgment asked for this long ago and still without a verdict counts as
+#: `unclear`: the review does not wait on a judge that never answers.
+JUDGMENT_DEADLINE_SECONDS = 900
 #: Every this many ticks (and on the first) the bot's subscriptions are
 #: checked: a move — a rename, a ✔ — reaches only subscribers, so a mirror
 #: on a bot that has not joined a channel keeps its conversations under their
@@ -84,6 +96,8 @@ SUBSCRIBE_EVERY = 5
 #: this long without a readable look; before that nothing is concluded.
 UNOBSERVABLE_REPORT_SECONDS = 1800
 TRACKED_FILE = "tracked.json"
+#: Requests a person has taken over (`agobserver.hold`): traced, never acted on.
+HELD_FILE = "held.json"
 #: Facts about this monitor's own history (`receipts_from`).
 STATE_FILE = "monitor-state.json"
 #: The monitor's own progress, read by processes that are not the monitor
@@ -126,6 +140,9 @@ RELEVANT_NOTES = ("state", "served", "start", "owed", "task", "mission", "asset"
 #: not on this list: it is absence, and absence is also what an unreadable
 #: target, a rename or a blockage still inside its grace look like.
 MOVED_ON = ("executing", "awaiting_requester", "awaiting_delivery", "awaiting_human", "answered", "done")
+#: failsafe p1's kinds recover on evidence of work, not on a state
+#: (`Monitor.recovered`).
+WORK_KINDS = ("unheld", "quiet")
 RECOVERED_STATES = {
     "unstarted": MOVED_ON,
     "unacknowledged": MOVED_ON,
@@ -136,7 +153,17 @@ RECOVERED_STATES = {
     "origin_closed": ("queued", *MOVED_ON),
 }
 
-__all__ = ["Monitor", "is_incident_topic", "start"]
+#: Seconds from the evidence going stale to Front being asked, at worst:
+#: one look interval, the kind's grace, and — for a judged kind — the
+#: judgment's own ceiling. The trials measure against these.
+def detection_target(kind: str, interval: float = DEFAULT_INTERVAL_SECONDS) -> int:
+    judged = kind in ("silent", "quiet", "resolved_live")
+    return int(interval + THRESHOLDS[kind] + (triage.TIMEOUT_SECONDS if judged else 0))
+
+
+DETECTION_TARGET = {kind: detection_target(kind) for kind in THRESHOLDS}
+
+__all__ = ["DETECTION_TARGET", "Monitor", "is_incident_topic", "start"]
 
 
 def is_incident_topic(topic: str) -> bool:
@@ -205,7 +232,7 @@ class Monitor:
                  judge: Callable[..., dict] = triage.judge, clock: Callable[[], float] = time.time,
                  interval: float | None = None, window_hours: float | None = None,
                  report_to: list[str] | None = None, async_judge: bool = False,
-                 receipts_from: int = 0) -> None:
+                 receipts_from: int = 0, obligations_from: int = 0) -> None:
         self.spec = spec
         self.client = client
         self.mirror = mirror
@@ -236,6 +263,13 @@ class Monitor:
         #: look, then again as ✔-while-awaiting-delivery). The service sets it
         #: once, at its first start, to the newest post it could see then.
         self.receipts_from = int(receipts_from or 0)
+        #: Requests whose origin is older than this id keep the rules they
+        #: were tracked under: no `unheld`/`quiet`, no escalation of a long
+        #: postponement (failsafe p1). Their posts carry no `end=` evidence,
+        #: and several are trial fixtures abandoned days ago; they are a
+        #: person's decision, not a reason to nudge Front. 0 applies the
+        #: failsafe contract to every request.
+        self.obligations_from = int(obligations_from or 0)
         self._judge_lock = threading.Lock()
         self._judge_wake = threading.Event()
         self._pending_judgments: dict[str, tuple] = {}
@@ -278,7 +312,7 @@ class Monitor:
             return []
         found = []
         for path in sorted(self.store_dir.glob("*.json")):
-            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE):
+            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE, HELD_FILE):
                 continue  # an ended episode, or the index of tracked requests
             try:
                 found.append(json.loads(path.read_text(encoding="utf-8")))
@@ -347,18 +381,23 @@ class Monitor:
         gone: set[str] = set()
         reader = MirrorReader(self.mirror)
         tracked = self.load_tracked()
+        held = self.load_held()
         for channel, topic, anchor in self.requests(now, tracked):
             result = trace(reader, anchor, now=int(now), receipts_from=self.receipts_from)
             if result.root is None:
                 gone.add(origin_key(anchor))
                 continue
             looked[origin_key(anchor)] = result
-            found = [c for c in stall_candidates(result, now=int(now)) if not self.is_own(c)]
+            self._nodes = {int(n.anchor): n for n in result.nodes() if n.anchor}
+            found = [c for c in stall_candidates(result, now=int(now))
+                     if not self.is_own(c) and (c.kind not in FAILSAFE_KINDS or self.failsafe(anchor))]
             closed = self.origin_closed(result, tracked.get(origin_key(anchor)), now)
             if closed is not None and not found:
                 # Anything else found here is reported through the ✔ origin
                 # already; this is for the work nothing else would flag.
                 found.append(closed)
+            if origin_key(anchor) in held:
+                continue  # a person has taken it over (`agobserver.hold`)
             for candidate in primary(found):
                 # Our own recovery request, not yet taken up, is the incident
                 # it belongs to — watched by its retry and report — never an
@@ -416,6 +455,10 @@ class Monitor:
             int(seen), (root.anchor,), anchor=root.anchor,
         )
 
+    def failsafe(self, origin_anchor: int) -> bool:
+        """Whether a request is held to the failsafe contract."""
+        return int(origin_anchor) >= self.obligations_from
+
     # --- which requests are looked at -----------------------------------------------
 
     def fresh(self) -> bool:
@@ -430,6 +473,12 @@ class Monitor:
     def load_tracked(self) -> dict[str, dict[str, Any]]:
         try:
             return json.loads((self.store_dir / TRACKED_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def load_held(self) -> dict[str, dict[str, Any]]:
+        try:
+            return json.loads((self.store_dir / HELD_FILE).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
 
@@ -476,13 +525,25 @@ class Monitor:
         open_origins = {r.get("origin", {}).get("key") for r in records
                         if r.get("state") not in CLOSED and r.get("state") != DISMISSED}
         changed = False
+        due = self.next_reviews(records, now)
         for okey, result in looked.items():
             outstanding = [n for n in result.nodes() if n is not result.root and n.state not in TERMINAL]
             if outstanding or okey in open_origins:
                 entry = tracked.get(okey)
                 if entry is None:
                     entry = tracked[okey] = {"since": now, "topic": result.root.topic}
-                entry.update(topic=result.root.topic, last_looked=now)
+                # What is owed and who holds it, as of this look (failsafe
+                # p1): the facts a reader — or this monitor after a restart —
+                # needs without re-deriving the history.
+                entry.update(
+                    topic=result.root.topic, last_looked=now,
+                    evidence_at=max((n.last_activity for n in outstanding), default=0),
+                    obligations={str(n.anchor): {"topic": n.topic, "identity": n.identity, "state": n.state,
+                                                 "execution": n.execution, "holder": n.holder}
+                                 for n in outstanding},
+                    next_review=min(due.get(okey, now + self.interval), now + self.interval),
+                    contract="failsafe" if self.failsafe(result.root.anchor) else "before-failsafe",
+                )
                 changed = True  # `last_looked` (and `closed_seen`) move every look
             elif okey in tracked:
                 del tracked[okey]
@@ -493,6 +554,22 @@ class Monitor:
                 changed = True
         if changed:
             self.save_tracked(tracked)
+
+    def next_reviews(self, records: list[dict[str, Any]], now: float) -> dict[str, float]:
+        """When each request's open incident next needs a look beyond the
+        ordinary one: a postponed judgment's due time, a retry's."""
+        due: dict[str, float] = {}
+        for record in records:
+            okey = record.get("origin", {}).get("key")
+            if not okey or record.get("state") in CLOSED:
+                continue
+            at = now + self.interval
+            if record.get("state") == DISMISSED:
+                at = float(record.get("dismissed_at", now)) + float(record.get("postpone_seconds") or REJUDGE_SECONDS)
+            elif record.get("requests"):
+                at = float(record["requests"][-1]["at"]) + RETRY_SECONDS
+            due[okey] = min(due.get(okey, at), at)
+        return due
 
     def ensure_subscribed(self) -> list[str]:
         """Join every public channel the mirror knows and the bot has not,
@@ -557,7 +634,15 @@ class Monitor:
             record["state"] = DETECTED
             record.pop("dismissed_at", None)
         if record.get("state") == DISMISSED:
-            if now - float(record.get("dismissed_at", 0)) < REJUDGE_SECONDS:
+            if int(record.get("postponed_evidence") or -1) != int(candidate.since):
+                # The evidence moved since the wait was judged: a new wait.
+                record.pop("postponed_since", None)
+            if candidate.kind in POSTPONABLE and self.failsafe(origin[2]) and record.get("postponed_since") \
+                    and now - float(record["postponed_since"]) >= MAX_POSTPONED_SECONDS:
+                return self.report(record, now, f"it has been judged a legitimate wait for "
+                                                f"{_age(now - float(record['postponed_since']))} while nothing moved; "
+                                                "a person should confirm that it is still wanted and still running")
+            if now - float(record.get("dismissed_at", 0)) < float(record.get("postpone_seconds") or REJUDGE_SECONDS):
                 return record
             if candidate.kind == "resolved_live" and int(record.get("judged_activity") or -1) == int(candidate.since):
                 # A ✔ judged a deliberate close, and nothing has been said in
@@ -581,6 +666,11 @@ class Monitor:
             record.pop("judgment", None)
         if candidate.judgment and not record.get("judgment"):
             verdict = self.judged(candidate, result, record)
+            if verdict is None and now - float(record.get("judging_since") or now) >= JUDGMENT_DEADLINE_SECONDS:
+                # The review does not wait on a judge that never answers.
+                self.drop_judgment(record["key"])
+                verdict = {"verdict": "unclear", "evidence": f"no verdict {JUDGMENT_DEADLINE_SECONDS // 60} min "
+                                                             "after the judgment was asked for"}
             if verdict is None:
                 record.setdefault("judging_since", now)
                 self.save(record)
@@ -589,11 +679,17 @@ class Monitor:
             record["judged_activity"] = int(candidate.since)
             if verdict["verdict"] == "legit":
                 again = record.pop("rejudging", False)
-                record.update(state=DISMISSED, dismissed_at=now, judgment=verdict)
+                same = again and int(record.get("postponed_evidence") or -1) == int(candidate.since)
+                wait = min(MAX_REJUDGE_SECONDS, 2 * float(record.get("postpone_seconds") or REJUDGE_SECONDS)) \
+                    if same else REJUDGE_SECONDS
+                record.update(state=DISMISSED, dismissed_at=now, judgment=verdict, postpone_seconds=wait,
+                              postponed_evidence=int(candidate.since))
+                record.setdefault("postponed_since", now)
+                record["postponements"] = int(record.get("postponements", 0)) + 1
                 if not again:
                     # A second look that agrees with the first is not news.
                     self.post_incident(record, f"Not a stall, on a look at the conversation: {verdict['evidence']}. "
-                                               f"I look again in {REJUDGE_SECONDS // 60} min if it is still like this.")
+                                               f"I look again in {int(wait) // 60} min if it is still like this.")
                 self.save(record)
                 return record
             record.pop("rejudging", None)
@@ -652,6 +748,11 @@ class Monitor:
             "fact": candidate.fact, "responsible": candidate.responsible, "next_action": candidate.next_action,
             "evidence": list(candidate.evidence), "episode": episode,
         }
+        node = self.node_of(candidate)
+        if node is not None:
+            # The serving the stall was seen after: a recovery is a later one
+            # that did work (`recovered`).
+            record["ack_at_detection"] = node.ack
         adopted = self.adopt(record, now)
         if adopted is not None:
             return adopted
@@ -701,6 +802,9 @@ class Monitor:
             log(f"monitor: adopted {message.topic} for {record['key']} ({len(asked)} request(s) on record)")
             return record
         return None
+
+    def node_of(self, candidate: Candidate):
+        return getattr(self, "_nodes", {}).get(int(candidate.anchor or 0))
 
     def entrance_owner(self) -> str:
         """Who acknowledged posts in the origin channel most recently."""
@@ -795,6 +899,12 @@ class Monitor:
                 self._queued_at.setdefault(key, self.clock())
                 self._judge_wake.set()
         return None
+
+    def drop_judgment(self, key: str) -> None:
+        with self._judge_lock:
+            self._pending_judgments.pop(key, None)
+            self._queued_at.pop(key, None)
+            self._verdicts.pop(key, None)
 
     def _run_judgment(self, key: str, job: tuple) -> dict[str, str]:
         candidate, trace_text, tail, topic, snapshot, home, home_name = job
@@ -914,6 +1024,20 @@ class Monitor:
         kind = record.get("kind", "")
         if kind in ("resolved_live", "origin_closed") and node.topic.startswith(RESOLVED_TOPIC_PREFIX):
             return False
+        if kind in WORK_KINDS:
+            # Evidence of work, not an acknowledgement and not another
+            # promise (failsafe p1): a serving that began after the stall was
+            # seen, and either did something while open or ended handing the
+            # move to somebody. A resumed serving that ends saying "work goes
+            # on" again is the same stall.
+            if node.state in TERMINAL:
+                return True
+            resumed = node.ack > int(record.get("ack_at_detection") or 0)
+            if not resumed:
+                return False
+            if node.execution == "open":
+                return node.work > node.ack
+            return node.execution == "ended" and node.holder not in ("none", "unknown")
         if kind == "silent" and node.state == "executing":
             return node.last_activity > int(record.get("since") or 0)
         return node.state in RECOVERED_STATES.get(kind, MOVED_ON)
@@ -1088,6 +1212,7 @@ class Monitor:
                        "stale_since": source.get("stale_since"), "last_event_at": source.get("last_event_at")},
             "requests": {
                 "tracked": len(tracked),
+                "held": len(self.load_held()),
                 "looked_last_cycle": self.looked_last,
                 "oldest_unchecked_seconds": round(max((now - t for t in looked), default=0.0), 1),
                 "open_incidents": sum(1 for r in records if r.get("state") not in CLOSED and r.get("state") != DISMISSED),
@@ -1118,6 +1243,29 @@ def write_health(spec: AgentSpec, record: dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record, indent=1, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
+
+
+def obligations_from(spec: AgentSpec, mirror) -> int:
+    """The newest post this monitor could see when it first ran with the
+    failsafe contract, kept in `STATE_FILE` beside `receipts_from`."""
+    path = spec.local / "incidents" / STATE_FILE
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    if state.get("obligations_from"):
+        return int(state["obligations_from"])
+    newest = 0
+    deadline = time.time() + 120
+    while not newest and time.time() < deadline:
+        newest = int(mirror.store.newest_id() or 0) if getattr(mirror, "live", False) else 0
+        if not newest:
+            time.sleep(1.0)
+    if newest:
+        state.update(obligations_from=newest, obligations_since=time.time())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+    return newest
 
 
 def receipts_from(spec: AgentSpec, mirror) -> int:
@@ -1158,6 +1306,8 @@ def start(spec: AgentSpec, mirror, **kwargs) -> Monitor | None:
         # On the monitor's own thread: the first start waits for the mirror.
         monitor.receipts_from = receipts_from(spec, mirror)
         log(f"request monitor judges answers after #{monitor.receipts_from} by their served marks")
+        monitor.obligations_from = obligations_from(spec, mirror)
+        log(f"request monitor holds requests from #{monitor.obligations_from} to the failsafe contract")
         monitor.run(stop)
 
     threading.Thread(target=monitor.judge_forever, args=(stop,), name="observer-judge", daemon=True).start()
