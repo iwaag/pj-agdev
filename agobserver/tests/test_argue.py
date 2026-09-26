@@ -30,4 +30,5 @@ def test_the_argue_role_is_reading_only_on_the_paid_model():
 
     config, overlay = load_config(listener.SPEC.agents_config, Path("/nonexistent"))
     role = resolve_role(config, overlay, "argue", check_available=False)
-    assert role.allowed_tools == "Read,Glob,Grep" and role.harness == "claude_code"
+    # Reading tools plus the read-only shared-context reader (give_context_easier p1).
+    assert role.allowed_tools == "Read,Glob,Grep,Bash(agrefs:*)" and role.harness == "claude_code"

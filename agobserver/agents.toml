@@ -51,7 +51,7 @@ allowed_tools = "Read,Write,Edit,Glob,Grep,Bash"
 [roles.argue]
 profile = "sonnet"
 requires = []
-allowed_tools = "Read,Glob,Grep"
+allowed_tools = "Read,Glob,Grep,Bash(agrefs:*)"
 
 # One judgment about one stall candidate (`robust_workflow` p1 step 4): is a
 # ✔ on live work a mistake, is a long silence a dead worker? Run by the
