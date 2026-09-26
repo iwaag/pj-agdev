@@ -1041,7 +1041,12 @@ class Monitor:
             f"Please get it moving, or say here why it should wait. Request {number} of {MAX_REQUESTS} for "
             f"`{record['topic']}` in my channel; after that I report it and stop asking.",
         ]
-        text = "\n".join(lines)
+        # Information that answers nothing (`agag.post`): whoever serves this
+        # conversation replies to the person who asked for the work, never to
+        # Observer — trial T1/T3 saw Front address its confirmations here.
+        from agag.post import NONE, REPORT, PostMeta, compose
+
+        text = compose("\n".join(lines), PostMeta(intent=REPORT, answer=NONE))
         where = where or self.where(origin[2]) or (origin[0], origin[1])
         if candidate.kind == "undelivered" and candidate.evidence:
             # The answer, named for the requester's listener: the serving

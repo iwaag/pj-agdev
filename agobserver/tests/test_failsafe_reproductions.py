@@ -225,6 +225,7 @@ def test_fixed_posts_reach_front_without_a_judgment(world):
         "asked where Front's answer reaches the run that waits for the task"
     assert "nothing holds the work now" in asked["content"] and "is still running is not in Zulip" in asked["content"]
     assert "#**front>front-desk-20260926-221323**" in asked["content"]
+    assert asked["content"].endswith("`ag-post intent=report answer=none`"), "an aside: nobody replies to Observer"
     assert case.judged == []
 
 
