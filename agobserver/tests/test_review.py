@@ -59,7 +59,7 @@ def test_a_recovered_incident_is_handed_to_the_developer_once(world):
     assert occurrence.startswith("@**Developer** **Occurrence 1**")
     for words in ("onset ≈", "first suspicion", "Front asked", "work moving again", "Durations: detection",
                   "recovery", "Health checks", "Confirmed: the health check saw the work stopped",
-                  "Cause: **not established**", "Hypotheses", "Improvement candidates"):
+                  "Observed failure:", "Plausible cause:", "(confidence: **", "Missing evidence:", "Candidate:"):
         assert words in occurrence, words
     assert f"#**{CHANNEL}>{record['topic']}**" in occurrence
     notes = [m["content"] for m in posts if "[selfnote]" in m["content"]]

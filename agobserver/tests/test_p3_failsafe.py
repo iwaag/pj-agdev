@@ -5,7 +5,7 @@ from __future__ import annotations
 from agag.post import PROGRESS as PROGRESS_INTENT, REPORT, PostMeta, compose
 from agag.reply import failure_line
 
-from test_failsafe_reproductions import ACK, CHANNEL, DEV, FRONT, OBS
+from test_failsafe_reproductions import ACK, AUTOLAB, CHANNEL, DEV, FRONT, OBS, PROGRESS
 from test_health_path import asked, incident_posts, post, world  # noqa: F401 - the fixture
 
 
@@ -197,3 +197,130 @@ def test_slow_probes_do_not_hold_the_look_that_finds_a_stopped_task(tmp_path, se
         assert health is not None
     finally:
         mirror.stop()
+
+
+# --- reviews that stay current (step 4) -------------------------------------------------
+
+from agobserver import review as reviewing
+from test_review import review_posts, spoken, stall_and_recover
+
+
+def report_unrecovered(case, watcher):
+    """The task's serving is doubted (unknown every look) until the
+    developer is told: a reported incident with its review occurrence."""
+    case.probes.verdicts = ["unknown"]
+    for _ in range(20):
+        case.clock.now += 60
+        watcher.tick()
+        if [m for m in spoken(review_posts(case)) if "not recovered" in m["content"]]:
+            break
+    (record,) = [r for r in watcher.records() if r.get("state") == monitoring.REPORTED]
+    return record
+
+
+def test_a_reported_incident_that_recovers_later_says_so_in_its_review_once(world, monkeypatch):
+    case = world("unknown")
+    watcher = case.make()
+    record = report_unrecovered(case, watcher)
+    before = [m["content"] for m in spoken(review_posts(case))]
+    assert any("not recovered" in text for text in before)
+    # The work moves again: a new serving of the task shows work.
+    post(case, "work-m1", case.task, "@**autolab-agstudio1** Continue.", FRONT)
+    post(case, "work-m1", case.task, ACK, AUTOLAB, after=1)
+    post(case, "work-m1", case.task, "🔧 Edit: wordcount.py\n\n" + PROGRESS, AUTOLAB, after=20)
+    case.probes.verdicts = ["running"]
+    # The process exits right after posting the update, before recording it.
+    (case.where / "local" / "faults").mkdir(parents=True, exist_ok=True)
+    (case.where / "local" / "faults" / reviewing.EXIT_FAULT).touch()
+    exits = []
+    monkeypatch.setattr(reviewing.os, "_exit", lambda code: (exits.append(code), (_ for _ in ()).throw(SystemExit)))
+    case.clock.now += 60
+    try:
+        watcher.tick()
+    except SystemExit:
+        pass
+    assert exits == [70]
+    restarted = case.make()
+    for _ in range(3):
+        case.clock.now += 60
+        restarted.tick()
+    later = [m["content"] for m in spoken(review_posts(case)) if "— later:" in m["content"]]
+    assert len(later) == 1, later
+    assert "the work moved again" in later[0] and "stands as seen then: reported unrecovered" in later[0]
+    assert [m["content"] for m in spoken(review_posts(case))][:len(before)] == before, "the original stays"
+    stored = restarted.load(record["key"])
+    assert stored["review"]["updates"]["moving"]["posted"] is True
+
+
+def test_the_final_record_joins_the_occurrence_once(world):
+    case = world("stopped")
+    watcher = case.make()
+    record = stall_and_recover(case, watcher)
+    post(case, "work-m1", case.task, "[selfnote][state] completed", AUTOLAB)
+    for _ in range(3):
+        case.clock.now += 60
+        watcher.tick()
+    later = [m["content"] for m in spoken(review_posts(case)) if "— later:" in m["content"]]
+    assert len(later) == 1 and "the work's own record says `done`" in later[0], later
+    assert "stands as seen then: recovered" in later[0]
+
+
+def test_an_injected_fault_is_said_to_be_a_trial_not_a_recurrence():
+    record = {"kind": "stopped", "fact": "a health check found the work stopped: …",
+              "timeline": {"checks": [{"verdict": "stopped", "why": "the run ended (failed, exit -9)",
+                                       "injected": "silent-exit"}]}}
+    found = reviewing.assess(record)
+    assert found["injected"] == "silent-exit" and found["confidence"] == "high"
+    assert "not as a recurrence" in found["candidate"]
+    probe_fault = {"kind": "uncertain", "fact": "a health check could not confirm the work is being done: the health "
+                                               "probe of autolab-agstudio1 failed (fault injected: probe-fail)"}
+    assert reviewing.assess(probe_fault)["injected"] == "probe-fail"
+
+
+def test_the_assessment_reads_this_occurrence_s_evidence_and_may_say_unknown():
+    killed = {"kind": "stopped", "fact": "x", "timeline": {"checks": [
+        {"verdict": "stopped", "why": "the run ended (failed, exit -9), its serving delivered no reply"}]}}
+    assert "SIGKILL" in reviewing.assess(killed)["cause"] and reviewing.assess(killed)["confidence"] == "medium"
+    over = {"kind": "uncertain", "fact": "x", "timeline": {"checks": [
+        {"verdict": "unknown", "why": "alive; its Bash call has been open 700 s, past its own bound of 600 s"}]}}
+    assert "outlived its own timeout" in reviewing.assess(over)["cause"]
+    nothing = {"kind": "origin_closed", "fact": "the request's conversation is ✔"}
+    assert reviewing.assess(nothing)["cause"] == "unknown" and reviewing.assess(nothing)["confidence"] == "none"
+
+
+class StatusClient:
+    def __init__(self, history):
+        self.history, self.sent = history, []
+
+    def message(self, message_id, **kwargs):
+        return {"id": message_id, "display_recipient": CHANNEL, "subject": "✔ review-autolab-stopped",
+                "content": "opening"}
+
+    def topic_history(self, channel, topic, num_before=1000):
+        return list(self.history)
+
+    def send_to_channel(self, channel, topic, content):
+        self.sent.append((topic, content))
+        self.history.append({"id": 900 + len(self.sent), "content": content})
+        return 900 + len(self.sent)
+
+
+def test_a_follow_up_decision_is_a_post_in_the_review_and_is_recorded_once(monkeypatch):
+    from agobserver import review_status
+
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(review_status, "SPEC", SimpleNamespace(instance_name=lambda: CHANNEL))
+    reviews = {"autolab-agstudio1 · stopped": {"topic": "review-autolab-stopped", "anchor": 500,
+                                                "occurrences": ["o1:n2 e1", "o3:n4 e1"]}}
+    client = StatusClient([])
+    assert review_status.main(["review-autolab-stopped", "all", "fixed", "--note", "the splitter reads tags",
+                               "--ref", "pyagag a686f22", "--by", "Omni Agent"], client=client, reviews=reviews) == 0
+    (said, *notes) = [content for _, content in client.sent]
+    assert said.startswith("**Occurrences 1, 2: fixed** — the splitter reads tags (pyagag a686f22). Recorded by "
+                           "Omni Agent.") and "not the review's ✔" in said
+    assert notes == ["[selfnote][occurrence-status] o1:n2 e1 fixed", "[selfnote][occurrence-status] o3:n4 e1 fixed"]
+    assert {topic for topic, _ in client.sent} == {"✔ review-autolab-stopped"}, "posted where the topic is now"
+    assert review_status.main(["review-autolab-stopped", "1", "fixed", "--note", "again"], client=client,
+                              reviews=reviews) == 0
+    assert len(client.sent) == 3, "already recorded: nothing posted twice"

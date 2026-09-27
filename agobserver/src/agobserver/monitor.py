@@ -616,6 +616,8 @@ class Monitor:
             try:
                 if record.get("state") == REPORTED and okey in looked and not record.get("cleared_at"):
                     self.cleared(record, looked[okey], now, fresh)
+                if record.get("state") in (RESCUED, REPORTED) and okey in looked and fresh:
+                    self.final_outcome(record, looked[okey], now)
                 if record.get("state") == DISMISSED and record["key"] not in seen_keys and okey in looked and fresh:
                     touched.append(self.settle(record, looked[okey], now))
                     continue
@@ -827,8 +829,14 @@ class Monitor:
             entry["progress_at"] = max(float(progress_at), event_at if verdict in ("running", "waiting") else 0.0)
             evidence = f"{verdict}|{report.get('why', '')}"
             if evidence != entry.get("evidence"):
-                entry["checks"] = [*entry.get("checks", [])[-9:],
-                                   {"at": now, "verdict": verdict, "why": str(report.get("why", ""))[:300]}]
+                check = {"at": now, "verdict": verdict, "why": str(report.get("why", ""))[:300]}
+                injected = (report.get("run") or {}).get("injected")
+                if injected or "fault injected" in check["why"]:
+                    # A trial, on the record of the check that saw it (p3):
+                    # the review must not read it as an operational failure.
+                    check["injected"] = (injected or {}).get("fault") or check["why"].split("fault injected: ")[-1] \
+                        .split(")")[0]
+                entry["checks"] = [*entry.get("checks", [])[-9:], check]
             entry.update(evidence=evidence, looked_at=now, verdict=verdict, checked_at=now,
                          checks_run=int(entry.get("checks_run", 0)) + 1)
             if verdict in ("running", "waiting"):
@@ -1632,6 +1640,22 @@ class Monitor:
         record["cleared_at"] = now
         self.post_incident(record, f"Moving again at {_when(now)}: `{node.topic}` is "
                                    f"{node.state.replace('_', ' ')}.")
+        self.reviews.later(record, "moving", f"the work moved again at {_when(now)}: `{node.topic}` is "
+                                             f"{node.state.replace('_', ' ')}")
+        self.save(record)
+
+    def final_outcome(self, record: dict[str, Any], result, now: float) -> None:
+        """The stalled work's own record, once it has one (`done`/`cancelled`),
+        for an incident handed to a review (failsafe p3): the review shows
+        how it ended, beside what was seen at the time."""
+        if record.get("final_outcome") or not (record.get("review") or {}).get("delivered"):
+            return
+        node = self.find(record, result)
+        if node is None or node.state not in TERMINAL:
+            return
+        record["final_outcome"] = {"state": node.state, "at": now, "detail": str(node.detail)[:200]}
+        self.reviews.later(record, "final", f"the work's own record says `{node.state}` "
+                                            f"(seen {_when(now)}; {str(node.detail)[:160]})")
         self.save(record)
 
     def episodes(self, key: str) -> int:

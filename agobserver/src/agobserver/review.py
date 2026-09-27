@@ -33,6 +33,28 @@ conversation that already exists; no issue tracker.
 | not recovered (reported) | always names the owners, marked as such |
 | after the review was ✔'d | a new episode, naming the owners and the earlier review |
 
+**Later outcomes join the occurrence** (failsafe p3). An incident keeps
+moving after its handoff: a reported one gets its work moving again, and
+the work eventually records how it ended. Each such fact is appended once
+to the review, under its occurrence ("Occurrence 1 — later: …"), and the
+original post — what was seen and told at the time — stays as it was. It is
+owed on the incident record before it is posted and carries
+`[selfnote][occurrence-update] <occurrence> <kind>`, so repeated looks and a
+restart between the post and the record never post it twice.
+
+**An assessment, not a per-kind script** (failsafe p3). Each occurrence says
+what failed, the plausible cause **from this occurrence's own evidence**
+(the health checks' words, the exit, the report's reason), how confident
+that is, what evidence is missing, and one improvement or investigation
+candidate. "Unknown" is a valid answer. A trial fault a person injected is
+recognised from the evidence (the probe's `run.injected`, a probe's own
+fault) and said so: it is not an operational recurrence.
+
+**Review states are posts in the review** (`agobserver.review_status`):
+`reviewed`, `fix planned`, `fixed`, `accepted limitation`, on one occurrence
+or all, with a note and a reference. The topic's ✔ is still only "looked
+at": it accepts no mission and fixes no defect.
+
 **Recoverable, never duplicated.** A pending handoff is marked on the
 incident record before anything is posted; each occurrence post carries
 `[selfnote][occurrence] <incident key> e<episode>` and each review
@@ -57,6 +79,10 @@ from agag.zulip import RESOLVED_TOPIC_PREFIX
 REVIEW_PREFIX = "review-"
 REVIEW_TAG = "review"
 OCCURRENCE_TAG = "occurrence"
+UPDATE_TAG = "occurrence-update"
+STATUS_TAG = "occurrence-status"
+#: What a developer can record on an occurrence (`agobserver.review_status`).
+STATUSES = ("reviewed", "fix planned", "fixed", "accepted limitation")
 REVIEWS_FILE = "reviews.json"
 #: Every this-many-th recovered recurrence names the owners again.
 NOTIFY_EVERY = 3
@@ -67,25 +93,6 @@ EXIT_FAULT = "review-exit"
 HANDED = ("rescued", "reported")
 
 __all__ = ["Reviews", "REVIEWS_FILE", "signature"]
-
-#: What a stall of each kind *could* be, said as hypotheses, and what might
-#: make it cheaper next time. Nothing here is a diagnosis.
-HYPOTHESES = {
-    "stopped": ["the harness process was killed or crashed (memory, a signal, the host)",
-                "the listener lost the run's end and posted nothing"],
-    "uncertain": ["a long model generation or tool call the owner's events do not show",
-                  "a run hung without exiting"],
-    "unheld": ["the run ended its serving while believing background work would report back",
-               "a subagent or background command was cut off when the serving ended"],
-    "quiet": ["a progress post read as an answer", "nobody was handed the next move"],
-    "silent": ["a long job", "a dead worker"],
-}
-IMPROVEMENTS = {
-    "stopped": ["the owner's listener could post a failure notice itself when a run exits without a reply"],
-    "uncertain": ["the owner could expose more of what its run waits on (a tool, a child task) to the probe"],
-    "unheld": ["the worker guide: wait for everything started before replying"],
-}
-
 
 def signature(record: dict[str, Any]) -> tuple[str, str]:
     """`(key, slug)`: the owner and the kind that opened the incident."""
@@ -152,7 +159,65 @@ class Reviews:
                 self.monitor_log(f"monitor: the review of {record.get('topic')} could not be handed over: {error!r}")
                 continue
             handed.append(record["key"])
+        self.deliver_updates(records)
         return handed
+
+    def later(self, record: dict[str, Any], kind: str, text: str) -> None:
+        """A later fact about a handed incident (`moving`, `final`), owed to
+        its occurrence until posted. Idempotent: a kind is owed once."""
+        review = record.get("review") or {}
+        if not review.get("delivered"):
+            return  # not handed yet: the occurrence, when posted, reads the record as it is
+        updates = review.setdefault("updates", {})
+        if kind in updates:
+            return
+        updates[kind] = {"owed": True, "text": text, "at": self.clock()}
+        record["review"] = review
+
+    def deliver_updates(self, records: list[dict[str, Any]]) -> list[str]:
+        """Post every owed later outcome under its occurrence."""
+        posted = []
+        for record in records:
+            review = record.get("review") or {}
+            for kind, update in (review.get("updates") or {}).items():
+                if not update.get("owed"):
+                    continue
+                try:
+                    self._deliver_update(record, kind, update)
+                except Exception as error:  # noqa: BLE001 - owed stays owed; the next pass tries again
+                    self.monitor_log(f"monitor: the later outcome of {record.get('topic')} could not be posted: "
+                                     f"{error!r}")
+                    continue
+                posted.append(f"{record['key']}:{kind}")
+        return posted
+
+    def _deliver_update(self, record: dict[str, Any], kind: str, update: dict[str, Any]) -> None:
+        monitor = self.monitor
+        review = record["review"]
+        occurrence_id = f"{record['key']} e{record.get('episode', 1)}"
+        marker = f"{occurrence_id} {kind}"
+        topic = self._live_topic(review)
+        if not any(parse_note(m.content, UPDATE_TAG) == marker for m in self._messages(review["topic"])):
+            original = ("reported unrecovered" if review.get("outcome") == "reported" or record.get("state") == "reported"
+                        else "recovered")
+            monitor.post(monitor.spec.instance_name(), topic,
+                         f"**Occurrence {review.get('number', '?')} — later:** {update['text']}. "
+                         f"(The occurrence above stands as seen then: {original}.)")
+            monitor.post(monitor.spec.instance_name(), topic, note(UPDATE_TAG, marker))
+            if monitor.fault(EXIT_FAULT):
+                self.monitor_log(f"monitor: fault injected: exiting after posting {marker}, before recording it")
+                os._exit(70)
+        update.update(owed=False, posted=True)
+        monitor.save(record)
+
+    def _live_topic(self, review: dict[str, Any]) -> str:
+        """The review topic under its name now (a ✔ included), found by the
+        review's anchor: posting under the bare name of a ✔'d topic would
+        open a twin."""
+        entry = self.load().get(review.get("signature") or "") or {}
+        anchor = int(entry.get("anchor") or 0)
+        where = self.monitor.where(anchor) if anchor else None
+        return where[1] if where is not None else review["topic"]
 
     def monitor_log(self, line: str) -> None:
         from agag.zulip import log
@@ -323,13 +388,17 @@ class Reviews:
         action = (f"Front was asked {len(requests)} time(s); a later serving showed fresh work "
                   f"({record.get('outcome', 'moved')})." if rescued else f"Not recovered: {record.get('why', '')}.")
         lines.append(f"- Recovery action and outcome: {action}")
-        kinds = record.get("kinds") or [record.get("kind")]
         lines.append(f"- Confirmed: {self._confirmed(record)}")
-        hypotheses = [h for k in kinds for h in HYPOTHESES.get(str(k), [])]
-        lines.append("- Cause: **not established**." + (f" Hypotheses: {'; '.join(hypotheses)}." if hypotheses else ""))
-        improvements = [i for k in kinds for i in IMPROVEMENTS.get(str(k), [])]
-        if improvements:
-            lines.append(f"- Improvement candidates: {'; '.join(improvements)}.")
+        found = assess(record)
+        if found["injected"]:
+            lines.append(f"- **Trial:** the evidence shows an injected fault (`{found['injected']}`). This occurrence "
+                         "tests the recovery path; it is not an operational recurrence.")
+        lines += [
+            f"- Observed failure: {found['observed']}",
+            f"- Plausible cause: {found['cause']} (confidence: **{found['confidence']}**).",
+            f"- Missing evidence: {found['missing']}",
+            f"- Candidate: {found['candidate']}",
+        ]
         return "\n".join(lines)
 
     @staticmethod
@@ -340,3 +409,74 @@ class Reviews:
             return f"the health check saw the work stopped ({str(stopped[0].get('why', ''))[:200]})."
         return f"only what the records show ({str(record.get('fact', ''))[:200]})."
 
+
+
+def _injected(record: dict[str, Any]) -> str | None:
+    for check in (record.get("timeline") or {}).get("checks") or []:
+        if check.get("injected"):
+            return str(check["injected"])
+    for text in (record.get("fact"), record.get("why")):
+        if text and "fault injected: " in str(text):
+            return str(text).split("fault injected: ")[-1].split(")")[0]
+    return None
+
+
+def assess(record: dict[str, Any]) -> dict[str, Any]:
+    """What this occurrence's own evidence supports (failsafe p3): the
+    observed failure, a plausible cause with its confidence, what evidence
+    is missing, and one improvement or investigation candidate. Deterministic
+    and bounded — the handoff never waits on it — and "unknown" is an
+    answer. Grouping by symptom (the review's signature) says nothing about
+    causes; this is per occurrence."""
+    kinds = [str(k) for k in (record.get("kinds") or [record.get("kind")])]
+    checks = (record.get("timeline") or {}).get("checks") or []
+    whys = " ".join(str(c.get("why") or "") for c in checks) + " " + str(record.get("fact") or "")
+    observed = str(record.get("fact") or "?")[:300]
+    injected = _injected(record)
+    result = {"observed": observed, "injected": injected, "cause": "unknown", "confidence": "none",
+              "missing": "evidence of what the run was doing when it stopped",
+              "candidate": "investigate from the run record and the owner's log around the onset"}
+    if injected:
+        result.update(cause=f"the injected trial fault `{injected}`", confidence="high",
+                      missing="nothing for the cause; the recovery path's timings are the result",
+                      candidate="none for the product; count it with the trial, not as a recurrence")
+    elif "stopped" in kinds and "exit -9" in whys:
+        result.update(cause="the harness was killed by SIGKILL and posted nothing: memory pressure, a person, or a "
+                            "supervisor", confidence="medium",
+                      missing="who sent the signal (the host's log at the onset)",
+                      candidate="read the host log around the onset; if it was memory, bound the run's memory")
+    elif "stopped" in kinds and "never recorded an end" in whys:
+        result.update(cause="the harness process vanished without its runner noticing, so the runner itself was "
+                            "probably gone (a listener restart or crash)", confidence="low",
+                      missing="the listener's log and exit status at the onset",
+                      candidate="check whether the listener restarted at the onset")
+    elif "stopped" in kinds:
+        result.update(cause="the run ended and its serving delivered no reply", confidence="medium",
+                      missing="the run's output and its reply outcome (the run record's `reply`)",
+                      candidate="the listener could post the failure itself when a run ends with no reply")
+    elif "uncertain" in kinds and "past its own bound" in whys:
+        result.update(cause="a tool call outlived its own timeout: the harness did not end it", confidence="medium",
+                      missing="the process state of the call's tree (`ps -o stat`) at the time",
+                      candidate="report the harness version and the stuck call; a probe of the process state")
+    elif "uncertain" in kinds and "has advanced" in whys:
+        result.update(cause="a named wait stopped advancing (a hung subprocess or subagent)", confidence="low",
+                      missing="what the waiting process was blocked on",
+                      candidate="sample the stuck process (stack or open files) when this recurs")
+    elif "uncertain" in kinds and ("probe" in whys and ("did not answer" in whys or "failed" in whys)):
+        result.update(cause="the health probe itself failed or timed out, which says nothing of the work",
+                      confidence="medium", missing="the probe's own error output",
+                      candidate="run the owner's probe by hand; a failing probe is the owner's defect")
+    elif "uncertain" in kinds:
+        result.update(cause="the run was alive but idle with nothing explaining it: a stalled model call or a "
+                            "frozen process", confidence="low",
+                      missing="the process state (running, sleeping, stopped) and what it was waiting on",
+                      candidate="add the process state to the probe when this recurs")
+    elif "unanswered" in kinds:
+        result.update(cause="the agent's runs produced no usable reply twice", confidence="medium",
+                      missing="the runs' own outputs (their run records' `reply.failure`)",
+                      candidate="read the failed outputs: a reply-contract slip is fixed in the guide or the splitter")
+    elif "unheld" in kinds or "quiet" in kinds:
+        result.update(cause="the serving ended saying work goes on, and nothing held it", confidence="medium",
+                      missing="whether anything was started in the background",
+                      candidate="the worker guide: wait for everything started before replying")
+    return result
