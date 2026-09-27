@@ -201,6 +201,7 @@ RECOVERED_STATES = {
     "unstarted": MOVED_ON,
     "unacknowledged": MOVED_ON,
     "failed": MOVED_ON,
+    "unanswered": MOVED_ON,
     "undelivered": ("executing", "awaiting_requester", "awaiting_human", "answered", "done"),
     "silent": ("awaiting_requester", "awaiting_delivery", "awaiting_human", "answered", "done"),
     "resolved_live": ("queued", *MOVED_ON),
@@ -1048,6 +1049,13 @@ class Monitor:
         if root.topic.startswith(RESOLVED_TOPIC_PREFIX):
             return self.report(record, now, "the conversation the request came from is ✔ closed, so there is nobody "
                                              "there to ask")
+        if candidate.kind == "unanswered":
+            # failsafe p3: its own listener already served the input twice
+            # and both runs produced no usable reply — asking it a third time
+            # buys a third run of the same failure.
+            return self.report(record, now, f"{root.owner or 'the agent that owns it'} could not answer its requester "
+                                             "there: its listener served the input twice and neither run produced a "
+                                             "usable reply (the failure notice is the last word)")
         if candidate.kind == "unacknowledged" and (candidate.channel, candidate.topic) == (root.channel, root.topic):
             return self.report(record, now, f"{root.owner or 'the agent that owns it'} itself is not answering "
                                              "there, so asking it would reach nobody")
