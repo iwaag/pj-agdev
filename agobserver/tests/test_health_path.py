@@ -224,9 +224,12 @@ def test_alive_without_progress_is_asked_about_then_escalated_within_bounds(worl
     while case.clock.now < suspicion + monitoring.ESCALATE_AFTER + 120:
         case.clock.now += 60
         watcher.tick()
-    posts = incident_posts(case)
-    escalations = [p for p in posts if "@**Developer**" in p]
+    escalations = [m["content"] for m in case.realm.messages.values() if m["display_recipient"] == CHANNEL
+                   and m["subject"].startswith("incident-") and "@**Developer**" in m["content"]]
     assert len(escalations) == 1 and "after the first suspicion" in escalations[0]
+    # …and an unrecovered occurrence is handed to the developer's review.
+    review = [m["content"] for m in case.realm.messages.values() if m["subject"].startswith("review-")]
+    assert any("**not recovered**" in text and "@**Developer**" in text for text in review)
     reported = [r for r in watcher.records() if r.get("state") == monitoring.REPORTED]
     assert reported and reported[0]["reported_at"] - suspicion <= monitoring.ESCALATE_AFTER + 60
     assert len(asked(case)) == 1, "no second request after the escalation"

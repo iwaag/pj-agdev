@@ -59,6 +59,7 @@ from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
 
 from . import triage
 from .health import HealthProbes
+from .review import REVIEWS_FILE, Reviews
 
 INTERVAL_ENV = "AGOBSERVER_MONITOR_SECONDS"
 #: One look interval (failsafe p2: 120 → 60 s). A cycle costs well under a
@@ -413,6 +414,8 @@ class Monitor:
         #: This look's probe results, by the stalled unit's anchor: what a
         #: request and an incident say about it.
         self._health_reports: dict[int, dict[str, Any]] = {}
+        #: Recovered and reported incidents handed to the developer (step 4).
+        self.reviews = Reviews(self)
 
     # --- the store -------------------------------------------------------------------
 
@@ -438,7 +441,7 @@ class Monitor:
             return []
         found = []
         for path in sorted(self.store_dir.glob("*.json")):
-            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE, HELD_FILE, HEALTH_STATE_FILE):
+            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE, HELD_FILE, HEALTH_STATE_FILE, REVIEWS_FILE):
                 continue  # an ended episode, or the index of tracked requests
             try:
                 found.append(json.loads(path.read_text(encoding="utf-8")))
@@ -559,6 +562,8 @@ class Monitor:
                 log(f"monitor: checking {record['key']} failed: {error!r}")
         self.retain(tracked, looked, gone if fresh else set(), now)
         self.save_health(health, now)
+        if fresh:
+            self.reviews.deliver(self.records())
         self.looked_last = len(looked)
         return touched
 
@@ -1051,6 +1056,9 @@ class Monitor:
         }
         if candidate.kind in HEALTH_KINDS:
             record["timeline"] = self.timeline(record)
+        owner_node = self.node_of(candidate)
+        if owner_node is not None and owner_node.owner:
+            record["owner"] = owner_node.owner
         node = self.node_of(candidate)
         if node is not None:
             # The serving the stall was seen after: a recovery is a later one
@@ -1419,6 +1427,8 @@ class Monitor:
         """The transition this incident waited for is on record."""
         asked = len(record.get("requests", []))
         record.update(state=RESCUED, rescued_at=now, cause="open", outcome=node.state)
+        if self.failsafe(int(record.get("origin", {}).get("message_id") or 0)):
+            self.reviews.mark(record)
         how = f"after {asked} request(s)" if asked else "with nothing asked (it recovered by itself)"
         self.post_incident(record, f"**Rescued** {how}: on the look at {_when(now)} `{node.topic}` is "
                                    f"{node.state.replace('_', ' ')} ({node.detail}). The cause is not removed by this "
@@ -1478,6 +1488,8 @@ class Monitor:
     def report(self, record: dict[str, Any], now: float, why: str) -> dict[str, Any]:
         """Nobody left to ask: tell the realm's owners, by name, and stop."""
         record.update(state=REPORTED, reported_at=now, cause="open", why=why)
+        if self.failsafe(int(record.get("origin", {}).get("message_id") or 0)):
+            self.reviews.mark(record)
         names = " ".join(f"@**{name}**" for name in self.report_to())
         self.post_incident(record, "\n".join([
             f"{names} **Stopped: I could not get this moving.** {why}.",
