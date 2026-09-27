@@ -57,6 +57,7 @@ import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -68,7 +69,7 @@ from agag.trace import FAILSAFE_KINDS, THRESHOLDS, Candidate, MirrorReader, stal
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
 
 from . import triage
-from .health import HealthProbes
+from .health import HealthProbes, unknown
 from .review import REVIEWS_FILE, Reviews
 
 INTERVAL_ENV = "AGOBSERVER_MONITOR_SECONDS"
@@ -138,8 +139,26 @@ REPLACED_KINDS = ("silent", "quiet")
 #: restart, and deleting the file restores the operational values. The
 #: health record says which values are in force.
 TIMING_FILE = "timing.json"
+#: failsafe p3: a wait with no declared bound of its own — a subagent, a
+#: fetch, processes the run started — whose process tree has not advanced
+#: (no CPU time added) for this long is no longer explained by being named:
+#: it becomes uncertainty, and the ordinary bounds from the first suspicion
+#: take it to Front and then the developer. A wait that advances again
+#: clears it. p1's T2 had 6-minute silences and p2's B a 5-minute quiet
+#: command, both bounded Bash calls; 15 minutes is well past either.
+WAIT_IDLE = 900
+#: The CPU time a wait's process tree must add between two looks to count
+#: as advancing (the harness's own bookkeeping adds a little).
+WAIT_CPU_STEP = 0.5
 TIMING_DEFAULTS = {"probe_after": PROBE_AFTER, "quiet_check": QUIET_CHECK, "ask_after": ASK_AFTER,
-                   "escalate_after": ESCALATE_AFTER}
+                   "escalate_after": ESCALATE_AFTER, "wait_idle": WAIT_IDLE}
+#: failsafe p3: the probes due in one look run side by side, and the look
+#: waits for them at most this long. A probe still running then counts as
+#: one that did not answer; its thread ends at its own timeout. Without it
+#: the looks were serial in the probes, so k probes timing out (10 s each)
+#: delayed every request's next look by 10k s (step 3's reproduction).
+PROBE_WORKERS = 4
+PROBE_BUDGET = 20.0
 #: Every this many ticks (and on the first) the bot's subscriptions are
 #: checked: a move — a rename, a ✔ — reaches only subscribers, so a mirror
 #: on a bot that has not joined a channel keeps its conversations under their
@@ -433,6 +452,10 @@ class Monitor:
         #: This look's probe results, by the stalled unit's anchor: what a
         #: request and an incident say about it.
         self._health_reports: dict[int, dict[str, Any]] = {}
+        #: This look's probes, run ahead of the per-request pass (`prefetch`).
+        self._prefetched: dict[tuple[str, int, int], dict[str, Any]] = {}
+        self.probe_budget = PROBE_BUDGET
+        self.probe_workers = PROBE_WORKERS
         self.timing: dict[str, float] = dict(TIMING_DEFAULTS)
         self._base_interval = self.interval
         #: Recovered and reported incidents handed to the developer (step 4).
@@ -553,12 +576,18 @@ class Monitor:
         health = self.load_health()
         self._health = health
         self._health_reports = {}
+        traced = []
         for channel, topic, anchor in self.requests(now, tracked):
             result = trace(reader, anchor, now=int(now), receipts_from=self.receipts_from)
             if result.root is None:
                 gone.add(origin_key(anchor))
                 continue
             looked[origin_key(anchor)] = result
+            traced.append((channel, topic, anchor, result))
+        if fresh:
+            self.prefetch([result for _, _, anchor, result in traced
+                           if self.failsafe(anchor) and origin_key(anchor) not in held], now, health)
+        for channel, topic, anchor, result in traced:
             self._nodes = {int(n.anchor): n for n in result.nodes() if n.anchor}
             found = [c for c in stall_candidates(result, now=int(now))
                      if not self.is_own(c) and (c.kind not in FAILSAFE_KINDS or self.failsafe(anchor))
@@ -659,26 +688,9 @@ class Monitor:
         tmp.write_text(json.dumps(health, indent=1, sort_keys=True), encoding="utf-8")
         tmp.replace(path)
 
-    def health_candidates(self, result, now: float, health: dict[str, dict[str, Any]]) -> list[Candidate]:
-        """Units of work a probe could not confirm are being done.
-
-        For each unfinished unit of a probed owner (`probed`):
-
-        - an **open serving** with no confirmed progress (a post, or the
-          harness's own events) for `PROBE_AFTER`, probed every look while
-          that lasts;
-        - a serving that **ended asking nobody anything** — no response
-          request, no delegate, no person asked anywhere in the request —
-          with nothing moving in the request for `QUIET_CHECK`.
-
-        `running` or `waiting` (a live, named wait) is healthy and clears
-        the suspicion. `stopped` is a confirmed stop: a candidate at once.
-        Anything else is uncertainty, dated from the **first** look that
-        could not confirm health: a repeated claim, another unknown or the
-        same evidence again does not move that date (`first_suspicion`), so
-        it reaches Front after `ASK_AFTER` whatever is said meanwhile.
-        """
-        found: list[Candidate] = []
+    def _units(self, result, now: float, health: dict[str, dict[str, Any]]):
+        """`(node, entry, progress_at, due)` for every unfinished unit of a
+        probed owner: `due` when a probe has to look at it now."""
         nodes = list(result.nodes())
         root = result.root
         human_wait = any(n.state == "awaiting_human" for n in nodes)
@@ -694,8 +706,7 @@ class Monitor:
                 continue
             if node.topic.startswith(RESOLVED_TOPIC_PREFIX) and node.execution != "open":
                 continue  # a ✔ on it is `resolved_live`'s question
-            key = str(node.anchor)
-            entry = health.get(key)
+            entry = health.get(str(node.anchor))
             if entry is not None and int(entry.get("ack") or 0) != int(node.ack or 0):
                 entry = None  # another serving: its own evidence, from scratch
             progress_at = max(int(node.last_activity or 0), int(node.ack_at or 0), int(node.work_at or 0))
@@ -706,6 +717,95 @@ class Monitor:
                 due = not human_wait and not open_anywhere and now - newest >= self.timing["quiet_check"]
             else:
                 due = False
+            yield node, entry, progress_at, due
+
+    def prefetch(self, results, now: float, health: dict[str, dict[str, Any]]) -> None:
+        """Run this look's due probes side by side, within `probe_budget`.
+
+        A probe still running at the budget is recorded as not answering;
+        its thread ends at the probe's own timeout. The per-request pass
+        then reads these results instead of probing one unit after another."""
+        jobs = {}
+        for result in results:
+            for node, _, _, due in self._units(result, now, health):
+                if due:
+                    jobs[(node.owner, int(node.ack or 0), int(node.anchor))] = node
+        self._prefetched = {}
+        if not jobs:
+            return
+        pool = ThreadPoolExecutor(max_workers=max(1, min(self.probe_workers, len(jobs))),
+                                  thread_name_prefix="probe")
+        futures = {pool.submit(self.probes.probe, node.owner, ack=node.ack, channel=node.channel, topic=node.topic,
+                               window=self.timing["probe_after"]): key for key, node in jobs.items()}
+        done, late = wait(futures, timeout=self.probe_budget)
+        pool.shutdown(wait=False, cancel_futures=True)
+        for future in done:
+            try:
+                self._prefetched[futures[future]] = future.result()
+            except Exception as error:  # noqa: BLE001 - a probe answers, it does not raise
+                self._prefetched[futures[future]] = unknown(f"the health probe failed: {error!r}")
+        for future in late:
+            owner = futures[future][0]
+            self._prefetched[futures[future]] = unknown(
+                f"the health probe of {owner} did not answer within this look's probe budget "
+                f"({self.probe_budget:g} s for {len(jobs)} probe(s))")
+        if late:
+            log(f"monitor: {len(late)} of {len(jobs)} probe(s) did not answer within {self.probe_budget:g} s")
+
+    def _probe(self, node) -> dict[str, Any]:
+        key = (node.owner, int(node.ack or 0), int(node.anchor))
+        if key in self._prefetched:
+            return self._prefetched.pop(key)
+        return self.probes.probe(node.owner, ack=node.ack, channel=node.channel, topic=node.topic,
+                                 window=self.timing["probe_after"])
+
+    def _idle_wait(self, entry: dict[str, Any], report: dict[str, Any], now: float) -> dict[str, Any]:
+        """A `waiting` verdict, reassessed against this unit's history
+        (failsafe p3). The same wait whose process tree added no CPU time for
+        `wait_idle`, and that declares no bound of its own, is uncertainty;
+        a wait that advances, or a new wait, starts its clock again."""
+        wait = report.get("wait") or {}
+        key = f"{wait.get('kind')}:{wait.get('id') or wait.get('name') or ''}:{wait.get('since') or ''}"
+        cpu = float(wait.get("cpu_seconds") or 0.0)
+        kept = entry.get("wait") or {}
+        if kept.get("key") != key:
+            kept = {"key": key, "since": now, "cpu": cpu, "advanced_at": now,
+                    "bounded": wait.get("bound_seconds") is not None}
+        elif cpu >= float(kept.get("cpu") or 0.0) + WAIT_CPU_STEP:
+            kept.update(cpu=cpu, advanced_at=now)
+        entry["wait"] = kept
+        idle = now - float(kept["advanced_at"])
+        if kept["bounded"] or idle < self.timing["wait_idle"]:
+            return report
+        what = wait.get("name") or f"{wait.get('count') or 'its'} process(es)"
+        return {**report, "verdict": "unknown",
+                "why": f"{report.get('why')}; nothing under it has advanced for {int(idle)} s "
+                       f"({cpu:g} s CPU, unchanged), and {what} declares no bound of its own",
+                "unknowns": [*report.get("unknowns", []), "whether the wait is still advancing"]}
+
+    def health_candidates(self, result, now: float, health: dict[str, dict[str, Any]]) -> list[Candidate]:
+        """Units of work a probe could not confirm are being done.
+
+        For each unfinished unit of a probed owner (`probed`):
+
+        - an **open serving** with no confirmed progress (a post, or the
+          harness's own work events) for `PROBE_AFTER`, probed every look
+          while that lasts;
+        - a serving that **ended asking nobody anything** — no response
+          request, no delegate, no person asked anywhere in the request —
+          with nothing moving in the request for `QUIET_CHECK`.
+
+        `running`, or `waiting` on a live wait that is explained — inside
+        the tool's own bound, or still advancing (`_idle_wait`) — is healthy
+        and clears the suspicion. `stopped` is a confirmed stop: a candidate
+        at once. Anything else is uncertainty, dated from the **first** look
+        that could not confirm health: a repeated claim, another unknown or
+        the same evidence again does not move that date (`first_suspicion`),
+        so it reaches Front after `ASK_AFTER` whatever is said meanwhile.
+        """
+        found: list[Candidate] = []
+        for node, entry, progress_at, due in self._units(result, now, health):
+            key = str(node.anchor)
             if not due:
                 if entry is not None and entry.get("first_suspicion") and progress_at > float(entry.get("progress_at") or 0):
                     entry.update(first_suspicion=None, cleared_at=now, cleared_by="progress")
@@ -715,11 +815,15 @@ class Monitor:
             if entry is None:
                 entry = {"ack": int(node.ack or 0), "topic": node.topic, "checks": []}
             health[key] = entry
-            report = self.probes.probe(node.owner, ack=node.ack, channel=node.channel, topic=node.topic,
-                                       window=self.timing["probe_after"])
+            report = self._probe(node)
+            if report.get("verdict") == "waiting":
+                report = self._idle_wait(entry, report, now)
+            else:
+                entry.pop("wait", None)
             self._health_reports[int(node.anchor)] = report
             verdict = str(report.get("verdict") or "unknown")
-            event_at = float((report.get("progress") or {}).get("last_event_at") or 0)
+            progress = report.get("progress") or {}
+            event_at = float(progress.get("last_work_at") or progress.get("last_event_at") or 0)
             entry["progress_at"] = max(float(progress_at), event_at if verdict in ("running", "waiting") else 0.0)
             evidence = f"{verdict}|{report.get('why', '')}"
             if evidence != entry.get("evidence"):

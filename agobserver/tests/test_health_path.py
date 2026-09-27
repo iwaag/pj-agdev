@@ -54,7 +54,10 @@ class Probes:
         return {"schema": "agag.health.v1", "observed_at": 0, "verdict": verdict, "why": why,
                 "process": {"state": "exited" if verdict in ("stopped", "ended") else "alive"},
                 "progress": {"last_event_at": T0 + 100, "last_event": "tool Bash"},
-                "wait": {"kind": "tool", "name": "Bash", "detail": "pytest -q"} if verdict == "waiting" else {"kind": "none"},
+                # A healthy wait advances: its process tree adds CPU time
+                # between looks (failsafe p3; `Monitor._idle_wait`).
+                "wait": {"kind": "tool", "name": "Bash", "detail": "pytest -q", "cpu_seconds": 5.0 * self.runs}
+                if verdict == "waiting" else {"kind": "none"},
                 "serving": {"state": "acked", "queued": []}, "run": {"pid": 4242},
                 "unknowns": ["what the process is doing"] if verdict == "unknown" else [],
                 "source": {"host": "agstudio"}}
