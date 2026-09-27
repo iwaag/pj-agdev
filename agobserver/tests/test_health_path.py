@@ -350,3 +350,17 @@ def test_a_trial_timing_file_shortens_the_bounds_and_its_removal_restores_them(w
     timing.unlink()
     watcher.tick()
     assert watcher.interval == 60 and watcher.timing == monitoring.TIMING_DEFAULTS
+
+
+def test_an_uncertain_serving_that_then_works_is_recovered_by_its_own_work(world):
+    """Trial D: the probe could not confirm a live run (its probe failed);
+    the same serving then posts its result. That is fresh work, not a new
+    serving, and it recovers the incident."""
+    case = world("unknown")
+    watcher = case.make()
+    assert look(case, watcher, T0 + 100 + 900) is not None
+    post(case, "work-m1", case.task, f"@**Front**\n\nDone: the flag works.\n\n`ag-post intent=report end={case.ack}`",
+         AUTOLAB)
+    case.clock.now += 60
+    (record,) = [r for r in watcher.tick() if r.get("kind") == "uncertain"]
+    assert record["state"] == monitoring.RESCUED

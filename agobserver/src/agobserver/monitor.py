@@ -1426,6 +1426,12 @@ class Monitor:
             # on" again is the same stall.
             if node.state in TERMINAL:
                 return True
+            if kind == "uncertain" and int(node.work_at or 0) > float(record.get("detected_at") or 0) \
+                    and (node.execution == "open" or node.holder not in ("none", "unknown")):
+                # The doubted serving was alive after all and did work after
+                # the doubt: fresh evidence, from the same serving (failsafe
+                # p2 trial D). A `stopped` one needs a new serving.
+                return True
             resumed = node.ack > int(record.get("ack_at_detection") or 0)
             if not resumed:
                 return False
