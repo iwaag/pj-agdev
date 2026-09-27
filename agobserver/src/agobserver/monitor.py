@@ -84,6 +84,7 @@ from agag.agent import AgentSpec
 from agag.delivery import deliver
 from agag.selfnote import note
 from agag import waits
+from agag.holds import active, covers, holds_of
 from agag.trace import FAILSAFE_KINDS, THRESHOLDS, Candidate, MirrorReader, stall_candidates, trace, trace_lines
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
 
@@ -201,7 +202,8 @@ SUBSCRIBE_EVERY = 5
 #: this long without a readable look; before that nothing is concluded.
 UNOBSERVABLE_REPORT_SECONDS = 1800
 TRACKED_FILE = "tracked.json"
-#: Requests a person has taken over (`agobserver.hold`): traced, never acted on.
+#: failsafe p1–p5 kept a person's holds here. Since p6 a hold is a record in
+#: the request's conversation (`agag.holds`); the file is no longer read.
 HELD_FILE = "held.json"
 #: Requests a person checked and found owing nothing (`agobserver.hold
 #: --retire`, failsafe p3): out of tracking until anything new is posted.
@@ -653,7 +655,6 @@ class Monitor:
         gone: set[str] = set()
         reader = MirrorReader(self.mirror)
         tracked = self.load_tracked()
-        held = self.load_held()
         self._retired = self.load_retired()
         health = self.load_health()
         self._health = health
@@ -667,9 +668,17 @@ class Monitor:
                 continue
             looked[origin_key(anchor)] = result
             traced.append((channel, topic, anchor, result))
+        # A person's holds in force, per request (`agag.holds`, failsafe p6):
+        # records in the request's own conversation, settled by the path
+        # their purpose names — no file of this monitor's decides them.
+        held = {origin_key(anchor): active(holds_of(result)) for _, _, anchor, result in traced}
+        held = {okey: found for okey, found in held.items() if found}
+        self._held = held
+        whole = {okey for okey, found in held.items()
+                 if any(covers(h, looked[okey], looked[okey].root.anchor) for h in found)}
         if fresh:
             self.prefetch([result for _, _, anchor, result in traced
-                           if self.failsafe(anchor) and origin_key(anchor) not in held], now, health)
+                           if self.failsafe(anchor) and origin_key(anchor) not in whole], now, health)
         for channel, topic, anchor, result in traced:
             self._nodes = {int(n.anchor): n for n in result.nodes() if n.anchor}
             found = [c for c in stall_candidates(result, now=int(now))
@@ -677,15 +686,20 @@ class Monitor:
                      and not (c.kind in REPLACED_KINDS and self.failsafe(anchor) and self.probed(c))]
             if fresh:
                 found = self.review_queues(found, result, [r for *_, r in traced], anchor, now, health)
-            if self.failsafe(anchor) and fresh and origin_key(anchor) not in held:
+            if self.failsafe(anchor) and fresh and origin_key(anchor) not in whole:
                 found += self.health_candidates(result, now, health)
+            # What a hold covers is the person's to decide: no incident about
+            # it. Work beside it — a new plan, another unit — is looked at as
+            # ever (failsafe p6: only the covered decision is theirs).
+            holding = held.get(origin_key(anchor), [])
+            found = [c for c in found if not any(covers(h, result, c.anchor) for h in holding)]
             closed = self.origin_closed(result, tracked.get(origin_key(anchor)), now)
             if closed is not None and not found:
                 # Anything else found here is reported through the ✔ origin
                 # already; this is for the work nothing else would flag.
                 found.append(closed)
-            if origin_key(anchor) in held or self.retired_now(origin_key(anchor), result):
-                continue  # a person has taken it over, or found nothing owed (`agobserver.hold`)
+            if origin_key(anchor) in whole or self.retired_now(origin_key(anchor), result):
+                continue  # a person holds all of it, or found nothing owed (`agobserver.hold --retire`)
             for candidate in primary(found):
                 # Our own recovery request, not yet taken up, is the incident
                 # it belongs to — watched by its retry and report — never an
@@ -1158,11 +1172,24 @@ class Monitor:
         newest = max((int(n.last_activity or 0) for n in result.nodes()), default=0)
         return newest <= float(entry.get("at") or 0)
 
-    def load_held(self) -> dict[str, dict[str, Any]]:
-        try:
-            return json.loads((self.store_dir / HELD_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
+    def load_held(self) -> dict[str, list]:
+        """The holds in force at the last look, per request (`agag.holds`)."""
+        return dict(getattr(self, "_held", {}) or {})
+
+    def hold_origins(self) -> set[int]:
+        """Requests with a hold on record — found by the note, so a held
+        request is looked at whatever else says about it."""
+        from agag.holds import HOLD_TAG
+
+        found = set()
+        for row in self.mirror.notes(tag=HOLD_TAG):
+            message = self.mirror.message(row.message_id)
+            if message is None:
+                continue
+            first = self.mirror.messages(message.channel, message.topic, limit=None)
+            if first:
+                found.add(int(first[0].id))
+        return found
 
     def save_tracked(self, tracked: dict[str, dict[str, Any]]) -> None:
         self.store_dir.mkdir(parents=True, exist_ok=True)
@@ -1184,7 +1211,7 @@ class Monitor:
         found: dict[int, tuple[str, str, int]] = {}
         for channel, topic, anchor in self.origins(now):
             found[anchor] = (channel, topic, anchor)
-        anchors = {int(k[1:]) for k in (*tracked, *self.load_held()) if k.startswith("o") and k[1:].isdigit()}
+        anchors = {int(k[1:]) for k in tracked if k.startswith("o") and k[1:].isdigit()} | self.hold_origins()
         anchors |= {int(r["origin"]["message_id"]) for r in self.records()
                     if r.get("state") not in CLOSED and r.get("origin", {}).get("message_id")}
         for anchor in sorted(anchors - set(found)):

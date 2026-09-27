@@ -435,8 +435,12 @@ def test_an_answer_not_taken_up_keeps_the_request_tracked(tmp_path):
 def test_a_held_request_survives_whatever_its_conversations_say(tmp_path):
     case = plain_world(tmp_path)
     try:
-        case.store.mkdir(parents=True, exist_ok=True)
-        (case.store / monitoring.HELD_FILE).write_text(_json.dumps({f"o{case.ask}": {"at": 0, "why": "trial"}}))
+        from agag.holds import hold_note
+
+        origin = case.realm.messages[case.ask]
+        case.realm.post(origin["display_recipient"], origin["subject"],
+                        hold_note("indefinite", case.ask, 8, "Developer", 0, "trial"), sender_id=23,
+                        sender_name="agobserver-agstudio1")
         case.make().tick()
         case.clock.now += 3 * 86400  # out of the window: only the hold looks at it now
         case.make().tick()

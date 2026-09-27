@@ -357,13 +357,18 @@ def test_requests_from_before_the_contract_keep_the_older_rules(world, tmp_path)
 
 
 def test_a_request_a_person_holds_is_traced_but_never_acted_on(world, tmp_path):
-    import json
+    """failsafe p6: the hold is a record in the request's conversation, read
+    by the trace; its explicit release is one too."""
+    from agag.holds import hold_note, release_note
 
     case = world("fixed", "legit")
     watcher = case.make()
-    (watcher.store_dir).mkdir(parents=True, exist_ok=True)
-    (watcher.store_dir / monitoring.HELD_FILE).write_text(json.dumps({f"o{case.ask}": {"why": "mine"}}))
+    desk = "front-desk-20260926-221323"
+    hold = case.realm.post("front", desk, hold_note("indefinite", case.ask, DEV, "Developer", 0, "mine"),
+                           sender_id=OBS, sender_name=NAMES[OBS], timestamp=case.clock.now)
     assert run_for(case, watcher, monitoring.DETECTION_TARGET["unheld"] + 600) is None
     assert f"o{case.ask}" in watcher.load_tracked(), "held is not forgotten"
-    (watcher.store_dir / monitoring.HELD_FILE).write_text("{}")
+    assert f"o{case.ask}" in watcher.load_held()
+    case.realm.post("front", desk, release_note(hold, DEV, "Developer", 0, "go on"), sender_id=OBS,
+                    sender_name=NAMES[OBS], timestamp=case.clock.now)
     assert run_for(case, watcher, 300) is not None, "and released, it is due at once"
