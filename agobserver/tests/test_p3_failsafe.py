@@ -324,3 +324,19 @@ def test_a_follow_up_decision_is_a_post_in_the_review_and_is_recorded_once(monke
     assert review_status.main(["review-autolab-stopped", "1", "fixed", "--note", "again"], client=client,
                               reviews=reviews) == 0
     assert len(client.sent) == 3, "already recorded: nothing posted twice"
+
+
+def test_a_recovery_seen_before_reviews_kept_later_outcomes_is_added_once(world):
+    """p2's C and D moved again after their report, before this existed."""
+    case = world("unknown")
+    watcher = case.make()
+    record = report_unrecovered(case, watcher)
+    stored = watcher.load(record["key"])
+    stored["cleared_at"] = case.clock.now - 30
+    watcher.save(stored)
+    case.probes.verdicts = ["running"]
+    for _ in range(3):
+        case.clock.now += 60
+        watcher.tick()
+    later = [m["content"] for m in spoken(review_posts(case)) if "— later:" in m["content"]]
+    assert len(later) == 1 and "the work moved again at" in later[0] and "seen in its incident topic" in later[0]

@@ -616,6 +616,13 @@ class Monitor:
             try:
                 if record.get("state") == REPORTED and okey in looked and not record.get("cleared_at"):
                     self.cleared(record, looked[okey], now, fresh)
+                if record.get("state") == REPORTED and record.get("cleared_at") \
+                        and "moving" not in ((record.get("review") or {}).get("updates") or {}):
+                    # Moving again before reviews kept later outcomes (p2's C
+                    # and D): said once, with the time it was seen.
+                    self.reviews.later(record, "moving", f"the work moved again at {_when(record['cleared_at'])} "
+                                                         "(seen in its incident topic then)")
+                    self.save(record)
                 if record.get("state") in (RESCUED, REPORTED) and okey in looked and fresh:
                     self.final_outcome(record, looked[okey], now)
                 if record.get("state") == DISMISSED and record["key"] not in seen_keys and okey in looked and fresh:
