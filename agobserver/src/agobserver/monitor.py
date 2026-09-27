@@ -1580,6 +1580,14 @@ class Monitor:
             f"- Responsible: {candidate.responsible}.",
             f"- Evidence: `agentchat trace {origin[2]}`, observed {_when(now)}.",
         ]
+        stopped_ack = int(record.get("ack_at_detection") or (node.ack if node is not None else 0) or 0)
+        if candidate.kind in WORK_KINDS and candidate.anchor and stopped_ack:
+            # failsafe p4: this post is evidence as of now. The work may move
+            # before it is read — a requester resuming it, the owner's own
+            # recovery — and a second start beside it is the one wrong move,
+            # so the exact re-check is named: that conversation, that serving.
+            lines.append(f"- Re-check right before acting: `agentchat recheck {int(candidate.anchor)} "
+                         f"--after {stopped_ack}` — it says whether this work has resumed since.")
         if candidate.kind not in HEALTH_KINDS or not health:
             # For a checked unit the check's own unknowns are listed above; the
             # conversation-only doubt ("it may be a long job; do not start a

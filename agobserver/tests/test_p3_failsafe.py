@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from agag.post import PROGRESS as PROGRESS_INTENT, REPORT, PostMeta, compose
 from agag.reply import failure_line
 
@@ -514,3 +516,5 @@ def test_a_confirmed_stop_is_not_contradicted_in_the_request(world):
     text = asked(case)[0]["content"]
     assert "is over — the health check found its run's process gone" in text
     assert "nothing has said it ended" not in text and "do not start a second run" not in text
+    # failsafe p4: the exact re-check of that conversation and that serving.
+    assert re.search(r"`agentchat recheck \d+ --after \d+`", text)
