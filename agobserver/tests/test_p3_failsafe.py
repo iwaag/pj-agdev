@@ -502,3 +502,15 @@ def test_a_closed_plain_exchange_is_not_unfinished_work(tmp_path):
         assert f"o{case.ask}" not in tracked(case)
     finally:
         case.mirror.stop()
+
+
+def test_a_confirmed_stop_is_not_contradicted_in_the_request(world):
+    """Trial A (p3): the request said "stopped" and, beside it, "a serving is
+    open … nothing has said it ended" and "do not start a second run beside
+    it". Front read the work as moving and did not resume it."""
+    case = world("stopped")
+    watcher = case.make()
+    assert look(case, watcher, T0 + 100 + 600) is not None
+    text = asked(case)[0]["content"]
+    assert "is over — the health check found its run's process gone" in text
+    assert "nothing has said it ended" not in text and "do not start a second run" not in text

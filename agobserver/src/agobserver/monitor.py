@@ -335,10 +335,22 @@ def _path_to(root, anchor: int) -> list:
     return []
 
 
-def _execution_words(node) -> str:
-    serving = {"open": f"a serving is open since its acknowledgement #{node.ack}, and nothing has said it ended",
-               "ended": f"its last serving ended with #{node.ended_by}",
-               "unknown": "no serving of it is on record"}[node.execution]
+def _execution_words(node, health: dict[str, Any] | None = None) -> str:
+    """The unit's execution as its conversation shows it — overridden by a
+    health check that saw its process: a conversation cannot say that a
+    serving died (failsafe p3 trial A: "a serving is open" beside "stopped"
+    read as two different facts)."""
+    process = (health or {}).get("process") or {}
+    if node.execution == "open" and (health or {}).get("verdict") == "stopped":
+        serving = (f"the serving acknowledged at #{node.ack} is over — the health check found its run's process "
+                   f"gone ({process.get('how') or 'exited'}); it will not post again, although its conversation "
+                   "shows no end")
+    elif node.execution == "open" and process.get("state") == "alive":
+        serving = f"a serving is open since its acknowledgement #{node.ack}, and its run's process is alive"
+    else:
+        serving = {"open": f"a serving is open since its acknowledgement #{node.ack}, and nothing has said it ended",
+                   "ended": f"its last serving ended with #{node.ended_by}",
+                   "unknown": "no serving of it is on record"}[node.execution]
     holder = {"none": "nothing holds the work now", "delegate": "a conversation opened from it holds the work",
               "owner": "its owner holds the work", "requester": "the move is with whoever asked for it",
               "human": "a person was asked", "unknown": "who holds the work cannot be read"}.get(node.holder, "")
@@ -1557,10 +1569,10 @@ class Monitor:
             f"- The request: #**{origin[0]}>{_bare(origin[1])}** (#{origin[2]}).",
             f"- What the records show: {candidate.fact} (since {_when(candidate.since)}, {_age(now - candidate.since)}).",
         ]
-        if node is not None:
-            lines.append(f"- Execution: {_execution_words(node)}.")
-            lines.append(f"- What is still owed: {_owed_words(node)}.")
         health = self._health_reports.get(int(candidate.anchor or 0)) if candidate.kind in HEALTH_KINDS else None
+        if node is not None:
+            lines.append(f"- Execution: {_execution_words(node, health)}.")
+            lines.append(f"- What is still owed: {_owed_words(node)}.")
         lines += health_lines(health)
         lines += self.timeline_lines(record) if candidate.kind in HEALTH_KINDS else []
         lines += [
@@ -1568,7 +1580,11 @@ class Monitor:
             f"- Responsible: {candidate.responsible}.",
             f"- Evidence: `agentchat trace {origin[2]}`, observed {_when(now)}.",
         ]
-        if candidate.kind not in HEALTH_KINDS or not health or not health.get("unknowns"):
+        if candidate.kind not in HEALTH_KINDS or not health:
+            # For a checked unit the check's own unknowns are listed above; the
+            # conversation-only doubt ("it may be a long job; do not start a
+            # second run") contradicted a confirmed stop and kept Front from
+            # resuming it (failsafe p3 trial A).
             lines.append(f"- Not known: {_unknown_words(candidate, node)}")
         if candidate.kind in HEALTH_KINDS:
             since = float((record.get("timeline") or {}).get("first_suspicion") or now)
