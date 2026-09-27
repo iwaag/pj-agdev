@@ -6,7 +6,7 @@ from agag.post import PROGRESS as PROGRESS_INTENT, REPORT, PostMeta, compose
 from agag.reply import failure_line
 
 from test_failsafe_reproductions import ACK, AUTOLAB, CHANNEL, DEV, FRONT, OBS, PROGRESS
-from test_health_path import asked, incident_posts, post, world  # noqa: F401 - the fixture
+from test_health_path import asked, incident_posts, post, settle, world  # noqa: F401 - the fixture
 
 
 def test_a_request_left_unanswered_by_two_failed_replies_goes_to_the_owners(world):
@@ -340,3 +340,165 @@ def test_a_recovery_seen_before_reviews_kept_later_outcomes_is_added_once(world)
         watcher.tick()
     later = [m["content"] for m in spoken(review_posts(case)) if "— later:" in m["content"]]
     assert len(later) == 1 and "the work moved again at" in later[0] and "seen in its incident topic" in later[0]
+
+
+# --- retention (step 5) ---------------------------------------------------------------------
+
+import json as _json
+
+
+def plain_world(tmp_path, *, served=True, now=T0 + 400):
+    """Front asked autolab a question in a plain plan conversation (no
+    mission): autolab answered, and — `served` — Front took the answer up
+    and told the Developer."""
+    from types import SimpleNamespace
+
+    from agag.mirror import Mirror
+    from agag.mirror.testing import FakeRealm
+
+    from test_failsafe_reproductions import NAMES, Client, spec
+
+    realm = FakeRealm()
+    for stream_id, name in enumerate(("front", "pj-x", CHANNEL), start=3):
+        realm.add_channel(stream_id, name)
+
+    def at(channel, topic, text, sender, when):
+        return realm.post(channel, topic, text, sender_id=sender, sender_name=NAMES[sender], timestamp=T0 + when)
+
+    desk, plan = "front-desk-plain", "workplan-question"
+    ask = at("front", desk, "Could autolab plan a --longest flag?", DEV, 0)
+    ack = at("front", desk, ACK, FRONT, 1)
+    started = at("front", desk, f"@**Developer** Asked autolab.\n\n`ag-post intent=report end={ack}`", FRONT, 5)
+    at("pj-x", plan, f"[selfnote][rootchat] front/{desk} #{started}", FRONT, 6)
+    at("pj-x", plan, "@**autolab-agstudio1** Would you plan a --longest flag?", FRONT, 6)
+    back = at("pj-x", plan, ACK, AUTOLAB, 7)
+    answer = at("pj-x", plan, f"@**Front** I would plan it in one task. Shall I?\n\n`ag-post intent=response_request "
+                              f"to={FRONT} ask=confirmation seen=7 end={back}`", AUTOLAB, 30)
+    if served:
+        at("front", desk, f"[selfnote][served] pj-x/{plan} {answer}", FRONT, 40)
+        again = at("front", desk, ACK, FRONT, 41)
+        at("front", desk, f"@**Developer** autolab would plan it in one task and asks whether to go ahead.\n\n"
+                          f"`ag-post intent=response_request to={DEV} ask=confirmation end={again}`", FRONT, 45)
+    mirror = Mirror.open(tmp_path / "zulip.env", tmp_path / "mirror", client_factory=realm.facet,
+                         log=lambda line: None, start=True, resync_backoff=0.05)
+    deadline = _time.time() + 5
+    while _time.time() < deadline and not mirror.topics("pj-x"):
+        _time.sleep(0.05)
+    _time.sleep(0.3)
+    clock = SimpleNamespace(now=now)
+
+    def make():
+        return monitoring.Monitor(spec(tmp_path / "w"), Client(realm, clock), mirror,
+                                  judge=lambda *a, **k: {"verdict": "legit", "evidence": ""},
+                                  clock=lambda: clock.now, interval=60, window_hours=12, probes=None)
+
+    return SimpleNamespace(realm=realm, mirror=mirror, clock=clock, make=make, ask=ask, desk=desk, at=at,
+                           store=tmp_path / "w" / "local" / "incidents")
+
+
+def tracked(case):
+    try:
+        return _json.loads((case.store / monitoring.TRACKED_FILE).read_text())
+    except OSError:
+        return {}
+
+
+def test_a_satisfied_plain_exchange_leaves_tracking_and_comes_back_when_it_moves(tmp_path):
+    case = plain_world(tmp_path)
+    try:
+        watcher = case.make()
+        watcher.tick()
+        assert f"o{case.ask}" not in tracked(case), "nothing is owed: the Developer's turn"
+        # The Developer answers the next day: the conversation moves, and the
+        # request is looked at — and tracked — again.
+        case.clock.now = T0 + 86400
+        case.at("front", case.desk, "Yes, go ahead.", DEV, 86400)
+        settle(case, lambda: case.mirror.message(max(case.realm.messages)) is not None)
+        restarted = case.make()
+        restarted.tick()
+        assert f"o{case.ask}" in tracked(case), "rediscovered: a post of the requester is owed a serving"
+    finally:
+        case.mirror.stop()
+
+
+def test_an_answer_not_taken_up_keeps_the_request_tracked(tmp_path):
+    case = plain_world(tmp_path, served=False)
+    try:
+        case.make().tick()
+        assert f"o{case.ask}" in tracked(case)
+    finally:
+        case.mirror.stop()
+
+
+def test_a_held_request_survives_whatever_its_conversations_say(tmp_path):
+    case = plain_world(tmp_path)
+    try:
+        case.store.mkdir(parents=True, exist_ok=True)
+        (case.store / monitoring.HELD_FILE).write_text(_json.dumps({f"o{case.ask}": {"at": 0, "why": "trial"}}))
+        case.make().tick()
+        case.clock.now += 3 * 86400  # out of the window: only the hold looks at it now
+        case.make().tick()
+        assert f"o{case.ask}" in tracked(case)
+    finally:
+        case.mirror.stop()
+
+
+def test_closed_incidents_are_pruned_after_their_ttl_and_keep_their_episode_count(tmp_path):
+    import os
+
+    case = plain_world(tmp_path)
+    try:
+        watcher = case.make()
+        watcher.store_dir.mkdir(parents=True, exist_ok=True)
+        old = {"key": "o1:n2", "state": "rescued", "origin": {"key": "o1"}, "review": {"delivered": True}}
+        kept = {"key": "o5:n6", "state": "reported", "origin": {"key": "o5"}, "review": {"owed": True}}
+        live = {"key": "o7:n8", "state": "recovering", "origin": {"key": "o7"}}
+        for record in (old, kept, live):
+            watcher.save(record)
+        watcher.archive(dict(old, key="o1:n2"))  # an earlier episode of the same work
+        watcher.save(old)
+        ancient = case.clock.now - monitoring.INCIDENT_TTL - 10
+        for path in watcher.store_dir.glob("*.json"):
+            os.utime(path, (ancient, ancient))
+        assert watcher.prune(case.clock.now, {}, {}) == 2
+        left = sorted(p.name for p in watcher.store_dir.glob("*.json"))
+        assert watcher._path("o5:n6").name in left and watcher._path("o7:n8").name in left
+        assert watcher._path("o1:n2").name not in left and not [n for n in left if "~" in n]
+        assert watcher.episodes("o1:n2") == 2, "a later episode never reuses a name"
+    finally:
+        case.mirror.stop()
+
+
+def test_a_retired_request_leaves_tracking_until_it_moves_again(tmp_path, monkeypatch):
+    from agobserver import hold
+
+    case = plain_world(tmp_path, served=False, now=T0 + 100)  # before its answer could be `undelivered`
+    try:
+        case.make().tick()
+        assert f"o{case.ask}" in tracked(case)
+        monkeypatch.setattr(hold, "SPEC", type("S", (), {"local": tmp_path / "w" / "local"})())
+        monkeypatch.setattr(hold.time, "time", lambda: case.clock.now)
+        assert hold.main(["--retire", "residue from before end= markers; nothing owed", f"o{case.ask}"]) == 0
+        case.clock.now += 60
+        case.make().tick()
+        assert f"o{case.ask}" not in tracked(case), "retired: no longer tracked, and after a restart neither"
+        case.make().tick()
+        assert f"o{case.ask}" not in tracked(case)
+        case.clock.now += 3600
+        case.at("front", case.desk, "Still there?", DEV, int(case.clock.now - T0))
+        settle(case, lambda: case.mirror.message(max(case.realm.messages)) is not None)
+        case.make().tick()
+        assert f"o{case.ask}" in tracked(case), "the retirement lapsed when the request moved"
+    finally:
+        case.mirror.stop()
+
+
+def test_a_closed_plain_exchange_is_not_unfinished_work(tmp_path):
+    case = plain_world(tmp_path, served=False, now=T0 + 100)
+    try:
+        case.realm.resolve("pj-x", "workplan-question")
+        settle(case, lambda: any(t.name.startswith("✔") for t in case.mirror.topics("pj-x", include_resolved=True)))
+        case.make().tick()
+        assert f"o{case.ask}" not in tracked(case)
+    finally:
+        case.mirror.stop()

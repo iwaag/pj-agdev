@@ -129,6 +129,12 @@ ESCALATE_AFTER = 600
 #: posted or queued); `uncertain` is everything the probe could not confirm.
 HEALTH_KINDS = ("stopped", "uncertain")
 HEALTH_STATE_FILE = "health.json"
+#: Ended episodes per incident key, kept when their archives are pruned.
+EPISODES_FILE = "episodes.json"
+#: A closed incident record nothing refers to is forgotten this long after
+#: its last change (`Monitor.prune`); its Zulip topic stays.
+INCIDENT_TTL = 14 * 86400
+PRUNE_EVERY = 60
 #: A unit's health state is forgotten this long after it was last looked at.
 HEALTH_STATE_TTL = 24 * 3600
 #: The conversation-only kinds the health path replaces for a probed owner.
@@ -171,6 +177,9 @@ UNOBSERVABLE_REPORT_SECONDS = 1800
 TRACKED_FILE = "tracked.json"
 #: Requests a person has taken over (`agobserver.hold`): traced, never acted on.
 HELD_FILE = "held.json"
+#: Requests a person checked and found owing nothing (`agobserver.hold
+#: --retire`, failsafe p3): out of tracking until anything new is posted.
+RETIRED_FILE = "retired.json"
 #: Facts about this monitor's own history (`receipts_from`).
 STATE_FILE = "monitor-state.json"
 #: The monitor's own progress, read by processes that are not the monitor
@@ -347,6 +356,22 @@ def _unknown_words(candidate: Candidate, node) -> str:
     return "why it stopped; the records show only that it did."
 
 
+def satisfied(node) -> bool:
+    """A plain conversation — no unit of work in it — whose exchange is
+    complete for now (failsafe p3): its agent answered, the answer was taken
+    up by whoever asked, its serving ended, and the next move is the
+    requester's — or one somebody closed with a ✔ once its serving ended. It
+    owes nothing, so it does not keep a request tracked.
+    A unit of work never is: only its record ends it. Age plays no part."""
+    if node.identity or node.execution != "ended":
+        return False
+    if node.topic.startswith(RESOLVED_TOPIC_PREFIX) and node.state not in ("queued", "executing"):
+        # A plain conversation has no record but its ✔: somebody closed the
+        # exchange, and nothing in it is running or waiting to be served.
+        return True
+    return node.state in ("awaiting_requester", "answered") and node.taken_up and node.holder in ("requester", "none")
+
+
 def origin_key(anchor: int) -> str:
     """A tracked request: its origin conversation's first post."""
     return f"o{int(anchor)}"
@@ -454,6 +479,8 @@ class Monitor:
         self._health_reports: dict[int, dict[str, Any]] = {}
         #: This look's probes, run ahead of the per-request pass (`prefetch`).
         self._prefetched: dict[tuple[str, int, int], dict[str, Any]] = {}
+        #: Requests a person retired (`agobserver.hold --retire`), this look.
+        self._retired: dict[str, dict[str, Any]] = {}
         self.probe_budget = PROBE_BUDGET
         self.probe_workers = PROBE_WORKERS
         self.timing: dict[str, float] = dict(TIMING_DEFAULTS)
@@ -485,7 +512,8 @@ class Monitor:
             return []
         found = []
         for path in sorted(self.store_dir.glob("*.json")):
-            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE, HELD_FILE, HEALTH_STATE_FILE, REVIEWS_FILE):
+            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE, HELD_FILE, HEALTH_STATE_FILE, REVIEWS_FILE,
+                                                  EPISODES_FILE, RETIRED_FILE):
                 continue  # an ended episode, or the index of tracked requests
             try:
                 found.append(json.loads(path.read_text(encoding="utf-8")))
@@ -573,6 +601,7 @@ class Monitor:
         reader = MirrorReader(self.mirror)
         tracked = self.load_tracked()
         held = self.load_held()
+        self._retired = self.load_retired()
         health = self.load_health()
         self._health = health
         self._health_reports = {}
@@ -599,8 +628,8 @@ class Monitor:
                 # Anything else found here is reported through the ✔ origin
                 # already; this is for the work nothing else would flag.
                 found.append(closed)
-            if origin_key(anchor) in held:
-                continue  # a person has taken it over (`agobserver.hold`)
+            if origin_key(anchor) in held or self.retired_now(origin_key(anchor), result):
+                continue  # a person has taken it over, or found nothing owed (`agobserver.hold`)
             for candidate in primary(found):
                 # Our own recovery request, not yet taken up, is the incident
                 # it belongs to — watched by its retry and report — never an
@@ -637,7 +666,9 @@ class Monitor:
                     touched.append(self.verify(record, looked[okey], now, fresh))
             except Exception as error:  # noqa: BLE001
                 log(f"monitor: checking {record['key']} failed: {error!r}")
-        self.retain(tracked, looked, gone if fresh else set(), now)
+        self.retain(tracked, looked, gone if fresh else set(), now, held)
+        if self.ticks % PRUNE_EVERY == 1:
+            self.prune(now, tracked, held)
         self.save_health(health, now)
         if fresh:
             self.reviews.deliver(self.records())
@@ -655,7 +686,8 @@ class Monitor:
             if entry is not None:
                 entry.pop("closed_seen", None)
             return None
-        unfinished = [n for n in result.nodes() if n is not root and n.state not in ("done", "cancelled")]
+        unfinished = [n for n in result.nodes() if n is not root and n.state not in ("done", "cancelled")
+                      and not satisfied(n)]
         if not unfinished:
             return None
         seen = float(entry.setdefault("closed_seen", now))
@@ -916,6 +948,21 @@ class Monitor:
         except (OSError, ValueError):
             return {}
 
+    def load_retired(self) -> dict[str, dict[str, Any]]:
+        try:
+            return json.loads((self.store_dir / RETIRED_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def retired_now(self, okey: str, result) -> bool:
+        """Retired, and nothing posted in the request since: a retirement
+        lapses by itself when the request moves again."""
+        entry = self._retired.get(okey)
+        if entry is None:
+            return False
+        newest = max((int(n.last_activity or 0) for n in result.nodes()), default=0)
+        return newest <= float(entry.get("at") or 0)
+
     def load_held(self) -> dict[str, dict[str, Any]]:
         try:
             return json.loads((self.store_dir / HELD_FILE).read_text(encoding="utf-8"))
@@ -942,7 +989,7 @@ class Monitor:
         found: dict[int, tuple[str, str, int]] = {}
         for channel, topic, anchor in self.origins(now):
             found[anchor] = (channel, topic, anchor)
-        anchors = {int(k[1:]) for k in tracked if k.startswith("o")}
+        anchors = {int(k[1:]) for k in (*tracked, *self.load_held()) if k.startswith("o") and k[1:].isdigit()}
         anchors |= {int(r["origin"]["message_id"]) for r in self.records()
                     if r.get("state") not in CLOSED and r.get("origin", {}).get("message_id")}
         for anchor in sorted(anchors - set(found)):
@@ -950,7 +997,8 @@ class Monitor:
             found[anchor] = (where[0], where[1], anchor) if where else (ORIGIN_CHANNEL, "", anchor)
         return list(found.values())
 
-    def retain(self, tracked: dict[str, dict[str, Any]], looked: dict[str, Any], gone: set[str], now: float) -> None:
+    def retain(self, tracked: dict[str, dict[str, Any]], looked: dict[str, Any], gone: set[str], now: float,
+               held: dict[str, Any] | None = None) -> None:
         """Keep a request while anything below it is unfinished or an incident
         of it is open; let it go once neither is true. The index holds only
         what this monitor has looked at — never the realm's history.
@@ -960,15 +1008,31 @@ class Monitor:
         judged a legitimate wait was counted as finished here, and a request
         whose one task waited on the human left the index in the same look
         (step 1, W1): "nobody needs to be asked" was read as "this is over".
-        A dismissal stops the nudges; it ends nothing."""
+        A dismissal stops the nudges; it ends nothing.
+
+        A plain conversation whose exchange is complete (`satisfied`) is not
+        outstanding (failsafe p3): until then every Front → agent exchange
+        without a unit of work kept its request tracked for ever. A held
+        request stays, whatever its conversations say. A request that left
+        is found again by the window when its conversation moves."""
         records = self.records()
         open_origins = {r.get("origin", {}).get("key") for r in records
                         if r.get("state") not in CLOSED and r.get("state") != DISMISSED}
         changed = False
         due = self.next_reviews(records, now)
+        held = held or {}
         for okey, result in looked.items():
-            outstanding = [n for n in result.nodes() if n is not result.root and n.state not in TERMINAL]
-            if outstanding or okey in open_origins:
+            root = result.root
+            outstanding = [n for n in result.nodes()
+                           if n is not root and n.state not in TERMINAL and not satisfied(n)]
+            if root.state in ("queued", "executing", "failed") or root.execution == "open":
+                # The requester's own conversation owes an answer (a new post,
+                # a serving in progress, a failure notice): that is an
+                # obligation as much as unfinished work below it.
+                outstanding.append(root)
+            if self.retired_now(okey, result) and okey not in open_origins:
+                outstanding = []  # a person found nothing owed here (`hold --retire`)
+            if outstanding or okey in open_origins or okey in held:
                 entry = tracked.get(okey)
                 if entry is None:
                     entry = tracked[okey] = {"since": now, "topic": result.root.topic}
@@ -989,7 +1053,7 @@ class Monitor:
                 del tracked[okey]
                 changed = True
         for okey in gone:
-            if okey in tracked and okey not in open_origins:
+            if okey in tracked and okey not in open_origins and okey not in held:
                 del tracked[okey]
                 changed = True
         if changed:
@@ -1666,7 +1730,16 @@ class Monitor:
         self.save(record)
 
     def episodes(self, key: str) -> int:
-        return len(list(self.store_dir.glob(f"{self._path(key).stem}~*.json")))
+        """How many ended episodes this incident key has had: the archives
+        still kept, or the count kept when they were pruned (`prune`)."""
+        kept = len(list(self.store_dir.glob(f"{self._path(key).stem}~*.json")))
+        return max(kept, int(self._episode_counts().get(key, 0)))
+
+    def _episode_counts(self) -> dict[str, int]:
+        try:
+            return json.loads((self.store_dir / EPISODES_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
 
     def archive(self, record: dict[str, Any]) -> None:
         """Move an ended incident aside so the same work can have a new one."""
@@ -1675,7 +1748,47 @@ class Monitor:
         try:
             path.replace(path.with_name(f"{path.stem}~{n}.json"))
         except OSError:
-            pass
+            return
+        counts = self._episode_counts()
+        counts[record["key"]] = n
+        tmp = self.store_dir / f"{EPISODES_FILE}.tmp"
+        tmp.write_text(json.dumps(counts, indent=1, sort_keys=True), encoding="utf-8")
+        tmp.replace(self.store_dir / EPISODES_FILE)
+
+    def prune(self, now: float, tracked: dict[str, Any], held: dict[str, Any]) -> int:
+        """Forget closed incidents nothing refers to any more (failsafe p3).
+
+        A record is kept while it is open, while its request is tracked or
+        held, while its review handoff or a later outcome is owed, and for
+        `INCIDENT_TTL` after its last change. Its topic and notes in Zulip
+        stay: they are the record; this is only the monitor's cache. Ended
+        episodes keep their count, so a later episode never reuses a name."""
+        removed = 0
+        for path in self.store_dir.glob("*.json") if self.store_dir.is_dir() else []:
+            if path.name in (TRACKED_FILE, STATE_FILE, HELD_FILE, HEALTH_STATE_FILE, REVIEWS_FILE, EPISODES_FILE,
+                             RETIRED_FILE):
+                continue
+            try:
+                if now - path.stat().st_mtime < INCIDENT_TTL:
+                    continue
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            review = record.get("review") or {}
+            owed = review.get("owed") or any(u.get("owed") for u in (review.get("updates") or {}).values())
+            okey = (record.get("origin") or {}).get("key")
+            if "~" not in path.stem and record.get("state") not in CLOSED:
+                continue
+            if owed or okey in tracked or okey in held:
+                continue
+            if "~" not in path.stem:
+                self.archive(record)  # counted, then removed with the archives
+                path = path.with_name(f"{path.stem}~{self.episodes(record['key'])}.json")
+            path.unlink(missing_ok=True)
+            removed += 1
+        if removed:
+            log(f"monitor: pruned {removed} closed incident record(s) older than {INCIDENT_TTL // 86400} days")
+        return removed
 
     def report(self, record: dict[str, Any], now: float, why: str) -> dict[str, Any]:
         """Nobody left to ask: tell the realm's owners, by name, and stop."""
