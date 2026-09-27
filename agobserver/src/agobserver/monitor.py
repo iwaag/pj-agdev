@@ -671,7 +671,12 @@ class Monitor:
         nodes = list(result.nodes())
         root = result.root
         human_wait = any(n.state == "awaiting_human" for n in nodes)
-        open_anywhere = any(n.execution == "open" for n in nodes if n is not root)
+        # Somebody holds the move while any serving in the request is open or
+        # a post in it waits for its ack — the request's own conversation
+        # included: a person who just answered there is being served (trial
+        # A/D: a mission waiting on its acceptance was suspected in the
+        # seconds between the answer and the record).
+        open_anywhere = any(n.execution == "open" or n.state == "queued" for n in nodes)
         newest = max((n.last_activity for n in nodes if n is not root), default=0)
         for node in nodes:
             if node is root or not node.identity or node.state in TERMINAL or not self.probes.covers(node.owner):

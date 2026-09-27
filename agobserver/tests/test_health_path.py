@@ -364,3 +364,15 @@ def test_an_uncertain_serving_that_then_works_is_recovered_by_its_own_work(world
     case.clock.now += 60
     (record,) = [r for r in watcher.tick() if r.get("kind") == "uncertain"]
     assert record["state"] == monitoring.RESCUED
+
+
+def test_a_serving_of_the_request_s_own_conversation_holds_the_move(world):
+    """The ended-asking-nobody check does not suspect the work while Front
+    is serving the request's own conversation (a person just answered)."""
+    case = world("ended", ended=True)
+    watcher = case.make()
+    case.clock.now = T0 + 110 + monitoring.QUIET_CHECK + 10
+    post(case, "front", case.desk, "Accepted, thanks.", 8, after=0)
+    post(case, "front", case.desk, ACK, FRONT, after=1)
+    watcher.tick()
+    assert case.probes.runs == 0 and not watcher.load_health()
