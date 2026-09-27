@@ -1,0 +1,13 @@
+# Owners whose servings Observer probes (failsafe p2). Copy to
+# .local/health.toml and fill in this host's paths. An owner not listed
+# keeps the conversation-only rules (`silent`, `quiet`).
+#
+# The command must print one `agag.health.v1` document; Observer appends
+# --ack <id> --channel <c> --topic <t> --window <s> and kills it after
+# `timeout` seconds (then the unit is `unknown`, never blocked on).
+
+[owners."autolab-agstudio1"]
+command = ["<agautolab>/.venv/bin/python", "-m", "agag.health",
+           "--dir", "<agautolab>/.local/executions",
+           "--queue", "<agautolab>/.local/mirror/listener.sqlite"]
+timeout = 10

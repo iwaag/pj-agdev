@@ -58,9 +58,12 @@ from agag.trace import FAILSAFE_KINDS, THRESHOLDS, Candidate, MirrorReader, stal
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
 
 from . import triage
+from .health import HealthProbes
 
 INTERVAL_ENV = "AGOBSERVER_MONITOR_SECONDS"
-DEFAULT_INTERVAL_SECONDS = 120.0
+#: One look interval (failsafe p2: 120 → 60 s). A cycle costs well under a
+#: second off the mirror; the interval is most of every detection time.
+DEFAULT_INTERVAL_SECONDS = 60.0
 WINDOW_ENV = "AGOBSERVER_MONITOR_WINDOW_HOURS"
 DEFAULT_WINDOW_HOURS = 12.0
 #: Setting this to 0 turns the loop off without a code change.
@@ -88,8 +91,36 @@ POSTPONABLE = ("silent", "quiet")
 #: Two unclear judgments and the human decides.
 MAX_UNCLEAR = 2
 #: A judgment asked for this long ago and still without a verdict counts as
-#: `unclear`: the review does not wait on a judge that never answers.
-JUDGMENT_DEADLINE_SECONDS = 900
+#: `unclear`: the review does not wait on a judge that never answers
+#: (failsafe p2: 900 → 240 s, one judgment's own timeout and a margin).
+JUDGMENT_DEADLINE_SECONDS = 240
+
+# --- the health path (failsafe p2) -------------------------------------------------
+#
+# For a unit of work whose owner exposes the execution health interface
+# (`agobserver.health`), silence is not judged by a model: it is checked.
+#: No confirmed progress (a post, a harness event) in an open serving for
+#: this long: probe it, and again every look while it lasts.
+PROBE_AFTER = 120
+#: A serving that ended without asking anybody anything, on unfinished work,
+#: with nothing moving anywhere in the request for this long: check it — the
+#: misclassification p1's T3 needed 1800 s and a judgment to find.
+QUIET_CHECK = 300
+#: Uncertainty that persists this long after the first suspicion is put to
+#: Front (investigate; not a recovery), so it reaches Front within five
+#: minutes of the suspicion with one look interval of slack.
+ASK_AFTER = 180
+#: Still unresolved this long after the first suspicion: the developer is
+#: told, with the facts and what is not known.
+ESCALATE_AFTER = 600
+#: `stopped` is a confirmed stop (the probe saw the process gone and nothing
+#: posted or queued); `uncertain` is everything the probe could not confirm.
+HEALTH_KINDS = ("stopped", "uncertain")
+HEALTH_STATE_FILE = "health.json"
+#: A unit's health state is forgotten this long after it was last looked at.
+HEALTH_STATE_TTL = 24 * 3600
+#: The conversation-only kinds the health path replaces for a probed owner.
+REPLACED_KINDS = ("silent", "quiet")
 #: Every this many ticks (and on the first) the bot's subscriptions are
 #: checked: a move — a rename, a ✔ — reaches only subscribers, so a mirror
 #: on a bot that has not joined a channel keeps its conversations under their
@@ -146,7 +177,7 @@ RELEVANT_NOTES = ("state", "served", "start", "owed", "task", "mission", "asset"
 MOVED_ON = ("executing", "awaiting_requester", "awaiting_delivery", "awaiting_human", "answered", "done")
 #: failsafe p1's kinds recover on evidence of work, not on a state
 #: (`Monitor.recovered`).
-WORK_KINDS = ("unheld", "quiet")
+WORK_KINDS = ("unheld", "quiet", "stopped", "uncertain")
 RECOVERED_STATES = {
     "unstarted": MOVED_ON,
     "unacknowledged": MOVED_ON,
@@ -162,10 +193,14 @@ RECOVERED_STATES = {
 #: judgment's own ceiling. The trials measure against these.
 def detection_target(kind: str, interval: float = DEFAULT_INTERVAL_SECONDS) -> int:
     judged = kind in ("silent", "quiet", "resolved_live")
+    if kind == "stopped":
+        return int(interval + PROBE_AFTER + interval)
+    if kind == "uncertain":
+        return int(interval + PROBE_AFTER + ASK_AFTER + interval)
     return int(interval + THRESHOLDS[kind] + (triage.TIMEOUT_SECONDS if judged else 0))
 
 
-DETECTION_TARGET = {kind: detection_target(kind) for kind in THRESHOLDS}
+DETECTION_TARGET = {kind: detection_target(kind) for kind in (*THRESHOLDS, *HEALTH_KINDS)}
 
 __all__ = ["DETECTION_TARGET", "Monitor", "is_incident_topic", "start"]
 
@@ -185,6 +220,44 @@ def _env_float(name: str, default: float) -> float:
 
 def _when(timestamp: float) -> str:
     return time.strftime("%H:%M UTC", time.gmtime(timestamp)) if timestamp else "?"
+
+
+def _asker(node) -> str:
+    return node.requested_by[0].split(" #")[0] if node.requested_by else "whoever asked for it"
+
+
+def _clock(timestamp: float | None) -> str:
+    return time.strftime("%H:%M:%S UTC", time.gmtime(float(timestamp))) if timestamp else "?"
+
+
+def health_lines(report: dict[str, Any] | None) -> list[str]:
+    """A probe's facts as request/incident lines, each with where it is from."""
+    if not report:
+        return []
+    process = report.get("process") or {}
+    progress = report.get("progress") or {}
+    wait = report.get("wait") or {}
+    serving = report.get("serving") or {}
+    run = report.get("run") or {}
+    lines = [f"- Health check ({_clock(report.get('observed_at'))}, {report.get('source', {}).get('host', 'probe')}): "
+             f"**{report.get('verdict', 'unknown')}** — {report.get('why', '')}."]
+    facts = []
+    if process.get("state"):
+        how = f" ({process['how']})" if process.get("how") else ""
+        facts.append(f"process {process['state']}{how}" + (f", pid {run.get('pid')}" if run.get("pid") else ""))
+    if progress.get("last_event_at"):
+        facts.append(f"last harness event {progress.get('last_event') or '?'} at {_clock(progress['last_event_at'])}")
+    if wait.get("kind") and wait["kind"] != "unknown":
+        named = f" {wait.get('name')}" + (f" ({wait['detail']})" if wait.get("detail") else "") if wait.get("name") else ""
+        facts.append(f"wait: {wait['kind']}{named}")
+    if serving:
+        facts.append(f"listener journal: {serving.get('state') or 'no row'}"
+                     + (f", queued {','.join(serving['queued'])}" if serving.get("queued") else ""))
+    if facts:
+        lines.append(f"- Facts: {'; '.join(facts)}.")
+    if report.get("unknowns"):
+        lines.append(f"- Not established: {'; '.join(map(str, report['unknowns']))}.")
+    return lines
 
 
 def _age(seconds: float) -> str:
@@ -279,7 +352,7 @@ class Monitor:
                  judge: Callable[..., dict] = triage.judge, clock: Callable[[], float] = time.time,
                  interval: float | None = None, window_hours: float | None = None,
                  report_to: list[str] | None = None, async_judge: bool = False,
-                 receipts_from: int = 0, obligations_from: int = 0) -> None:
+                 receipts_from: int = 0, obligations_from: int = 0, probes: HealthProbes | None = None) -> None:
         self.spec = spec
         self.client = client
         self.mirror = mirror
@@ -334,6 +407,12 @@ class Monitor:
                                       "duration_seconds": None, "in_progress": False}
         self.latest_failure: dict[str, Any] | None = None
         self.looked_last = 0
+        #: The owners whose servings can be probed (`agobserver.health`);
+        #: nobody when `.local/health.toml` lists none.
+        self.probes = probes if probes is not None else HealthProbes.load(spec.local)
+        #: This look's probe results, by the stalled unit's anchor: what a
+        #: request and an incident say about it.
+        self._health_reports: dict[int, dict[str, Any]] = {}
 
     # --- the store -------------------------------------------------------------------
 
@@ -359,7 +438,7 @@ class Monitor:
             return []
         found = []
         for path in sorted(self.store_dir.glob("*.json")):
-            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE, HELD_FILE):
+            if "~" in path.stem or path.name in (TRACKED_FILE, STATE_FILE, HELD_FILE, HEALTH_STATE_FILE):
                 continue  # an ended episode, or the index of tracked requests
             try:
                 found.append(json.loads(path.read_text(encoding="utf-8")))
@@ -429,6 +508,9 @@ class Monitor:
         reader = MirrorReader(self.mirror)
         tracked = self.load_tracked()
         held = self.load_held()
+        health = self.load_health()
+        self._health = health
+        self._health_reports = {}
         for channel, topic, anchor in self.requests(now, tracked):
             result = trace(reader, anchor, now=int(now), receipts_from=self.receipts_from)
             if result.root is None:
@@ -437,7 +519,10 @@ class Monitor:
             looked[origin_key(anchor)] = result
             self._nodes = {int(n.anchor): n for n in result.nodes() if n.anchor}
             found = [c for c in stall_candidates(result, now=int(now))
-                     if not self.is_own(c) and (c.kind not in FAILSAFE_KINDS or self.failsafe(anchor))]
+                     if not self.is_own(c) and (c.kind not in FAILSAFE_KINDS or self.failsafe(anchor))
+                     and not (c.kind in REPLACED_KINDS and self.failsafe(anchor) and self.probed(c))]
+            if self.failsafe(anchor) and fresh and origin_key(anchor) not in held:
+                found += self.health_candidates(result, now, health)
             closed = self.origin_closed(result, tracked.get(origin_key(anchor)), now)
             if closed is not None and not found:
                 # Anything else found here is reported through the ✔ origin
@@ -473,6 +558,7 @@ class Monitor:
             except Exception as error:  # noqa: BLE001
                 log(f"monitor: checking {record['key']} failed: {error!r}")
         self.retain(tracked, looked, gone if fresh else set(), now)
+        self.save_health(health, now)
         self.looked_last = len(looked)
         return touched
 
@@ -505,6 +591,145 @@ class Monitor:
     def failsafe(self, origin_anchor: int) -> bool:
         """Whether a request is held to the failsafe contract."""
         return int(origin_anchor) >= self.obligations_from
+
+    # --- the health path (failsafe p2) --------------------------------------------------
+
+    def probed(self, candidate: Candidate) -> bool:
+        """Whether the unit a candidate is about belongs to an owner whose
+        servings are probed: its silence is checked, not judged."""
+        node = self.node_of(candidate)
+        return node is not None and self.probes.covers(node.owner)
+
+    def load_health(self) -> dict[str, dict[str, Any]]:
+        try:
+            return json.loads((self.store_dir / HEALTH_STATE_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def save_health(self, health: dict[str, dict[str, Any]], now: float) -> None:
+        for key in [k for k, v in health.items() if now - float(v.get("looked_at") or 0) > HEALTH_STATE_TTL]:
+            del health[key]
+        self.store_dir.mkdir(parents=True, exist_ok=True)
+        path = self.store_dir / HEALTH_STATE_FILE
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(health, indent=1, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+
+    def health_candidates(self, result, now: float, health: dict[str, dict[str, Any]]) -> list[Candidate]:
+        """Units of work a probe could not confirm are being done.
+
+        For each unfinished unit of a probed owner (`probed`):
+
+        - an **open serving** with no confirmed progress (a post, or the
+          harness's own events) for `PROBE_AFTER`, probed every look while
+          that lasts;
+        - a serving that **ended asking nobody anything** — no response
+          request, no delegate, no person asked anywhere in the request —
+          with nothing moving in the request for `QUIET_CHECK`.
+
+        `running` or `waiting` (a live, named wait) is healthy and clears
+        the suspicion. `stopped` is a confirmed stop: a candidate at once.
+        Anything else is uncertainty, dated from the **first** look that
+        could not confirm health: a repeated claim, another unknown or the
+        same evidence again does not move that date (`first_suspicion`), so
+        it reaches Front after `ASK_AFTER` whatever is said meanwhile.
+        """
+        found: list[Candidate] = []
+        nodes = list(result.nodes())
+        root = result.root
+        human_wait = any(n.state == "awaiting_human" for n in nodes)
+        open_anywhere = any(n.execution == "open" for n in nodes if n is not root)
+        newest = max((n.last_activity for n in nodes if n is not root), default=0)
+        for node in nodes:
+            if node is root or not node.identity or node.state in TERMINAL or not self.probes.covers(node.owner):
+                continue
+            if node.topic.startswith(RESOLVED_TOPIC_PREFIX) and node.execution != "open":
+                continue  # a ✔ on it is `resolved_live`'s question
+            key = str(node.anchor)
+            entry = health.get(key)
+            if entry is not None and int(entry.get("ack") or 0) != int(node.ack or 0):
+                entry = None  # another serving: its own evidence, from scratch
+            progress_at = max(int(node.last_activity or 0), int(node.ack_at or 0), int(node.work_at or 0))
+            if node.execution == "open":
+                due = now - progress_at >= PROBE_AFTER
+            elif node.execution == "ended" and node.holder in ("requester", "unknown") \
+                    and node.ending_intent != "response_request" and not node.waiting_on:
+                due = not human_wait and not open_anywhere and now - newest >= QUIET_CHECK
+            else:
+                due = False
+            if not due:
+                if entry is not None and entry.get("first_suspicion") and progress_at > float(entry.get("progress_at") or 0):
+                    entry.update(first_suspicion=None, cleared_at=now, cleared_by="progress")
+                if entry is not None:
+                    entry["looked_at"] = now
+                continue
+            if entry is None:
+                entry = {"ack": int(node.ack or 0), "topic": node.topic, "checks": []}
+            health[key] = entry
+            report = self.probes.probe(node.owner, ack=node.ack, channel=node.channel, topic=node.topic,
+                                       window=PROBE_AFTER)
+            self._health_reports[int(node.anchor)] = report
+            verdict = str(report.get("verdict") or "unknown")
+            event_at = float((report.get("progress") or {}).get("last_event_at") or 0)
+            entry["progress_at"] = max(float(progress_at), event_at if verdict in ("running", "waiting") else 0.0)
+            evidence = f"{verdict}|{report.get('why', '')}"
+            if evidence != entry.get("evidence"):
+                entry["checks"] = [*entry.get("checks", [])[-9:],
+                                   {"at": now, "verdict": verdict, "why": str(report.get("why", ""))[:300]}]
+            entry.update(evidence=evidence, looked_at=now, verdict=verdict, checked_at=now,
+                         checks_run=int(entry.get("checks_run", 0)) + 1)
+            if verdict in ("running", "waiting"):
+                if entry.get("first_suspicion"):
+                    entry.update(first_suspicion=None, cleared_at=now, cleared_by=verdict)
+                entry.setdefault("healthy_since", now)
+                continue
+            entry.pop("healthy_since", None)
+            entry["first_suspicion"] = entry.get("first_suspicion") or now
+            onset = self._onset(node, report)
+            entry.setdefault("onset", onset)
+            if verdict == "stopped":
+                found.append(self._health_candidate("stopped", node, report, onset))
+            elif now - float(entry["first_suspicion"]) >= ASK_AFTER:
+                found.append(self._health_candidate("uncertain", node, report, onset))
+        return found
+
+    @staticmethod
+    def _onset(node, report: dict[str, Any]) -> float:
+        """When the work stopped, as well as the evidence says: the recorded
+        end of the run, else its last harness event, else the serving's
+        own end or last activity."""
+        run = report.get("run") or {}
+        process = report.get("process") or {}
+        for value in (process.get("ended_at"), run.get("ended_at"), (report.get("progress") or {}).get("last_event_at"),
+                      node.ended_at, node.last_activity):
+            if value:
+                return float(value)
+        return 0.0
+
+    def _health_candidate(self, kind: str, node, report: dict[str, Any], onset: float) -> Candidate:
+        why = str(report.get("why") or "the health probe established nothing")
+        if kind == "stopped":
+            fact = f"a health check found the work stopped: {why}"
+            action = (f"whoever asked for it resumes it (a post in {node.channel}/{_bare(node.topic)} starts a new "
+                      "serving, which continues from what the work left), or decides otherwise")
+        else:
+            fact = f"a health check could not confirm the work is being done: {why}"
+            action = ("whoever asked for it investigates — asks its owner, checks what it is waiting for — and "
+                      "resumes it only once nothing is running; a second run beside a live one is not recovery")
+        return Candidate(kind, node.channel, node.topic, node.identity, fact, _asker(node), action, int(onset or 0),
+                         (int(node.ack or node.anchor),), anchor=node.anchor)
+
+    def timeline(self, record: dict[str, Any]) -> dict[str, Any]:
+        """The incident's timeline from the unit's health state (step 1)."""
+        state = getattr(self, "_health", None)
+        state = state if state is not None else self.load_health()
+        entry = state.get(str(record.get("node", {}).get("anchor") or 0)) or {}
+        line = dict(record.get("timeline") or {})
+        for field in ("onset", "first_suspicion", "progress_at"):
+            if entry.get(field) and not line.get(field):
+                line[field] = entry[field]
+        line["checks"] = entry.get("checks", line.get("checks", []))
+        return line
 
     # --- which requests are looked at -----------------------------------------------
 
@@ -635,6 +860,29 @@ class Monitor:
         self.mirror.resync()
         return missing
 
+    def escalation_due(self, record: dict[str, Any], now: float) -> str:
+        """Why the developer is told now, or "": the unit has been in doubt
+        for `ESCALATE_AFTER` since its first suspicion and no fresh evidence
+        of work has ended the incident."""
+        line = record.get("timeline") or {}
+        since = float(line.get("first_suspicion") or record.get("detected_at") or now)
+        if now - since < ESCALATE_AFTER:
+            return ""
+        asked = len(record.get("requests", []))
+        return (f"{_age(now - since)} after the first suspicion ({_clock(since)}) there is still no fresh evidence "
+                f"that the work is being done, after {asked} request(s) to Front")
+
+    def timeline_lines(self, record: dict[str, Any]) -> list[str]:
+        line = record.get("timeline") or {}
+        if not line:
+            return []
+        parts = [f"onset ≈ {_clock(line.get('onset'))}" if line.get("onset") else "",
+                 f"last confirmed progress {_clock(line.get('progress_at'))}" if line.get("progress_at") else "",
+                 f"first suspicion {_clock(line.get('first_suspicion'))}" if line.get("first_suspicion") else "",
+                 f"{len(line.get('checks') or [])} distinct health check result(s)" if line.get("checks") else ""]
+        parts = [p for p in parts if p]
+        return [f"- Timeline: {'; '.join(parts)}."] if parts else []
+
     def is_own(self, candidate: Candidate) -> bool:
         if candidate.kind != "unacknowledged" or not candidate.evidence:
             return False
@@ -755,6 +1003,11 @@ class Monitor:
         if candidate.kind == "unacknowledged" and (candidate.channel, candidate.topic) == (root.channel, root.topic):
             return self.report(record, now, f"{root.owner or 'the agent that owns it'} itself is not answering "
                                              "there, so asking it would reach nobody")
+        if record.get("kind") in HEALTH_KINDS:
+            record["timeline"] = self.timeline(record)
+            escalation = self.escalation_due(record, now)
+            if escalation:
+                return self.report(record, now, escalation)
         attempts = record.setdefault("requests", [])
         if attempts and now - float(attempts[-1]["at"]) < RETRY_SECONDS:
             self.save(record)
@@ -796,6 +1049,8 @@ class Monitor:
             "fact": candidate.fact, "responsible": candidate.responsible, "next_action": candidate.next_action,
             "evidence": list(candidate.evidence), "episode": episode,
         }
+        if candidate.kind in HEALTH_KINDS:
+            record["timeline"] = self.timeline(record)
         node = self.node_of(candidate)
         if node is not None:
             # The serving the stall was seen after: a recovery is a later one
@@ -815,6 +1070,8 @@ class Monitor:
             f"- Responsible: {candidate.responsible}",
             f"- Evidence: message ids {', '.join(f'#{i}' for i in candidate.evidence if i) or '—'}; "
             f"`agentchat trace {origin[2]}`",
+            *health_lines(self._health_reports.get(int(candidate.anchor or 0))),
+            *self.timeline_lines(record),
         ]))
         self.post_incident(record, note(INCIDENT_TAG, f"{key} e{episode} origin #{origin[2]}"))
         self.save(record)
@@ -1027,8 +1284,11 @@ class Monitor:
         stalled = f"#**{candidate.channel}>{_bare(candidate.topic)}**" + (
             f" ({candidate.identity})" if candidate.identity else "")
         node = self.find({"node": {"anchor": candidate.anchor}}, result) if result is not None else None
+        headline = {"uncertain": "I cannot confirm that work this request depends on is being done",
+                    "stopped": "Work this request depends on has stopped"}.get(
+            candidate.kind, "Something this request depends on has stopped")
         lines = [
-            f"**[Observer] Something this request depends on has stopped** — {stalled}.",
+            f"**[Observer] {headline}** — {stalled}.",
             "",
             f"- The request: #**{origin[0]}>{_bare(origin[1])}** (#{origin[2]}).",
             f"- What the records show: {candidate.fact} (since {_when(candidate.since)}, {_age(now - candidate.since)}).",
@@ -1036,15 +1296,24 @@ class Monitor:
         if node is not None:
             lines.append(f"- Execution: {_execution_words(node)}.")
             lines.append(f"- What is still owed: {_owed_words(node)}.")
+        health = self._health_reports.get(int(candidate.anchor or 0)) if candidate.kind in HEALTH_KINDS else None
+        lines += health_lines(health)
+        lines += self.timeline_lines(record) if candidate.kind in HEALTH_KINDS else []
         lines += [
             f"- Expected next: {candidate.next_action}.",
             f"- Responsible: {candidate.responsible}.",
             f"- Evidence: `agentchat trace {origin[2]}`, observed {_when(now)}.",
-            f"- Not known: {_unknown_words(candidate, node)}",
-            "",
-            f"Please get it moving, or say here why it should wait. Request {number} of {MAX_REQUESTS} for "
-            f"`{record['topic']}` in my channel; after that I report it and stop asking.",
         ]
+        if candidate.kind not in HEALTH_KINDS or not health or not health.get("unknowns"):
+            lines.append(f"- Not known: {_unknown_words(candidate, node)}")
+        if candidate.kind in HEALTH_KINDS:
+            since = float((record.get("timeline") or {}).get("first_suspicion") or now)
+            lines += ["", f"Please get it moving, or find out and say here why it waits. If nothing shows the work "
+                          f"moving by {_clock(since + ESCALATE_AFTER)} I tell the developer (`{record['topic']}` in "
+                          "my channel)."]
+        else:
+            lines += ["", f"Please get it moving, or say here why it should wait. Request {number} of {MAX_REQUESTS} "
+                          f"for `{record['topic']}` in my channel; after that I report it and stop asking."]
         # Information that answers nothing (`agag.post`): whoever serves this
         # conversation replies to the person who asked for the work, never to
         # Observer — trial T1/T3 saw Front address its confirmations here.
@@ -1096,6 +1365,10 @@ class Monitor:
             return self.close(record, now, FINISHED, f"`{node.note_state or 'done'}` is recorded in `{node.topic}`")
         if self.recovered(record, node):
             return self.rescued(record, now, node)
+        if record.get("kind") in HEALTH_KINDS:
+            escalation = self.escalation_due(record, now)
+            if escalation:
+                return self.report(record, now, escalation)
         # Still blocked, perhaps differently and not yet overdue: open, no
         # request until a candidate says it is owed again.
         if record.get("waiting") != node.state:
@@ -1214,6 +1487,9 @@ class Monitor:
             f"- Responsible: {record.get('responsible', '')}",
             f"- The request: `#{record['origin']['channel']} › {record['origin']['topic']}` "
             f"(`agentchat trace {record['origin']['message_id']}`)",
+            *(health_lines(self._health_reports.get(int(record.get("node", {}).get("anchor") or 0)))
+              if record.get("kind") in HEALTH_KINDS else []),
+            *(self.timeline_lines(record) if record.get("kind") in HEALTH_KINDS else []),
         ]))
         self.post_incident(record, note("state", "reported"))
         self.save(record)
@@ -1312,7 +1588,8 @@ class Monitor:
                 "timeout_seconds": triage.TIMEOUT_SECONDS,
             },
             "latest_failure": self.latest_failure,
-            "spent": {"posts": self.posts, "judgments": self.judgments},
+            "probes": self.probes.stats(),
+            "spent": {"posts": self.posts, "judgments": self.judgments, "probes": self.probes.runs},
         }
 
     def write_health(self) -> None:

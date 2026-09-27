@@ -204,7 +204,9 @@ def test_evidence_that_keeps_moving_under_a_judgment_is_visible_in_health(waitin
         watcher._verdicts[key] = watcher._run_judgment(key, job)
         said = post(waiting.realm, "front", "front-h", f"still thinking ({n})", DEV)
         settle(waiting, lambda: waiting.mirror.message(said) is not None)
-        waiting.clock.now += 120
+        # Inside the judgment deadline (failsafe p2: 240 s), which would
+        # otherwise end the wait as `unclear` before the churn shows.
+        waiting.clock.now += 60
         watcher.tick()
     health = watcher.health()["judgment"]
     assert health["invalidated"] == monitoring.CHURN_LIMIT
