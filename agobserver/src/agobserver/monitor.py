@@ -158,13 +158,20 @@ WAIT_IDLE = 900
 WAIT_CPU_STEP = 0.5
 TIMING_DEFAULTS = {"probe_after": PROBE_AFTER, "quiet_check": QUIET_CHECK, "ask_after": ASK_AFTER,
                    "escalate_after": ESCALATE_AFTER, "wait_idle": WAIT_IDLE}
-#: failsafe p3: the probes due in one look run side by side, and the look
-#: waits for them at most this long. A probe still running then counts as
-#: one that did not answer; its thread ends at its own timeout. Without it
-#: the looks were serial in the probes, so k probes timing out (10 s each)
-#: delayed every request's next look by 10k s (step 3's reproduction).
-PROBE_WORKERS = 4
+#: failsafe p3: the probes due in one look all run at once (up to
+#: `PROBE_WORKERS`), and the look waits for them at most this long — longer
+#: than a probe's own timeout, so a probe that answers in time is never
+#: queued behind slow ones. A probe still running then counts as one that
+#: did not answer; its thread ends at its own timeout. Without it the looks
+#: were serial in the probes, so k probes timing out (10 s each) delayed
+#: every request's next look by 10k s (step 3's reproduction).
+PROBE_WORKERS = 16
 PROBE_BUDGET = 20.0
+#: Trial aid (failsafe p3), created only by a person: while
+#: `faults/probe-slow` holds a number k, every look adds k probes of no unit
+#: that each take the probe's whole timeout — "several probes time out" on
+#: the same budget as the real ones.
+PROBE_SLOW_FAULT = "probe-slow"
 #: Every this many ticks (and on the first) the bot's subscriptions are
 #: checked: a move — a rename, a ✔ — reaches only subscribers, so a mirror
 #: on a bot that has not joined a channel keeps its conversations under their
@@ -772,10 +779,13 @@ class Monitor:
                 if due:
                     jobs[(node.owner, int(node.ack or 0), int(node.anchor))] = node
         self._prefetched = {}
+        slow = self._slow_probes()
         if not jobs:
             return
-        pool = ThreadPoolExecutor(max_workers=max(1, min(self.probe_workers, len(jobs))),
+        pool = ThreadPoolExecutor(max_workers=max(1, min(self.probe_workers, len(jobs) + slow)),
                                   thread_name_prefix="probe")
+        for n in range(slow):
+            pool.submit(self._slow_probe, n)
         futures = {pool.submit(self.probes.probe, node.owner, ack=node.ack, channel=node.channel, topic=node.topic,
                                window=self.timing["probe_after"]): key for key, node in jobs.items()}
         done, late = wait(futures, timeout=self.probe_budget)
@@ -792,6 +802,18 @@ class Monitor:
                 f"({self.probe_budget:g} s for {len(jobs)} probe(s))")
         if late:
             log(f"monitor: {len(late)} of {len(jobs)} probe(s) did not answer within {self.probe_budget:g} s")
+
+    def _slow_probes(self) -> int:
+        try:
+            return max(0, int((self.spec.local / FAULTS_DIR / PROBE_SLOW_FAULT).read_text(encoding="utf-8").strip()
+                              or "0"))
+        except (OSError, ValueError):
+            return 0
+
+    def _slow_probe(self, n: int) -> None:
+        """One injected probe of no unit that uses its whole timeout."""
+        timeout = max([float(e.get("timeout") or 10) for e in getattr(self.probes, "owners", {}).values()] or [10.0])
+        time.sleep(timeout)
 
     def _probe(self, node) -> dict[str, Any]:
         key = (node.owner, int(node.ack or 0), int(node.anchor))
