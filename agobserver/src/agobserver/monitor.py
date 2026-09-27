@@ -44,8 +44,9 @@ told to the developer `ESCALATE_AFTER` from it. `silent`/`quiet` are not used
 for such an owner. Rescued and reported incidents are handed to a developer
 review (`agobserver.review`).
 
-**Queues (failsafe p5).** A post an agent has not acknowledged is often
-just waiting its turn: listeners serve one conversation at a time. Before
+**Queues (failsafe p5).** A post an agent has not acknowledged, or an
+answer its requester has not taken up, is often just waiting its turn:
+listeners serve one conversation at a time. Before
 `unacknowledged` becomes an incident, the wait is read the way the progress
 panel reads it (`agag.waits`): from the owner's own listener for a probed
 owner (`probe_queue`), else from the open servings the traced requests show.
@@ -76,6 +77,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from agag.agent import AgentSpec
@@ -232,6 +234,10 @@ EXCUSED = "excused"
 CLOSED = (RESCUED, REPORTED, CANCELLED, FINISHED, WITHDRAWN, EXCUSED)
 #: failsafe p5: a post its owner's listener is not serving (`agag.waits`).
 QUEUE_KIND = "unserved"
+#: The kinds that are a post waiting in somebody's serial queue: the owner's
+#: ack (`unacknowledged`), or the requester's serving of an answer
+#: (`undelivered`). Both are read against that listener's queue first.
+QUEUED_KINDS = ("unacknowledged", "undelivered")
 #: Node states that end tracking: the owner's or the requester's record says
 #: the work is over. Nothing else does — not a ✔, not a `legit` verdict, not
 #: the request going quiet (robust_workflow p3 step 2).
@@ -862,9 +868,9 @@ class Monitor:
                     and now - int(node.last_activity or 0) >= THRESHOLDS["unacknowledged"]:
                 yield node
 
-    def queue_wait(self, node, results, now: float) -> waits.QueueWait:
+    def queue_wait(self, node, results, now: float, *, probe: bool = True) -> waits.QueueWait:
         """Why this post waits, read as the panel reads it (`agag.waits`)."""
-        if self.probes.covers(node.owner):
+        if probe and self.probes.covers(node.owner):
             key = (node.owner, 0, int(node.anchor))
             report = self._prefetched.pop(key, None) if key in self._prefetched else self.probes.probe_queue(
                 node.owner, channel=node.channel, topic=node.topic, since=float(node.last_activity or 0),
@@ -881,11 +887,26 @@ class Monitor:
         kept: list[Candidate] = []
         root = result.root
         for candidate in found:
-            node = self._nodes.get(int(candidate.anchor or 0)) if candidate.kind == "unacknowledged" else None
+            node = self._nodes.get(int(candidate.anchor or 0)) if candidate.kind in QUEUED_KINDS else None
             if node is None or node is root:
                 kept.append(candidate)
                 continue
-            wait = self.queue_wait(node, results, now)
+            if candidate.kind == "undelivered":
+                # The answer waits for its *requester's* listener, which is as
+                # serial as the owner's (failsafe p5 trial D: Front's close-out
+                # answers waited 5 min behind Front's own run of the other
+                # study). Read the same way, on the requester's open servings.
+                requester = (node.owed_to or [""])[0] or _asker(node)
+                if not requester:
+                    kept.append(candidate)
+                    continue
+                node = SimpleNamespace(anchor=node.anchor, owner=requester, channel=node.channel, topic=node.topic,
+                                       evidence=list(node.evidence), last_activity=node.last_activity)
+            # An owner's queue can be probed for the post in its own
+            # conversation; a requester's serving of an answer is read from
+            # the conversations (the answer is not in the requester's queue
+            # under the task's name).
+            wait = self.queue_wait(node, results, now, probe=candidate.kind == "unacknowledged")
             state = self._remember_wait(health, node, wait, now)
             self.queue_stats[wait.state] = self.queue_stats.get(wait.state, 0) + 1
             if wait.excused:

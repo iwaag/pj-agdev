@@ -197,3 +197,27 @@ def test_an_owner_without_the_interface_is_read_from_the_conversations_for_a_bou
     case.clock.now = T0 + 400 + 1801
     run(case, case.clock.now + 60)
     assert asked_in(case, case.desk2)
+
+
+def test_an_answer_waiting_for_its_requesters_busy_listener_is_not_undelivered(two):
+    """Trial D: autolab's close-out named Front while Front's one executor
+    served the other study's run; Observer asked about three answers that
+    were only waiting their turn."""
+    case = two(["queued"], "running")
+    realm = case.realm
+    # Request 2's plan is answered by autolab, naming Front…
+    answer = realm.post("pj-y", case.plan2, "@**Front** Planned; nothing to start yet.\n\n`ag-post intent=report`",
+                        sender_id=AUTOLAB, sender_name=NAMES[AUTOLAB], timestamp=T0 + 140)
+    # …while Front is busy serving request 1's desk (acked, working).
+    realm.post("front", case.desk, "Please also check the README.", sender_id=DEV, sender_name=NAMES[DEV],
+               timestamp=T0 + 130)
+    realm.post("front", case.desk, ACK, sender_id=FRONT, sender_name=NAMES[FRONT], timestamp=T0 + 135)
+    for at in range(200, 900, 120):
+        realm.post("front", case.desk, "🔧 agentchat read pj-x workplan-x\n\n`ag-post intent=progress`",
+                   sender_id=FRONT, sender_name=NAMES[FRONT], timestamp=T0 + at)
+    time.sleep(0.3)
+    run(case, T0 + 900)
+    assert not asked_in(case, case.desk2), "Front was asked about an answer waiting in its own queue"
+    assert not [p for p in incident_posts(case) if "undelivered" in p]
+    state = queue_state(case)
+    assert state["evidence"] == "conversation" and state["post"] == answer
