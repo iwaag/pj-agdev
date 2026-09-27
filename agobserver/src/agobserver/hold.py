@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--by", type=int, default=0, help="the person holding it (user id)")
     parser.add_argument("--evidence", type=int, default=0)
     parser.add_argument("why", nargs="*")
-    args = parser.parse_args(argv)
+    args = parser.parse_intermixed_args(argv)
     client = ZulipClient.from_env(SPEC.zulip_env)
     why = " ".join(args.why)
     try:
