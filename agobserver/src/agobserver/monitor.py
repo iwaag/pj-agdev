@@ -34,6 +34,16 @@ topics by hand. This loop needs nobody to register anything:
    and the outcome. Being rescued is not the cause being removed: the
    outcome line says which it was, and the cause stays open.
 
+**The health path (failsafe p2).** For an owner that exposes the execution
+health interface (`agobserver.health`, `.local/health.toml`), a silence is
+checked instead of judged: an open serving with no confirmed progress for
+`PROBE_AFTER`, or one that ended asking nobody anything, is probed every look.
+A confirmed stop (`stopped`) is asked about at once; what the probe cannot
+confirm (`uncertain`) after `ASK_AFTER` from the first suspicion; either is
+told to the developer `ESCALATE_AFTER` from it. `silent`/`quiet` are not used
+for such an owner. Rescued and reported incidents are handed to a developer
+review (`agobserver.review`).
+
 Repeated detection of the same thing is one incident (`Candidate.key`), in the
 local store and — when that store is lost — by the incident topic's name, so a
 restart neither re-opens nor re-asks. Posts go through `agag.delivery`, whose
