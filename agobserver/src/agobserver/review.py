@@ -45,6 +45,7 @@ review from its note.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -59,6 +60,9 @@ OCCURRENCE_TAG = "occurrence"
 REVIEWS_FILE = "reviews.json"
 #: Every this-many-th recovered recurrence names the owners again.
 NOTIFY_EVERY = 3
+#: Trial fault (one-shot, created only by a person): the process exits right
+#: after an occurrence is posted and before it is recorded.
+EXIT_FAULT = "review-exit"
 #: Incident states that hand over a review.
 HANDED = ("rescued", "reported")
 
@@ -193,6 +197,10 @@ class Reviews:
             names = self._notify(entry, record, number)
             monitor.post(monitor.spec.instance_name(), entry["topic"], self._occurrence(entry, record, number, names))
             monitor.post(monitor.spec.instance_name(), entry["topic"], note(OCCURRENCE_TAG, occurrence_id))
+            if monitor.fault(EXIT_FAULT):
+                # A trial: the process ends between the post and its record.
+                self.monitor_log(f"monitor: fault injected: exiting after posting {occurrence_id}, before recording it")
+                os._exit(70)
         if occurrence_id not in entry["occurrences"]:
             entry["occurrences"].append(occurrence_id)
         entry["last_at"] = self.clock()

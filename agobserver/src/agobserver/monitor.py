@@ -122,6 +122,14 @@ HEALTH_STATE_FILE = "health.json"
 HEALTH_STATE_TTL = 24 * 3600
 #: The conversation-only kinds the health path replaces for a probed owner.
 REPLACED_KINDS = ("silent", "quiet")
+#: Accelerated trials (failsafe p2 step 5): `.local/timing.json` may set
+#: `interval`, `probe_after`, `quiet_check`, `ask_after` and
+#: `escalate_after` (seconds). It is read at every look, so a trial needs no
+#: restart, and deleting the file restores the operational values. The
+#: health record says which values are in force.
+TIMING_FILE = "timing.json"
+TIMING_DEFAULTS = {"probe_after": PROBE_AFTER, "quiet_check": QUIET_CHECK, "ask_after": ASK_AFTER,
+                   "escalate_after": ESCALATE_AFTER}
 #: Every this many ticks (and on the first) the bot's subscriptions are
 #: checked: a move — a rename, a ✔ — reaches only subscribers, so a mirror
 #: on a bot that has not joined a channel keeps its conversations under their
@@ -414,6 +422,8 @@ class Monitor:
         #: This look's probe results, by the stalled unit's anchor: what a
         #: request and an incident say about it.
         self._health_reports: dict[int, dict[str, Any]] = {}
+        self.timing: dict[str, float] = dict(TIMING_DEFAULTS)
+        self._base_interval = self.interval
         #: Recovered and reported incidents handed to the developer (step 4).
         self.reviews = Reviews(self)
 
@@ -495,7 +505,25 @@ class Monitor:
                               duration_seconds=round(done - started, 3), in_progress=False)
             self.write_health()
 
+    def read_timing(self) -> None:
+        """The values in force this look: the operational ones, or a trial's
+        overrides (`TIMING_FILE`)."""
+        try:
+            overrides = json.loads((self.spec.local / TIMING_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            overrides = {}
+        timing = dict(TIMING_DEFAULTS)
+        for key, value in (overrides if isinstance(overrides, dict) else {}).items():
+            if key in timing and isinstance(value, (int, float)) and value > 0:
+                timing[key] = float(value)
+        interval = overrides.get("interval") if isinstance(overrides, dict) else None
+        self.interval = float(interval) if isinstance(interval, (int, float)) and interval > 0 else self._base_interval
+        if timing != self.timing:
+            log(f"monitor: timing now {timing} (interval {self.interval:g}s)")
+        self.timing = timing
+
     def _tick(self) -> list[dict[str, Any]]:
+        self.read_timing()
         if self.ticks % SUBSCRIBE_EVERY == 0:
             try:
                 self.ensure_subscribed()
@@ -656,10 +684,10 @@ class Monitor:
                 entry = None  # another serving: its own evidence, from scratch
             progress_at = max(int(node.last_activity or 0), int(node.ack_at or 0), int(node.work_at or 0))
             if node.execution == "open":
-                due = now - progress_at >= PROBE_AFTER
+                due = now - progress_at >= self.timing["probe_after"]
             elif node.execution == "ended" and node.holder in ("requester", "unknown") \
                     and node.ending_intent != "response_request" and not node.waiting_on:
-                due = not human_wait and not open_anywhere and now - newest >= QUIET_CHECK
+                due = not human_wait and not open_anywhere and now - newest >= self.timing["quiet_check"]
             else:
                 due = False
             if not due:
@@ -672,7 +700,7 @@ class Monitor:
                 entry = {"ack": int(node.ack or 0), "topic": node.topic, "checks": []}
             health[key] = entry
             report = self.probes.probe(node.owner, ack=node.ack, channel=node.channel, topic=node.topic,
-                                       window=PROBE_AFTER)
+                                       window=self.timing["probe_after"])
             self._health_reports[int(node.anchor)] = report
             verdict = str(report.get("verdict") or "unknown")
             event_at = float((report.get("progress") or {}).get("last_event_at") or 0)
@@ -694,7 +722,7 @@ class Monitor:
             entry.setdefault("onset", onset)
             if verdict == "stopped":
                 found.append(self._health_candidate("stopped", node, report, onset))
-            elif now - float(entry["first_suspicion"]) >= ASK_AFTER:
+            elif now - float(entry["first_suspicion"]) >= self.timing["ask_after"]:
                 found.append(self._health_candidate("uncertain", node, report, onset))
         return found
 
@@ -871,7 +899,7 @@ class Monitor:
         of work has ended the incident."""
         line = record.get("timeline") or {}
         since = float(line.get("first_suspicion") or record.get("detected_at") or now)
-        if now - since < ESCALATE_AFTER:
+        if now - since < self.timing["escalate_after"]:
             return ""
         asked = len(record.get("requests", []))
         return (f"{_age(now - since)} after the first suspicion ({_clock(since)}) there is still no fresh evidence "
@@ -1317,7 +1345,7 @@ class Monitor:
         if candidate.kind in HEALTH_KINDS:
             since = float((record.get("timeline") or {}).get("first_suspicion") or now)
             lines += ["", f"Please get it moving, or find out and say here why it waits. If nothing shows the work "
-                          f"moving by {_clock(since + ESCALATE_AFTER)} I tell the developer (`{record['topic']}` in "
+                          f"moving by {_clock(since + self.timing['escalate_after'])} I tell the developer (`{record['topic']}` in "
                           "my channel)."]
         else:
             lines += ["", f"Please get it moving, or say here why it should wait. Request {number} of {MAX_REQUESTS} "
@@ -1579,6 +1607,7 @@ class Monitor:
             "pid": os.getpid(),
             "enabled": True,
             "interval_seconds": self.interval,
+            "timing": dict(self.timing),
             "window_hours": self.window / 3600,
             "cycle": dict(self.cycle),
             "source": {"state": source.get("state"), "reason": source.get("reason"),

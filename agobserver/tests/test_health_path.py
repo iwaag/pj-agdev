@@ -336,3 +336,17 @@ def test_the_real_probe_command_is_what_the_monitor_calls(tmp_path):
 
 def test_unknown_documents_say_why():
     assert unknown("x")["unknowns"] == ["x"]
+
+
+def test_a_trial_timing_file_shortens_the_bounds_and_its_removal_restores_them(world):
+    case = world("unknown")
+    watcher = case.make()
+    timing = case.where / "local" / monitoring.TIMING_FILE
+    timing.parent.mkdir(parents=True, exist_ok=True)
+    timing.write_text(json.dumps({"interval": 10, "probe_after": 30, "ask_after": 20, "escalate_after": 60}))
+    at = look(case, watcher, T0 + 100 + 300, step=10)
+    assert at is not None and at - (T0 + 100) <= 30 + 20 + 20, at - T0 - 100
+    assert watcher.interval == 10 and watcher.health()["timing"]["ask_after"] == 20
+    timing.unlink()
+    watcher.tick()
+    assert watcher.interval == 60 and watcher.timing == monitoring.TIMING_DEFAULTS
