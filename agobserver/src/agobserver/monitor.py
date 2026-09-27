@@ -44,6 +44,22 @@ told to the developer `ESCALATE_AFTER` from it. `silent`/`quiet` are not used
 for such an owner. Rescued and reported incidents are handed to a developer
 review (`agobserver.review`).
 
+**Queues (failsafe p5).** A post an agent has not acknowledged is often
+just waiting its turn: listeners serve one conversation at a time. Before
+`unacknowledged` becomes an incident, the wait is read the way the progress
+panel reads it (`agag.waits`): from the owner's own listener for a probed
+owner (`probe_queue`), else from the open servings the traced requests show.
+A wait `behind` healthy work is deferred and looked at again every look; a
+post the listener is not serving (idle, passed over, given up) is
+`unserved` and reported to the owners at once, since nobody in the request
+can make a listener serve it; a post `blocked` behind a serving that is not
+healthy is left to that serving's own request, whose health path asks about
+the stopped work itself, for at most `escalate_after`, and is `unserved`
+after that or when no traced request holds the blocker. A wait nothing
+establishes (no check, a stale or failed one, a conversation-only excuse
+past its bound) is the plain `unacknowledged` rule. An incident opened on a
+wait later confirmed legitimate is closed `excused`, never `rescued`.
+
 Repeated detection of the same thing is one incident (`Candidate.key`), in the
 local store and — when that store is lost — by the incident topic's name, so a
 restart neither re-opens nor re-asks. Posts go through `agag.delivery`, whose
@@ -65,6 +81,7 @@ from typing import Any, Callable
 from agag.agent import AgentSpec
 from agag.delivery import deliver
 from agag.selfnote import note
+from agag import waits
 from agag.trace import FAILSAFE_KINDS, THRESHOLDS, Candidate, MirrorReader, stall_candidates, trace, trace_lines
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
 
@@ -209,7 +226,12 @@ CANCELLED = "cancelled"
 FINISHED = "finished"
 #: An operator closed an incident the monitor should not have opened.
 WITHDRAWN = "withdrawn"
-CLOSED = (RESCUED, REPORTED, CANCELLED, FINISHED, WITHDRAWN)
+#: The wait was confirmed legitimate after the incident opened — a post
+#: queued behind healthy work (failsafe p5): nothing had stalled.
+EXCUSED = "excused"
+CLOSED = (RESCUED, REPORTED, CANCELLED, FINISHED, WITHDRAWN, EXCUSED)
+#: failsafe p5: a post its owner's listener is not serving (`agag.waits`).
+QUEUE_KIND = "unserved"
 #: Node states that end tracking: the owner's or the requester's record says
 #: the work is over. Nothing else does — not a ✔, not a `legit` verdict, not
 #: the request going quiet (robust_workflow p3 step 2).
@@ -235,6 +257,7 @@ WORK_KINDS = ("unheld", "quiet", "stopped", "uncertain")
 RECOVERED_STATES = {
     "unstarted": MOVED_ON,
     "unacknowledged": MOVED_ON,
+    QUEUE_KIND: MOVED_ON,
     "failed": MOVED_ON,
     "unanswered": MOVED_ON,
     "undelivered": ("executing", "awaiting_requester", "awaiting_human", "answered", "done"),
@@ -409,11 +432,16 @@ def incident_key(origin_anchor: int, candidate: Candidate) -> str:
 
 #: When one conversation fails several checks at once, the incident is
 #: named after the one a reader should worry about first.
-PRIORITY = ("failed", "unacknowledged", "undelivered", "unstarted", "resolved_live", "silent", "origin_closed")
+PRIORITY = ("failed", "unserved", "unacknowledged", "undelivered", "unstarted", "resolved_live", "silent", "origin_closed")
 #: A request's own conversation ✔'d while work opened for it is unfinished,
 #: seen for this long: reported, because a ✔ stops nothing and Front does
 #: not reopen a finished conversation to deliver into it.
 ORIGIN_CLOSED_GRACE = 300
+
+
+def node_owner(result, candidate: Candidate) -> str:
+    node = next((n for n in result.nodes() if n.anchor and n.anchor == candidate.anchor), None)
+    return (node.owner if node is not None else "") or "its owner"
 
 
 def primary(candidates) -> list[Candidate]:
@@ -506,6 +534,8 @@ class Monitor:
         self._base_interval = self.interval
         #: Recovered and reported incidents handed to the developer (step 4).
         self.reviews = Reviews(self)
+        #: This look's queued posts by `agag.waits` state (failsafe p5).
+        self.queue_stats: dict[str, int] = {}
 
     # --- the store -------------------------------------------------------------------
 
@@ -624,6 +654,7 @@ class Monitor:
         health = self.load_health()
         self._health = health
         self._health_reports = {}
+        self.queue_stats = {}
         traced = []
         for channel, topic, anchor in self.requests(now, tracked):
             result = trace(reader, anchor, now=int(now), receipts_from=self.receipts_from)
@@ -640,6 +671,8 @@ class Monitor:
             found = [c for c in stall_candidates(result, now=int(now))
                      if not self.is_own(c) and (c.kind not in FAILSAFE_KINDS or self.failsafe(anchor))
                      and not (c.kind in REPLACED_KINDS and self.failsafe(anchor) and self.probed(c))]
+            if fresh:
+                found = self.review_queues(found, result, [r for *_, r in traced], anchor, now, health)
             if self.failsafe(anchor) and fresh and origin_key(anchor) not in held:
                 found += self.health_candidates(result, now, health)
             closed = self.origin_closed(result, tracked.get(origin_key(anchor)), now)
@@ -790,6 +823,8 @@ class Monitor:
             for node, _, _, due in self._units(result, now, health):
                 if due:
                     jobs[(node.owner, int(node.ack or 0), int(node.anchor))] = node
+            for node in self._queued(result, now):
+                jobs[(node.owner, 0, int(node.anchor))] = node
         self._prefetched = {}
         slow = self._slow_probes()
         if not jobs:
@@ -799,7 +834,9 @@ class Monitor:
         for n in range(slow):
             pool.submit(self._slow_probe, n)
         futures = {pool.submit(self.probes.probe, node.owner, ack=node.ack, channel=node.channel, topic=node.topic,
-                               window=self.timing["probe_after"]): key for key, node in jobs.items()}
+                               window=self.timing["probe_after"],
+                               **({"queued_since": float(node.last_activity or 0)} if not key[1] else {})): key
+                   for key, node in jobs.items()}
         done, late = wait(futures, timeout=self.probe_budget)
         pool.shutdown(wait=False, cancel_futures=True)
         for future in done:
@@ -814,6 +851,111 @@ class Monitor:
                 f"({self.probe_budget:g} s for {len(jobs)} probe(s))")
         if late:
             log(f"monitor: {len(late)} of {len(jobs)} probe(s) did not answer within {self.probe_budget:g} s")
+
+    def _queued(self, result, now: float):
+        """Posts a probed owner has not acknowledged for as long as
+        `unacknowledged` waits: where each is in that owner's queue is read
+        in this look's probes (failsafe p5)."""
+        root = result.root
+        for node in result.nodes():
+            if node is not root and node.state == "queued" and self.probes.covers(node.owner) \
+                    and now - int(node.last_activity or 0) >= THRESHOLDS["unacknowledged"]:
+                yield node
+
+    def queue_wait(self, node, results, now: float) -> waits.QueueWait:
+        """Why this post waits, read as the panel reads it (`agag.waits`)."""
+        if self.probes.covers(node.owner):
+            key = (node.owner, 0, int(node.anchor))
+            report = self._prefetched.pop(key, None) if key in self._prefetched else self.probes.probe_queue(
+                node.owner, channel=node.channel, topic=node.topic, since=float(node.last_activity or 0),
+                window=self.timing["probe_after"])
+            return waits.from_probe(node, report, now)
+        return waits.from_conversation(node, waits.open_servings(results, int(now)), int(now))
+
+    def review_queues(self, found: list[Candidate], result, results, origin_anchor: int, now: float,
+                      health: dict[str, dict[str, Any]]) -> list[Candidate]:
+        """`unacknowledged` candidates, read against the queue (module doc):
+        dropped while the post waits behind healthy work or behind a
+        blocker another tracked request holds, turned into `unserved` when
+        the listener is not serving it, kept as they are otherwise."""
+        kept: list[Candidate] = []
+        root = result.root
+        for candidate in found:
+            node = self._nodes.get(int(candidate.anchor or 0)) if candidate.kind == "unacknowledged" else None
+            if node is None or node is root:
+                kept.append(candidate)
+                continue
+            wait = self.queue_wait(node, results, now)
+            state = self._remember_wait(health, node, wait, now)
+            self.queue_stats[wait.state] = self.queue_stats.get(wait.state, 0) + 1
+            if wait.excused:
+                self._excuse(origin_anchor, candidate, wait, now)
+                continue
+            post = f"#{wait.post}" if wait.post else "the post"
+            if wait.state == waits.BLOCKED:
+                blocker = self._blocker(wait, results)
+                since = float(state.get("blocked_since") or now)
+                if blocker is not None and now - since < self.timing["escalate_after"]:
+                    continue  # the serving ahead is its own request's incident
+                where = f"{wait.ahead[0].get('channel')}/{wait.ahead[0].get('topic')}" if wait.ahead else "?"
+                kept.append(replace(
+                    candidate, kind=QUEUE_KIND,
+                    fact=f"{post} waits behind {where}, which is not confirmed healthy: {wait.why}"
+                         + ("" if blocker is None else f" (for {_age(now - since)})"),
+                    responsible=f"{node.owner}'s operator",
+                    next_action=f"the serving ahead ({where}) is recovered or ended, so {node.owner} reaches {post}; "
+                                "nothing is to be posted where the post waits"))
+                continue
+            if wait.state == waits.UNSERVED:
+                kept.append(replace(
+                    candidate, kind=QUEUE_KIND, fact=f"{post} is not being served: {wait.why}",
+                    responsible=f"{node.owner}'s operator",
+                    next_action=f"a person looks at why {node.owner}'s listener is not serving it (a stuck executor "
+                                "is restarted); another post there only joins the same queue"))
+                continue
+            kept.append(replace(candidate, fact=f"{candidate.fact}; {wait.why}" if wait.why else candidate.fact))
+        return kept
+
+    def _remember_wait(self, health: dict[str, dict[str, Any]], node, wait: waits.QueueWait,
+                       now: float) -> dict[str, Any]:
+        """The wait's history for this post: first seen, the original queued
+        time, and each change of what is ahead (kept in the health state)."""
+        key = f"q{int(node.anchor)}"
+        state = health.get(key)
+        if state is None or int(state.get("post") or 0) != int(wait.post):
+            state = {"post": wait.post, "queued_at": wait.queued_at, "first_seen": now, "changes": []}
+        ahead = [f"{row.get('channel')}/{row.get('topic')}" + (f"#{row['ack']}" if row.get("ack") else "")
+                 for row in wait.ahead]
+        if [state.get("state"), state.get("ahead")] != [wait.state, ahead]:
+            state["changes"] = [*state.get("changes", [])[-9:], {"at": now, "state": wait.state, "ahead": ahead,
+                                                                 "why": wait.why[:300]}]
+        if wait.state == waits.BLOCKED:
+            state.setdefault("blocked_since", now)
+        else:
+            state.pop("blocked_since", None)
+        state.update(state=wait.state, ahead=ahead, evidence=wait.evidence, why=wait.why[:300],
+                     observed_at=wait.observed_at, looked_at=now, owner=node.owner, topic=node.topic)
+        health[key] = state
+        return state
+
+    def _blocker(self, wait: waits.QueueWait, results):
+        """The serving ahead, when a traced request holds it."""
+        for row in wait.ahead:
+            name = (row.get("channel"), _bare(str(row.get("topic") or "")))
+            for result in results:
+                for node in result.nodes():
+                    if (node.channel, _bare(node.topic)) == name and node.state not in TERMINAL:
+                        return node
+        return None
+
+    def _excuse(self, origin_anchor: int, candidate: Candidate, wait: waits.QueueWait, now: float) -> None:
+        """An incident opened on a wait now confirmed legitimate ends
+        `excused`: nothing had stalled, and nothing is claimed rescued."""
+        record = self.load(incident_key(origin_anchor, candidate))
+        if record is None or record.get("state") in CLOSED:
+            return
+        self.close(record, now, EXCUSED, f"the post is queued behind healthy work, a legitimate wait "
+                                         f"({wait.evidence}): {wait.why}")
 
     def _slow_probes(self) -> int:
         try:
@@ -1273,6 +1415,13 @@ class Monitor:
             return self.report(record, now, f"{root.owner or 'the agent that owns it'} could not answer its requester "
                                              "there: its listener served the input twice and neither run produced a "
                                              "usable reply (the failure notice is the last word)")
+        if candidate.kind == QUEUE_KIND:
+            # failsafe p5: the owner's listener is not serving the post, or
+            # the serving ahead of it is not healthy and nothing else holds
+            # it. Nobody in the request can make a listener serve a post, and
+            # asking Front would buy a post that joins the same queue.
+            return self.report(record, now, f"{candidate.fact}; nobody in the request can make {node_owner(result, candidate)} "
+                                             "serve it")
         if candidate.kind == "unacknowledged" and (candidate.channel, candidate.topic) == (root.channel, root.topic):
             return self.report(record, now, f"{root.owner or 'the agent that owns it'} itself is not answering "
                                              "there, so asking it would reach nobody")
@@ -1953,6 +2102,7 @@ class Monitor:
             },
             "latest_failure": self.latest_failure,
             "probes": self.probes.stats(),
+            "queues": dict(self.queue_stats),
             "spent": {"posts": self.posts, "judgments": self.judgments, "probes": self.probes.runs},
         }
 

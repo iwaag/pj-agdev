@@ -11,7 +11,9 @@ ignored `.local/health.toml` with the command that answers for it:
     timeout = 10
 
 The monitor appends `--ack <id> --channel <c> --topic <t> --window <s>` and
-reads one JSON document from stdout. The command is the whole contract: how
+reads one JSON document from stdout. For a post nobody acknowledged yet
+(failsafe p5) it appends `--queued --since <post time>` instead of the ack:
+where that post is in the owner's queue (`agag.health.probe_queue`). The command is the whole contract: how
 the owner inspects its harness stays on its side of it. An owner that is
 not listed is not probed and keeps the conversation-only rules (`silent`,
 `quiet`), which is the documented limitation, not an error.
@@ -71,9 +73,12 @@ class HealthProbes:
     def covers(self, owner: str) -> bool:
         return bool(owner) and owner in self.owners
 
-    def probe(self, owner: str, *, ack: int, channel: str, topic: str, window: float) -> dict[str, Any]:
-        """One `agag.health.v1` document about the serving acked by `ack`.
-        Never raises; never takes longer than the owner's timeout."""
+    def probe(self, owner: str, *, ack: int, channel: str, topic: str, window: float,
+              queued_since: float | None = None) -> dict[str, Any]:
+        """One `agag.health.v1` document about the serving acked by `ack` —
+        or, with `queued_since`, about a post made then that nobody has
+        acknowledged yet. Never raises; never takes longer than the owner's
+        timeout."""
         entry = self.owners.get(owner)
         if entry is None:
             return unknown(f"{owner or 'the owner'} exposes no health interface here")
@@ -87,6 +92,8 @@ class HealthProbes:
         timeout = float(entry.get("timeout") or DEFAULT_TIMEOUT)
         argv = [*map(str, entry["command"]), "--ack", str(int(ack or 0)), "--channel", channel, "--topic", topic,
                 "--window", str(int(window))]
+        if queued_since is not None:
+            argv += ["--queued", "--since", str(float(queued_since))]
         try:
             done = self.runner(argv, capture_output=True, text=True, timeout=timeout, check=False)
             result = json.loads((done.stdout or "").strip().splitlines()[-1]) if (done.stdout or "").strip() else None
@@ -101,6 +108,10 @@ class HealthProbes:
             result = unknown(f"the health probe of {owner} failed: {error}")
         self._remember(owner, ack, started, result)
         return result
+
+    def probe_queue(self, owner: str, *, channel: str, topic: str, since: float, window: float) -> dict[str, Any]:
+        """Where a post made at `since` waits in `owner`'s queue (failsafe p5)."""
+        return self.probe(owner, ack=0, channel=channel, topic=topic, window=window, queued_since=since)
 
     def _remember(self, owner: str, ack: int, started: float, result: dict[str, Any]) -> None:
         self.last = {"owner": owner, "ack": int(ack or 0), "at": started,
