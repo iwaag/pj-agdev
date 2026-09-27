@@ -101,10 +101,11 @@ def test_a_monitor_switched_off_says_so(tmp_path, monkeypatch):
     assert health(tmp_path)["enabled"] is False
 
 
-def test_answers_from_before_the_monitor_began_are_not_judged_by_its_receipts(world):
-    """p2 step 5: the first live look flagged nine finished p1 tasks, whose
-    answers pre-p1 listeners had left unmarked. The service sets the boundary
-    once, at its first start."""
+def test_an_unreceived_answer_is_owed_until_a_decision_settles_it(world):
+    """failsafe p6: the monitor reads receipts the way every reader does.
+    Speech at home is no receipt (the `receipts_from` leniency is gone); the
+    requester's acceptance recorded after the answer settles it, and the
+    request leaves tracking."""
     from test_monitor import ACK, AUTOLAB, FRONT, post
 
     topic = f"workrun-task3-m{world.mission}"
@@ -113,20 +114,19 @@ def test_answers_from_before_the_monitor_began_are_not_judged_by_its_receipts(wo
     post(world.realm, "work-m1", topic, "Start task 3.", FRONT)
     post(world.realm, "work-m1", topic, ACK, AUTOLAB)
     answer = post(world.realm, "work-m1", topic, "@**Front** task 3 done", AUTOLAB)
+    post(world.realm, "work-m1", topic, "[selfnote][state] completed", AUTOLAB)
     settle(world, lambda: world.mirror.message(answer) is not None)
     world.clock.now = world.realm.messages[answer]["timestamp"] + 400
     reply = post(world.realm, "front", "front-a", "@**Developer** task 3 is done.", FRONT)
     settle(world, lambda: world.mirror.message(reply) is not None)
     watcher = world.make()
-    watcher.receipts_from = answer + 1
-    assert "undelivered" not in [r["kind"] for r in watcher.tick()]
-    # As autolab closes a task: its state, then the ✔.
-    post(world.realm, "work-m1", topic, "[selfnote][state] completed", AUTOLAB)
-    world.realm.resolve("work-m1", topic)
-    settle(world, lambda: any(t.resolved for t in world.mirror.topics("work-m1")))
+    assert "undelivered" in [r["kind"] for r in watcher.tick()], "speech at home took nothing up"
+    accepted = post(world.realm, "work-m1", topic, "[selfnote][state] accepted", FRONT)
+    settle(world, lambda: world.mirror.message(accepted) is not None)
     world.clock.now += 120
-    assert not [r for r in watcher.tick() if r["kind"] in ("undelivered", "resolved_live")], \
-        "nor as a ✔ on work awaiting delivery"
-    watcher.receipts_from = answer
-    world.clock.now += 120
-    assert {r["kind"] for r in watcher.tick()} & {"undelivered", "resolved_live"}
+    watcher.tick()
+    key = next(k for k in watcher.load_tracked())
+    assert str(world.realm.messages and key)  # the request is still tracked for its other work
+    obligations = watcher.load_tracked()[key]["obligations"]
+    assert not [o for o in obligations.values() if o["topic"].endswith(topic)], \
+        "the settled task is no longer an obligation"

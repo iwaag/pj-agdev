@@ -206,7 +206,7 @@ HELD_FILE = "held.json"
 #: Requests a person checked and found owing nothing (`agobserver.hold
 #: --retire`, failsafe p3): out of tracking until anything new is posted.
 RETIRED_FILE = "retired.json"
-#: Facts about this monitor's own history (`receipts_from`).
+#: Facts about this monitor's own history (`obligations_from`).
 STATE_FILE = "monitor-state.json"
 #: The monitor's own progress, read by processes that are not the monitor
 #: (robust_workflow p2 step 4): the relay's watchdog, and a human.
@@ -469,7 +469,7 @@ class Monitor:
                  judge: Callable[..., dict] = triage.judge, clock: Callable[[], float] = time.time,
                  interval: float | None = None, window_hours: float | None = None,
                  report_to: list[str] | None = None, async_judge: bool = False,
-                 receipts_from: int = 0, obligations_from: int = 0, probes: HealthProbes | None = None) -> None:
+                 obligations_from: int = 0, probes: HealthProbes | None = None) -> None:
         self.spec = spec
         self.client = client
         self.mirror = mirror
@@ -491,15 +491,13 @@ class Monitor:
         #: every other request must not wait for it (p2 step 4). Tests judge
         #: inline.
         self.async_judge = async_judge
-        #: Answers older than this id are read as p1 read them (the trace's
-        #: `receipts_from`). Since p2 an answer counts as taken up only by a
-        #: served mark covering it; the listeners before p1's last fix
-        #: (`87ac87e`) skipped a callback in a ✔'d topic and left the mark on
-        #: the post before it, so on their records a delivered answer reads
-        #: unmarked (p2 step 5: nine finished p1 tasks flagged on the first
-        #: look, then again as ✔-while-awaiting-delivery). The service sets it
-        #: once, at its first start, to the newest post it could see then.
-        self.receipts_from = int(receipts_from or 0)
+        #: An answer is taken up by a receipt, or settled by a decision
+        #: recorded after it — the same rule for every reader (failsafe p6).
+        #: The `receipts_from` leniency this monitor alone applied (p1-era
+        #: answers counted as taken up once the requester spoke at home) is
+        #: gone: it hid seven accepted answers from this monitor while the
+        #: panel showed them waiting. `monitor-state.json` may still carry the
+        #: key; nothing reads it.
         #: Requests whose origin is older than this id keep the rules they
         #: were tracked under: no `unheld`/`quiet`, no escalation of a long
         #: postponement (failsafe p1). Their posts carry no `end=` evidence,
@@ -663,7 +661,7 @@ class Monitor:
         self.queue_stats = {}
         traced = []
         for channel, topic, anchor in self.requests(now, tracked):
-            result = trace(reader, anchor, now=int(now), receipts_from=self.receipts_from)
+            result = trace(reader, anchor, now=int(now))
             if result.root is None:
                 gone.add(origin_key(anchor))
                 continue
@@ -2144,7 +2142,7 @@ def write_health(spec: AgentSpec, record: dict[str, Any]) -> None:
 
 def obligations_from(spec: AgentSpec, mirror) -> int:
     """The newest post this monitor could see when it first ran with the
-    failsafe contract, kept in `STATE_FILE` beside `receipts_from`."""
+    failsafe contract, kept in `STATE_FILE`."""
     path = spec.local / "incidents" / STATE_FILE
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -2165,27 +2163,6 @@ def obligations_from(spec: AgentSpec, mirror) -> int:
     return newest
 
 
-def receipts_from(spec: AgentSpec, mirror) -> int:
-    """The newest post this monitor could see when it first started, kept in
-    `STATE_FILE` so a restart does not move it."""
-    path = spec.local / "incidents" / STATE_FILE
-    try:
-        return int(json.loads(path.read_text(encoding="utf-8"))["receipts_from"])
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    newest = 0
-    deadline = time.time() + 120
-    while not newest and time.time() < deadline:
-        # The mirror fills on its own thread; its first answer is the one.
-        newest = int(mirror.store.newest_id() or 0) if getattr(mirror, "live", False) else 0
-        if not newest:
-            time.sleep(1.0)
-    if newest:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"receipts_from": newest, "since": time.time()}), encoding="utf-8")
-    return newest
-
-
 def start(spec: AgentSpec, mirror, **kwargs) -> Monitor | None:
     """Run the monitor beside the watch worker, on its own client, with its
     judgments on a worker of their own."""
@@ -2201,8 +2178,6 @@ def start(spec: AgentSpec, mirror, **kwargs) -> Monitor | None:
 
     def begin() -> None:
         # On the monitor's own thread: the first start waits for the mirror.
-        monitor.receipts_from = receipts_from(spec, mirror)
-        log(f"request monitor judges answers after #{monitor.receipts_from} by their served marks")
         monitor.obligations_from = obligations_from(spec, mirror)
         log(f"request monitor holds requests from #{monitor.obligations_from} to the failsafe contract")
         monitor.run(stop)
