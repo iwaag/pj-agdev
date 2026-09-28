@@ -1,0 +1,3 @@
+# Copy to .local/instance.toml. The instance name is the introduction's topic
+# in #agents (`intro-<name>`); the label carries the host, so it is local.
+name = "comfynotify-<host>1"

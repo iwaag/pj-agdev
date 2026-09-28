@@ -82,9 +82,34 @@ def build_intake(args: argparse.Namespace, notifier: Notifier) -> CommandIntake 
     return intake
 
 
+def introduce(client, log, *, force: bool = False) -> None:
+    """Post the introduction to `#agents` (see `comfynotify.intro`); a
+    failure is logged, never fatal: the notifier works without it."""
+    from .intro import post
+
+    try:
+        posted = post(client, force=force)
+    except Exception as error:  # noqa: BLE001 — the board being unreachable is not fatal
+        log(f"introduction not posted: {error}")
+        return
+    log("introduction posted" if posted else "introduction unchanged on the board")
+
+
+def intro_command(args: argparse.Namespace) -> int:
+    credentials = os.environ.get("AGENTCHAT_ZULIP_ENV")
+    if not credentials:
+        raise SystemExit("AGENTCHAT_ZULIP_ENV must name the notifier's Zulip credentials")
+    from agag.zulip import ZulipClient
+
+    introduce(ZulipClient.from_env(Path(credentials)), print, force=not args.if_changed)
+    return 0
+
+
 def daemon(args: argparse.Namespace) -> int:
     notifier = Notifier(args.tickets, args.log, agentchat=args.agentchat)
     intake = None if args.no_commands else build_intake(args, notifier)
+    if intake is not None and not args.once:
+        introduce(intake.client, notifier.log)
     if intake is not None:
         # The callback must land in the conversation as it is *now*, not as it
         # was named when the job was commanded: a run that closes its own topic
@@ -139,6 +164,11 @@ def main() -> int:
                                help="serve tickets only; do not read Zulip mentions")
     daemon_parser.add_argument("--once", action="store_true")
     daemon_parser.set_defaults(handler=daemon)
+    intro_parser = subparsers.add_parser(
+        "intro", help="post params/intro.md to #agents as this instance (the daemon does it at start-up when changed)")
+    intro_parser.add_argument("--if-changed", action="store_true",
+                              help="post only when the board's newest introduction says something else")
+    intro_parser.set_defaults(handler=intro_command)
     args = parser.parse_args()
     return args.handler(args)
 
