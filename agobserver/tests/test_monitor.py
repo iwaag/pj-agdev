@@ -78,7 +78,7 @@ def stalled_realm():
     post(realm, "front", "front-a", ACK, FRONT)
     # Root notes as their writers produce them since robust_workflow p2:
     # anchored by a post in the home they name.
-    post(realm, "pj-x", "workplan-a", f"[selfnote][rootchat] front/front-a #{ask}", FRONT)
+    post(realm, "pj-x", "workplan-a", f"[selfnote][rootchat] front/front-a #{ask} rel=work", FRONT)
     post(realm, "pj-x", "workplan-a", "Mission: build the locations.", FRONT)
     mission = post(realm, "pj-x", "workplan-a", "[selfnote][mission] x", AUTOLAB)
     post(realm, "pj-x", "workplan-a", "# Plan\n\nTwo tasks.", AUTOLAB)
@@ -86,10 +86,10 @@ def stalled_realm():
     for serial in (1, 2):
         topic = f"workrun-task{serial}-m{mission}"
         post(realm, "work-m1", topic, f"[selfnote][task] {mission}#{serial}", AUTOLAB)
-        post(realm, "work-m1", topic, f"[selfnote][rootchat] pj-x/workplan-a #{mission}", AUTOLAB)
+        post(realm, "work-m1", topic, f"[selfnote][rootchat] pj-x/workplan-a #{mission} rel=work", AUTOLAB)
         post(realm, "work-m1", topic, f"# Task {serial}", AUTOLAB)
     task1 = f"workrun-task1-m{mission}"
-    post(realm, "work-m1", task1, f"[selfnote][rootchat] front/front-a #{ask}", FRONT)
+    post(realm, "work-m1", task1, f"[selfnote][rootchat] front/front-a #{ask} rel=work", FRONT)
     post(realm, "work-m1", task1, "Start task 1.", FRONT)
     post(realm, "work-m1", task1, ACK, AUTOLAB)
     done = post(realm, "work-m1", task1, "@**Front** task 1 done", AUTOLAB)
@@ -173,7 +173,7 @@ def test_recovery_is_verified_by_a_later_look_and_recorded_as_a_rescue(world):
     watcher.tick()
     settle(world, lambda: requests(world))
     task2 = f"workrun-task2-m{world.mission}"
-    post(world.realm, "work-m1", task2, "[selfnote][rootchat] front/front-a", FRONT)
+    post(world.realm, "work-m1", task2, "[selfnote][rootchat] front/front-a rel=work", FRONT)
     post(world.realm, "work-m1", task2, "Start task 2.", FRONT)
     acked = post(world.realm, "work-m1", task2, ACK, AUTOLAB)
     settle(world, lambda: world.mirror.message(acked) is not None)

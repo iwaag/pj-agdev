@@ -71,7 +71,7 @@ def second_request(realm, case):
     ask = post("front", desk, "Plan something small in y.", DEV, 110)
     post("front", desk, ACK, FRONT, 111)
     post("front", desk, "@**Developer** Asked autolab; I report here.\n\n`ag-post intent=report`", FRONT, 115)
-    post("pj-y", plan, f"[selfnote][rootchat] front/{desk} #{ask}", FRONT, 120)
+    post("pj-y", plan, f"[selfnote][rootchat] front/{desk} #{ask} rel=work", FRONT, 120)
     queued = post("pj-y", plan, "@**autolab-agstudio1** Please plan one task for y.", FRONT, 120)
     case.ask2, case.desk2, case.plan2, case.queued = ask, desk, plan, queued
 

@@ -73,7 +73,7 @@ def test_r1_an_unreadable_target_is_not_a_rescue(world):
 def test_r2_a_different_blockage_is_not_a_rescue(world):
     watcher = open_incident(world)
     # Somebody posts into task 2; autolab's listener never picks it up.
-    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a #{ask(world)}", FRONT)
+    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a #{ask(world)} rel=work", FRONT)
     started = post(world.realm, "work-m1", task2(world), "Start task 2.", FRONT)
     settle(world, lambda: world.mirror.message(started) is not None)
     world.clock.now += 120
@@ -112,7 +112,7 @@ def test_r4_a_resolved_origin_does_not_abandon_its_incident(world):
 def test_r5_a_renamed_origin_keeps_its_incident(world):
     watcher = open_incident(world)
     rename(world, "front", "front-a", "front-a-renamed")
-    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a-renamed #{ask(world)}", FRONT)
+    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a-renamed #{ask(world)} rel=work", FRONT)
     post(world.realm, "work-m1", task2(world), "Start task 2.", FRONT)
     acked = post(world.realm, "work-m1", task2(world), ACK, AUTOLAB)
     settle(world, lambda: world.mirror.message(acked) is not None)
@@ -166,8 +166,8 @@ def undelivered(world):
     # Undo the acceptance in stalled_realm: a fresh task 3 carries the case.
     topic = f"workrun-task3-m{mission}"
     post(world.realm, "work-m1", topic, f"[selfnote][task] {mission}#3", AUTOLAB)
-    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] pj-x/workplan-a #{mission}", AUTOLAB)
-    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] front/front-a #{ask(world)}", FRONT)
+    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] pj-x/workplan-a #{mission} rel=work", AUTOLAB)
+    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] front/front-a #{ask(world)} rel=work", FRONT)
     post(world.realm, "work-m1", topic, "Start task 3.", FRONT)
     post(world.realm, "work-m1", topic, ACK, AUTOLAB)
     answer = post(world.realm, "work-m1", topic, "@**Front** task 3 done", AUTOLAB)
@@ -335,7 +335,7 @@ def test_a_closed_origin_with_unfinished_work_is_reported_once(world):
     conversation: work still open under a ✔ request is said once, to the
     owners — never asked about there."""
     watcher = world.make()
-    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a #{ask(world)}", FRONT)
+    post(world.realm, "work-m1", task2(world), f"[selfnote][rootchat] front/front-a #{ask(world)} rel=work", FRONT)
     posted = post(world.realm, "work-m1", task2(world), "Start task 2.", FRONT)
     acked = post(world.realm, "work-m1", task2(world), ACK, AUTOLAB)
     settle(world, lambda: world.mirror.message(acked) is not None)

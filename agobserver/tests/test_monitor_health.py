@@ -110,7 +110,7 @@ def test_an_unreceived_answer_is_owed_until_a_decision_settles_it(world):
 
     topic = f"workrun-task3-m{world.mission}"
     post(world.realm, "work-m1", topic, f"[selfnote][task] {world.mission}#3", AUTOLAB)
-    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] front/front-a #{min(world.realm.messages)}", FRONT)
+    post(world.realm, "work-m1", topic, f"[selfnote][rootchat] front/front-a #{min(world.realm.messages)} rel=work", FRONT)
     post(world.realm, "work-m1", topic, "Start task 3.", FRONT)
     post(world.realm, "work-m1", topic, ACK, AUTOLAB)
     answer = post(world.realm, "work-m1", topic, "@**Front** task 3 done", AUTOLAB)

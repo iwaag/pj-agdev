@@ -131,7 +131,7 @@ def build_many(realm, n):
         post("front", desk, f"Request {i}.", DEV, 0)
         post("front", desk, ACK, FRONT, 1)
         started = post("front", desk, "@**Developer** Asked autolab.\n\n`ag-post intent=report`", FRONT, 5)
-        post("pj-x", plan, f"[selfnote][rootchat] front/{desk} #{started}", FRONT, 6)
+        post("pj-x", plan, f"[selfnote][rootchat] front/{desk} #{started} rel=work", FRONT, 6)
         post("pj-x", plan, "@**autolab-agstudio1** Mission request.", FRONT, 6)
         post("pj-x", plan, ACK, AUTOLAB, 7)
         mission = post("pj-x", plan, "[selfnote][mission] x", AUTOLAB, 20)
@@ -140,7 +140,7 @@ def build_many(realm, n):
         post("front", desk, f"[selfnote][served] pj-x/{plan} {planned}", FRONT, 25)
         task = f"workrun-task1-m{mission}"
         post(f"work-m{i}", task, f"[selfnote][task] {mission}#1", AUTOLAB, 50)
-        post(f"work-m{i}", task, f"[selfnote][rootchat] pj-x/{plan} #{mission}", AUTOLAB, 50)
+        post(f"work-m{i}", task, f"[selfnote][rootchat] pj-x/{plan} #{mission} rel=work", AUTOLAB, 50)
         post(f"work-m{i}", task, "# Task 1\n\nDo it.", AUTOLAB, 50)
         post(f"work-m{i}", task, f"[selfnote][start] #{planned} for {FRONT} Front", AUTOLAB, 51)
         acks.append(post(f"work-m{i}", task, ACK, AUTOLAB, 60))
@@ -371,7 +371,7 @@ def plain_world(tmp_path, *, served=True, now=T0 + 400):
     ask = at("front", desk, "Could autolab plan a --longest flag?", DEV, 0)
     ack = at("front", desk, ACK, FRONT, 1)
     started = at("front", desk, f"@**Developer** Asked autolab.\n\n`ag-post intent=report end={ack}`", FRONT, 5)
-    at("pj-x", plan, f"[selfnote][rootchat] front/{desk} #{started}", FRONT, 6)
+    at("pj-x", plan, f"[selfnote][rootchat] front/{desk} #{started} rel=work", FRONT, 6)
     at("pj-x", plan, "@**autolab-agstudio1** Would you plan a --longest flag?", FRONT, 6)
     back = at("pj-x", plan, ACK, AUTOLAB, 7)
     answer = at("pj-x", plan, f"@**Front** I would plan it in one task. Shall I?\n\n`ag-post intent=response_request "
@@ -475,26 +475,61 @@ def test_closed_incidents_are_pruned_after_their_ttl_and_keep_their_episode_coun
         case.mirror.stop()
 
 
-def test_a_retired_request_leaves_tracking_until_it_moves_again(tmp_path, monkeypatch):
-    from agobserver import hold
+def test_suppressed_monitoring_leaves_tracking_until_the_request_moves_again(tmp_path):
+    """failsafe p6 ex1: p3's private retirement is a disposition record in the
+    request's own conversation. Bookkeeping after it (a note) changes nothing;
+    a new post in the request is new activity and is tracked again."""
+    from agag.dispositions import disposition_note
 
     case = plain_world(tmp_path, served=False, now=T0 + 100)  # before its answer could be `undelivered`
     try:
         case.make().tick()
         assert f"o{case.ask}" in tracked(case)
-        monkeypatch.setattr(hold, "SPEC", type("S", (), {"local": tmp_path / "w" / "local"})())
-        monkeypatch.setattr(hold.time, "time", lambda: case.clock.now)
-        assert hold.main(["--retire", "residue from before end= markers; nothing owed", f"o{case.ask}"]) == 0
+        origin = case.realm.messages[case.ask]
+        upto = max(case.realm.messages)
+        case.realm.post(origin["display_recipient"], origin["subject"],
+                        disposition_note("suppressed", case.ask, upto, 8, "Developer", 0,
+                                         "residue from before end= markers; nothing owed"),
+                        sender_id=23, sender_name="agobserver-agstudio1")
+        settle(case, lambda: case.mirror.message(max(case.realm.messages)) is not None)
         case.clock.now += 60
         case.make().tick()
-        assert f"o{case.ask}" not in tracked(case), "retired: no longer tracked, and after a restart neither"
+        assert f"o{case.ask}" not in tracked(case), "suppressed: no longer tracked, and after a restart neither"
+        case.realm.post(origin["display_recipient"], origin["subject"], "[selfnote][receipt] #1 by #1 (x) in a/b",
+                        sender_id=15, sender_name="Front")
+        settle(case, lambda: case.mirror.message(max(case.realm.messages)) is not None)
         case.make().tick()
-        assert f"o{case.ask}" not in tracked(case)
+        assert f"o{case.ask}" not in tracked(case), "a bookkeeping note is not activity"
         case.clock.now += 3600
         case.at("front", case.desk, "Still there?", DEV, int(case.clock.now - T0))
         settle(case, lambda: case.mirror.message(max(case.realm.messages)) is not None)
         case.make().tick()
-        assert f"o{case.ask}" in tracked(case), "the retirement lapsed when the request moved"
+        assert f"o{case.ask}" in tracked(case), "new activity is monitored again"
+    finally:
+        case.mirror.stop()
+
+
+def test_an_ended_request_leaves_tracking_and_raises_nothing_whatever_its_units_said(tmp_path):
+    """failsafe p6 ex1: a request withdrawn on record reads cancelled on every
+    reader — the monitor tracks nothing and opens no incident, although its
+    unit never answered."""
+    from agag.dispositions import disposition_note
+
+    case = plain_world(tmp_path, served=False, now=T0 + 100)
+    try:
+        case.make().tick()
+        assert f"o{case.ask}" in tracked(case)
+        origin = case.realm.messages[case.ask]
+        case.realm.post(origin["display_recipient"], origin["subject"],
+                        disposition_note("withdrawn", case.ask, max(case.realm.messages), 8, "Developer", 0,
+                                         "a trial nobody continues"),
+                        sender_id=23, sender_name="agobserver-agstudio1")
+        settle(case, lambda: case.mirror.message(max(case.realm.messages)) is not None)
+        case.clock.now += 7200  # long past every grace
+        watcher = case.make()
+        assert watcher.tick() == []
+        assert f"o{case.ask}" not in tracked(case)
+        assert not [r for r in watcher.records() if r.get("origin", {}).get("key") == f"o{case.ask}"]
     finally:
         case.mirror.stop()
 

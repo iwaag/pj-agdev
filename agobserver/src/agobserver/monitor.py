@@ -84,6 +84,7 @@ from agag.agent import AgentSpec
 from agag.delivery import deliver
 from agag.selfnote import note
 from agag import waits
+from agag.dispositions import DISPOSITION_TAG, suppressed_anchors
 from agag.holds import active, covers, holds_of
 from agag.trace import FAILSAFE_KINDS, THRESHOLDS, Candidate, MirrorReader, stall_candidates, trace, trace_lines
 from agag.zulip import RESOLVED_TOPIC_PREFIX, ZulipClient, log
@@ -205,8 +206,10 @@ TRACKED_FILE = "tracked.json"
 #: failsafe p1–p5 kept a person's holds here. Since p6 a hold is a record in
 #: the request's conversation (`agag.holds`); the file is no longer read.
 HELD_FILE = "held.json"
-#: Requests a person checked and found owing nothing (`agobserver.hold
-#: --retire`, failsafe p3): out of tracking until anything new is posted.
+#: failsafe p3's private retirements, replaced in failsafe p6 ex1 by
+#: disposition records in the request's own conversation
+#: (`agag.dispositions`, `agobserver.disposition`). Never read; named only so
+#: an old file is not taken for an incident record.
 RETIRED_FILE = "retired.json"
 #: Facts about this monitor's own history (`obligations_from`).
 STATE_FILE = "monitor-state.json"
@@ -532,8 +535,9 @@ class Monitor:
         self._health_reports: dict[int, dict[str, Any]] = {}
         #: This look's probes, run ahead of the per-request pass (`prefetch`).
         self._prefetched: dict[tuple[str, int, int], dict[str, Any]] = {}
-        #: Requests a person retired (`agobserver.hold --retire`), this look.
-        self._retired: dict[str, dict[str, Any]] = {}
+        #: What decisions on record suppress this look, per request
+        #: (`agag.dispositions`): the anchors they still cover.
+        self._suppressed: dict[str, set[int]] = {}
         self.probe_budget = PROBE_BUDGET
         self.probe_workers = PROBE_WORKERS
         self.timing: dict[str, float] = dict(TIMING_DEFAULTS)
@@ -655,7 +659,6 @@ class Monitor:
         gone: set[str] = set()
         reader = MirrorReader(self.mirror)
         tracked = self.load_tracked()
-        self._retired = self.load_retired()
         health = self.load_health()
         self._health = health
         self._health_reports = {}
@@ -676,6 +679,12 @@ class Monitor:
         self._held = held
         whole = {okey for okey, found in held.items()
                  if any(covers(h, looked[okey], looked[okey].root.anchor) for h in found)}
+        # Monitoring a person suppressed on record (`agag.dispositions`,
+        # failsafe p6 ex1): the conversations it still covers — none that
+        # saw anything new since the decision.
+        suppressed = {origin_key(anchor): suppressed_anchors(result) for _, _, anchor, result in traced}
+        self._suppressed = {okey: found for okey, found in suppressed.items() if found}
+        whole |= {okey for okey, found in suppressed.items() if int(looked[okey].root.anchor) in found}
         if fresh:
             self.prefetch([result for _, _, anchor, result in traced
                            if self.failsafe(anchor) and origin_key(anchor) not in whole], now, health)
@@ -693,13 +702,14 @@ class Monitor:
             # ever (failsafe p6: only the covered decision is theirs).
             holding = held.get(origin_key(anchor), [])
             found = [c for c in found if not any(covers(h, result, c.anchor) for h in holding)]
+            found = [c for c in found if int(c.anchor or 0) not in suppressed.get(origin_key(anchor), set())]
             closed = self.origin_closed(result, tracked.get(origin_key(anchor)), now)
             if closed is not None and not found:
                 # Anything else found here is reported through the ✔ origin
                 # already; this is for the work nothing else would flag.
                 found.append(closed)
-            if origin_key(anchor) in whole or self.retired_now(origin_key(anchor), result):
-                continue  # a person holds all of it, or found nothing owed (`agobserver.hold --retire`)
+            if origin_key(anchor) in whole:
+                continue  # a person holds all of it, or suppressed its monitoring on record
             for candidate in primary(found):
                 # Our own recovery request, not yet taken up, is the incident
                 # it belongs to — watched by its retry and report — never an
@@ -1157,32 +1167,19 @@ class Monitor:
         except (OSError, ValueError):
             return {}
 
-    def load_retired(self) -> dict[str, dict[str, Any]]:
-        try:
-            return json.loads((self.store_dir / RETIRED_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-
-    def retired_now(self, okey: str, result) -> bool:
-        """Retired, and nothing posted in the request since: a retirement
-        lapses by itself when the request moves again."""
-        entry = self._retired.get(okey)
-        if entry is None:
-            return False
-        newest = max((int(n.last_activity or 0) for n in result.nodes()), default=0)
-        return newest <= float(entry.get("at") or 0)
-
     def load_held(self) -> dict[str, list]:
         """The holds in force at the last look, per request (`agag.holds`)."""
         return dict(getattr(self, "_held", {}) or {})
 
     def hold_origins(self) -> set[int]:
-        """Requests with a hold on record — found by the note, so a held
-        request is looked at whatever else says about it."""
+        """Requests with a hold or a disposition on record — found by the
+        note, so a held request is looked at whatever else says about it,
+        and new activity anywhere under a decision is seen (failsafe p6 ex1)."""
         from agag.holds import HOLD_TAG
 
         found = set()
-        for row in self.mirror.notes(tag=HOLD_TAG):
+        rows = list(self.mirror.notes(tag=HOLD_TAG)) + list(self.mirror.notes(tag=DISPOSITION_TAG))
+        for row in rows:
             message = self.mirror.message(row.message_id)
             if message is None:
                 continue
@@ -1252,8 +1249,11 @@ class Monitor:
                 # a serving in progress, a failure notice): that is an
                 # obligation as much as unfinished work below it.
                 outstanding.append(root)
-            if self.retired_now(okey, result) and okey not in open_origins:
-                outstanding = []  # a person found nothing owed here (`hold --retire`)
+            quiet = suppressed_anchors(result)
+            if quiet:
+                # What a person suppressed on record is not chased; anything
+                # new beside or below it is (`agag.dispositions`).
+                outstanding = [n for n in outstanding if int(n.anchor) not in quiet]
             if outstanding or okey in open_origins or okey in held:
                 entry = tracked.get(okey)
                 if entry is None:

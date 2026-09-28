@@ -13,27 +13,20 @@ person:
         [--unit <any message of the work>] --by <user id> [--evidence <their post>] <why>
     python -m agobserver.hold --release <hold id> --by <user id> [--evidence <their post>] <why>
 
-`--retire` is the other kind of decision (failsafe p3): a person checked the
-request and nothing is owed in it, though its conversations cannot say so.
-It leaves tracking and no incident is opened for it; the retirement lapses
-by itself the moment anything new is posted in the request. It stays a file
-(`retired.json`) the monitor only reads:
-
-    python -m agobserver.hold --retire <why> o<id>…
-    python -m agobserver.hold --unretire o<id>…
+A decision about the request's standing — monitoring suppressed, or the
+request ended as completed, cancelled or withdrawn — is a disposition, the
+same kind of record (`agag.dispositions`): `python -m agobserver.disposition`.
+failsafe p3's `--retire`/`--unretire` (a private `retired.json`) are gone.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-import time
 
 from agag import holds as holding
 from agag.zulip import ZulipClient
 
-from . import monitor as monitoring
 from .listener import SPEC
 
 
@@ -53,7 +46,9 @@ def _name(client, user_id: int) -> str:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] in (["--retire"], ["--unretire"]):
-        return _retire(argv)
+        print("--retire/--unretire are gone (failsafe p6 ex1): record the decision with "
+              "`python -m agobserver.disposition`", file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(prog="agobserver.hold", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("request", nargs="?", help="o<origin id>")
@@ -91,32 +86,6 @@ def main(argv: list[str] | None = None) -> int:
     except holding.HoldRefused as refused:
         print(f"refused: {refused}", file=sys.stderr)
         return 1
-
-
-def _retire(argv: list[str]) -> int:
-    store = SPEC.local / "incidents"
-    path = store / monitoring.RETIRED_FILE
-    try:
-        entries = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        entries = {}
-    if argv[0] == "--unretire":
-        for key in argv[1:]:
-            _okey(key)
-            print(f"{key}: {'unretired' if entries.pop(key, None) else 'was not retired'}")
-    else:
-        if len(argv) < 3:
-            print(__doc__, file=sys.stderr)
-            return 2
-        for key in argv[2:]:
-            _okey(key)
-            entries[key] = {"why": argv[1], "at": time.time()}
-            print(f"{key}: retired")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(entries, indent=1, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
-    return 0
 
 
 if __name__ == "__main__":

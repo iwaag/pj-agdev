@@ -87,10 +87,10 @@ def m11741(fixed: bool, end: bool = True):
     post("front", desk, ACK, FRONT, 1)
     started = post("front", desk, "@**Developer** Not exhausted, so I started one more phase; I report here "
                                   "when it ends.\n\n`ag-post intent=report`", FRONT, 446)
-    post("routine-study-x", run, f"[selfnote][rootchat] front/{desk} #{started}", FRONT, 434)
+    post("routine-study-x", run, f"[selfnote][rootchat] front/{desk} #{started} rel=work", FRONT, 434)
     opened = post("routine-study-x", run, "Request to run routine study-x, one more bounded phase.", FRONT, 434)
     post("routine-study-x", run, ACK, FRONT, 446)
-    post("pj-x", plan, f"[selfnote][rootchat] routine-study-x/{run} #{opened}", FRONT, 483)
+    post("pj-x", plan, f"[selfnote][rootchat] routine-study-x/{run} #{opened} rel=work", FRONT, 483)
     post("pj-x", plan, "@**autolab-agstudio1** Mission request: one bounded phase, one task.", FRONT, 483)
     post("pj-x", plan, ACK, AUTOLAB, 483)
     mission = post("pj-x", plan, "[selfnote][mission] x", AUTOLAB, 510)
@@ -104,7 +104,7 @@ def m11741(fixed: bool, end: bool = True):
 
     task = f"workrun-task1-m{mission}"
     post("work-m1", task, f"[selfnote][task] {mission}#1", AUTOLAB, 510)
-    post("work-m1", task, f"[selfnote][rootchat] pj-x/{plan} #{mission}", AUTOLAB, 510)
+    post("work-m1", task, f"[selfnote][rootchat] pj-x/{plan} #{mission} rel=work", AUTOLAB, 510)
     post("work-m1", task, "# Task 1\n\nWhole round in one task.", AUTOLAB, 510)
     post("work-m1", task, "Task 1 of the mission starts now.\n\n" + PROGRESS, AUTOLAB, 511)
     post("work-m1", task, f"[selfnote][start] #{planned} for {FRONT} Front", AUTOLAB, 511)

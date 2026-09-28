@@ -37,7 +37,7 @@ def waiting_realm():
     realm.add_channel(9, CHANNEL)
     ask = post(realm, "front", "front-h", "Make an icon for the README.", DEV)
     post(realm, "front", "front-h", ACK, FRONT)
-    post(realm, OWNER_CHANNEL, PLAN, f"[selfnote][rootchat] front/front-h #{ask}", FRONT)
+    post(realm, OWNER_CHANNEL, PLAN, f"[selfnote][rootchat] front/front-h #{ask} rel=work", FRONT)
     post(realm, OWNER_CHANNEL, PLAN, "@**autolab-agstudio1** An icon for the README, please.", FRONT)
     post(realm, OWNER_CHANNEL, PLAN, "[selfnote][asset] icon", AUTOLAB)
     post(realm, OWNER_CHANNEL, PLAN, ACK, AUTOLAB)

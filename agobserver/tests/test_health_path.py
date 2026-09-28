@@ -80,7 +80,7 @@ def build(realm, *, ended=False):
     post("front", desk, ACK, FRONT, 1)
     started = post("front", desk, "@**Developer** Asked autolab; I report here.\n\n`ag-post intent=report`",
                    FRONT, 5)
-    post("pj-x", plan, f"[selfnote][rootchat] front/{desk} #{started}", FRONT, 6)
+    post("pj-x", plan, f"[selfnote][rootchat] front/{desk} #{started} rel=work", FRONT, 6)
     post("pj-x", plan, "@**autolab-agstudio1** Mission request: one task.", FRONT, 6)
     post("pj-x", plan, ACK, AUTOLAB, 7)
     mission = post("pj-x", plan, "[selfnote][mission] x", AUTOLAB, 20)
@@ -89,7 +89,7 @@ def build(realm, *, ended=False):
     post("front", desk, f"[selfnote][served] pj-x/{plan} {planned}", FRONT, 25)
     task = f"workrun-task1-m{mission}"
     post("work-m1", task, f"[selfnote][task] {mission}#1", AUTOLAB, 50)
-    post("work-m1", task, f"[selfnote][rootchat] pj-x/{plan} #{mission}", AUTOLAB, 50)
+    post("work-m1", task, f"[selfnote][rootchat] pj-x/{plan} #{mission} rel=work", AUTOLAB, 50)
     post("work-m1", task, "# Task 1\n\nAdd the flag.", AUTOLAB, 50)
     post("work-m1", task, "Task 1 starts now.\n\n" + PROGRESS, AUTOLAB, 51)
     post("work-m1", task, f"[selfnote][start] #{planned} for {FRONT} Front", AUTOLAB, 51)
