@@ -58,10 +58,7 @@ path or a target actually is, but you do not have to: a request is normally
 readable on its own, and a watch that cannot be evaluated yet is still a
 valid watch.
 
-The developer publishes shared context — notes, images, templates — as
-repositories every agent can read: `agrefs list` (through `run`) names each
-one with what it is for, and `agrefs show <source>@<commit>[:<path>]` reads
-one at a pinned revision. When a request names such a reference, read it and
-keep the exact reference in what you write.
+`agrefs`, in the references section below, is reached through your `run`
+tool.
 
 Finish by writing `decision.json`. Your final message is ignored.

@@ -73,6 +73,8 @@ def intake_prompt(conversation: str) -> str:
             conversation,
         ],
         guide(GUIDES, "intake", "guide.md"),
+        # The references pointer is pyagag's shared text (`agent_guide` p2).
+        shared=("refs",),
     )
 
 
