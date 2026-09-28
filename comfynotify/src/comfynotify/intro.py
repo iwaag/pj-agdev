@@ -4,8 +4,10 @@ Until this, the `watch` command was described in one agent's guide only
 (autolab's worker): nobody else could learn it from the board. Now the
 notifier posts `params/intro.md` through `agag.intro.post_intro` like every
 agent, so it is in every run's `tools/agents.md` and in `agentchat intro`.
-It carries no roster block: the notifier answers no topic, and a roster
-would list it among the agents the operation room expects to find.
+Its roster block declares no channel and no prefixes: the notifier serves
+no conversation. The operation room lists every `intro-` topic as an
+instance, and one without a roster is shown as an agent whose work cannot be
+read; with this block it is an instance with nothing to serve.
 
 The daemon posts it at start-up when the newest post in its `intro-` topic
 says something else (its stamp aside), so a restart does not stack identical
@@ -17,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agag.instance import instance_name as read_instance_name
-from agag.intro import AGENTS_CHANNEL, intro_text, intro_topic, post_intro
+from agag.intro import AGENTS_CHANNEL, Roster, intro_text, intro_topic, post_intro
 
 ROOT = Path(__file__).resolve().parents[2]
 INTRO_PATH = ROOT / "params" / "intro.md"
@@ -43,6 +45,9 @@ def post(client, *, force: bool = False, instance: str | None = None) -> str | N
     """Post the introduction; unless `force`, only when the board's newest
     one says something else. Returns what was posted, or None."""
     instance = instance or instance_name()
-    if not force and _body(current(client, instance)) == _body(intro_text(INTRO_PATH, ROOT, instance)):
+    me = client.whoami()
+    roster = Roster(instance=instance, agent="comfynotify", bot=str(me.get("full_name") or "Comfy Notifier"),
+                    bot_id=int(me["user_id"]), channel="", prefixes=())
+    if not force and _body(current(client, instance)) == _body(intro_text(INTRO_PATH, ROOT, instance, roster=roster)):
         return None
-    return post_intro(client, instance=instance, intro_path=INTRO_PATH, root=ROOT)
+    return post_intro(client, instance=instance, intro_path=INTRO_PATH, root=ROOT, roster=roster)

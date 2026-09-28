@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from agag.intro import parse_roster
+
 from comfynotify import intro
 from comfynotify.commands import parse_command
 
@@ -15,6 +17,9 @@ class Board:
     def topic_history(self, channel, topic, num_before=50):
         return [{"content": text} for c, t, text in self.posts if (c, t) == (channel, topic)][-num_before:]
 
+    def whoami(self):
+        return {"user_id": 21, "full_name": "Comfy Notifier"}
+
     def send_to_channel(self, channel, topic, text):
         self.posts.append((channel, topic, text))
         return len(self.posts)
@@ -24,6 +29,8 @@ def test_posted_once_and_again_only_when_changed():
     board = Board()
     assert intro.post(board, instance="comfynotify-test") is not None
     assert board.posts[0][:2] == ("agents", "intro-comfynotify-test")
+    roster = parse_roster(board.posts[0][2])
+    assert roster.bot == "Comfy Notifier" and roster.channel == "" and roster.prefixes == ()
     assert intro.post(board, instance="comfynotify-test") is None  # the stamp aside, unchanged
     assert intro.post(board, instance="comfynotify-test", force=True) is not None
     assert len(board.posts) == 2
