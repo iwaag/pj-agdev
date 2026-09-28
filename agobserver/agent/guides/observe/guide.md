@@ -51,10 +51,9 @@ you have already found the answer, and it is `not_met`.
 - `run` executes a shell command in the working directory. This is the main
   tool: `ls -l <path>`, `cat <file>`, `stat`, `test -f … && echo yes`.
 - `read` and `list` read a file or a directory directly.
-- `agentchat read <channel> <topic>` prints the recent messages of one Zulip
-  conversation, newest last, with each message's id and sender. Use it when
-  the target is a conversation. `agentchat read <channel> <topic> --count 30`
-  reads further back.
+- `agentchat read <channel> <topic>` prints one Zulip conversation, newest
+  last, with each message's id and sender: use it when the target is a
+  conversation (`agentchat read --help` says how to read further back).
 
 Look at the target you were given and at nothing else. Do not go exploring
 the machine, do not read this agent's own code, and do not post anything
