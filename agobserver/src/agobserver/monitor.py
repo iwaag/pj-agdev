@@ -1461,6 +1461,13 @@ class Monitor:
             return self.report(record, now, f"{root.owner or 'the agent that owns it'} could not answer its requester "
                                              "there: its listener served the input twice and neither run produced a "
                                              "usable reply (the failure notice is the last word)")
+        if candidate.kind == "claim":
+            # failsafe p7: a reply said an act was done and no record shows
+            # it, and its own listener already served the agent once with
+            # the mismatch (or could not). Asking again buys another run of
+            # the same failure; the owners read the reply against the records.
+            return self.report(record, now, f"{node_owner(result, candidate)}'s reply says an act was done that no "
+                                             f"record shows ({candidate.fact})")
         if candidate.kind == QUEUE_KIND:
             # failsafe p5: the owner's listener is not serving the post, or
             # the serving ahead of it is not healthy and nothing else holds
@@ -1887,6 +1894,12 @@ class Monitor:
             return node.execution == "ended" and node.holder not in ("none", "unknown")
         if kind == "silent" and node.state == "executing":
             return node.last_activity > int(record.get("since") or 0)
+        if kind == "claim":
+            # Settled by record (`[selfnote][claim-settled]`: recorded,
+            # corrected or dismissed): the trace lists only open claims, and
+            # the claim this incident is about is its first evidence id.
+            claim = int((record.get("evidence") or [0])[0] or 0)
+            return bool(claim) and claim not in {int(c.get("id") or 0) for c in node.claims}
         return node.state in RECOVERED_STATES.get(kind, MOVED_ON)
 
     def unobservable(self, record: dict[str, Any], now: float, why: str) -> dict[str, Any]:
