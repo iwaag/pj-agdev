@@ -108,7 +108,8 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
         const wasDirty = dirty()
         problem = undefined
         saved = cloneWorkflow(r.workflow)
-        if (!wasDirty || opts.force || !draft) { draft = cloneWorkflow(r.workflow); externalChange = false }
+        if (!wasDirty || opts.force || !draft) { draft = cloneWorkflow(r.workflow); externalChange = false; saveError = '' }
+        if (opts.force) saveState = 'Reloaded from disk'
       } else {
         // Keep the last valid rendering (if any) and show why the file cannot be used.
         problem = r.problem

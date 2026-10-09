@@ -70,4 +70,5 @@ screenshots to `pj-agdev/.local/workflow-editor/screenshots/`:
 ```sh
 npm run seed -- --reset && node checks/step2.ts
 npm run seed -- --reset && node checks/step3.ts
+npm run seed -- --reset && node checks/step4.ts
 ```
