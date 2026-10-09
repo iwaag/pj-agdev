@@ -279,3 +279,9 @@ export function newWorkflowText(w: Workflow): string {
   doc.commentBefore = ' Workflow definition (ag.workflow.v1). Edit here or in the workflow editor.'
   return renderWorkflow(doc, w)
 }
+
+export function newProjectText(p: Project): string {
+  const doc = new Document({})
+  doc.commentBefore = ' Project definition (ag.project.v1). Repositories come from .gitmodules.'
+  return renderProject(doc, p)
+}

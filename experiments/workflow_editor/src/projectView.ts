@@ -1,0 +1,302 @@
+// Project editor: metadata, sub-repositories, workspaces and workflows.
+import type { ChangeEvent, ProjectResponse, RepositoryStatus, WorkflowResponse, WorkspaceSummary } from '../shared/api.ts'
+import { PROJECT_SCHEMA, type Project } from '../shared/model.ts'
+import { validateProject } from '../shared/validate.ts'
+import { api, ApiError } from './api.ts'
+import { h, short } from './dom.ts'
+import { icon } from './icons.ts'
+import type { ViewHandle } from './main.ts'
+
+const GROUPS: { key: RepositoryStatus['category'][]; title: string }[] = [
+  { key: ['root', 'devdocs'], title: 'Fixed repositories' },
+  { key: ['study'], title: 'Study repositories (study/)' },
+  { key: ['wedo'], title: 'Wedo repositories (wedo/)' },
+  { key: ['other'], title: 'Other repositories' },
+]
+
+export function statusChips(r: RepositoryStatus): HTMLElement[] {
+  const chips: HTMLElement[] = []
+  if (!r.initialized) chips.push(h('span.chip.warn', { title: 'The submodule is recorded but not checked out in this workspace' }, 'not initialized'))
+  else if (r.kind === 'submodule') chips.push(r.branch ? h('span.chip', { title: 'Checked-out branch' }, `⑂ ${r.branch}`) : h('span.chip.muted', { title: 'HEAD is detached (normal after git submodule update)' }, 'detached HEAD'))
+  else chips.push(h('span.chip', `⑂ ${r.branch ?? 'detached HEAD'}`))
+  if (r.recorded) chips.push(h('span.chip', { title: `Recorded in the project root: ${r.recorded}` }, `# ${short(r.recorded)}`))
+  if (r.staged) chips.push(h('span.chip.warn', { title: `Staged gitlink, not committed: ${r.staged}` }, `staged ${short(r.staged)}`))
+  if (r.kind === 'root' && r.head) chips.push(h('span.chip', { title: r.head }, `# ${short(r.head)}`))
+  if (r.initialized && r.kind === 'submodule' && r.matchesRecorded === false) chips.push(h('span.chip.warn', { title: `Checked out ${r.head}` }, `HEAD ${short(r.head)} ≠ recorded`))
+  if (r.dirty) chips.push(h('span.chip.warn', { title: 'Uncommitted changes (git status --porcelain)' }, `${r.dirty} uncommitted`))
+  if (r.error) chips.push(h('span.chip.error', r.error))
+  return chips
+}
+
+const repoIcon = (r: RepositoryStatus) => icon(r.category === 'study' ? 'study' : r.category === 'wedo' ? 'do' : r.category === 'devdocs' ? 'doc' : r.category === 'root' ? 'folder' : 'repo', 'icon repo-icon')
+
+export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
+  let data: ProjectResponse | null = null
+  let saved: Project | null = null
+  let draft: Project | null = null
+  let externalChange = false
+  let saveError = ''
+  let saveState = ''
+  let accessWorkflow = ''
+  let accessData: WorkflowResponse | null = null
+  let workspaces: WorkspaceSummary[] = []
+  let addResult: HTMLElement | null = null
+  let createError = ''
+  let disposed = false
+
+  const dirty = () => !!draft && !!saved && JSON.stringify(draft) !== JSON.stringify(saved)
+
+  const header = h('header.topbar')
+  const main = h('main.project-grid', h('p.muted', 'Loading project…'))
+  root.append(header, main)
+
+  async function load(full = true) {
+    try {
+      const [p, w] = await Promise.all([api.project(wsId), full ? api.workspaces() : Promise.resolve(null)])
+      if (disposed) return
+      data = p
+      if (w) workspaces = w.workspaces
+      if (!dirty() || full) {
+        saved = p.project ? structuredClone(p.project) : null
+        draft = p.project ? structuredClone(p.project) : null
+        externalChange = false
+      }
+      if (accessWorkflow) accessData = await api.workflow(wsId, accessWorkflow).catch(() => null)
+      render()
+    } catch (e) {
+      main.replaceChildren(h('p.error', (e as Error).message))
+    }
+  }
+
+  function renderHeader() {
+    const name = data?.project?.name || data?.project?.id || 'Project'
+    const select = h('select.ws-select', {
+      'aria-label': 'Workspace',
+      onchange: (e: Event) => { location.hash = `#/ws/${encodeURIComponent((e.target as HTMLSelectElement).value)}` },
+    }, workspaces.map(w => h('option', { value: w.id, selected: w.id === wsId, disabled: !w.observed.available }, `${w.label}${w.observed.available ? '' : ' (unavailable)'}`)))
+    header.replaceChildren(
+      h('div.crumbs', h('span.muted', 'Project'), h('span.sep', '/'), h('strong', name),
+        h('span.pill.ok', icon('check', 'icon small'), `workspace ${wsId}`)),
+      h('div.top-actions', h('label.ws-label', 'Workspace ', select)),
+    )
+  }
+
+  function renderProjectCard(): HTMLElement {
+    const card = h('section.card.project-meta')
+    card.append(h('h2', 'Project'))
+    if (!data) return card
+    if (data.problem) {
+      card.append(h('div.banner.error', `project.yaml cannot be edited: ${data.problem.message}${data.problem.line ? ` (line ${data.problem.line})` : ''}. Fix the file; the view reloads when it changes.`))
+      if (!saved) return card
+    }
+    if (!draft) {
+      card.append(h('p.muted', 'No project.yaml yet.'), h('button', {
+        onclick: () => { draft = { schema: PROJECT_SCHEMA, id: '', name: '', intent: '', goals: [] }; saved = { ...draft, id: '-' }; render() },
+      }, 'Create project.yaml'))
+      return card
+    }
+    const d = draft
+    if (externalChange) {
+      card.append(h('div.banner.warn', 'project.yaml changed on disk while you have unsaved edits. ',
+        h('button', { onclick: () => void load() }, 'Reload from disk (discard my edits)')))
+    }
+    const readonly = !!data.problem
+    card.append(
+      h('label.field', h('span', 'Id'), h('input', { value: d.id, disabled: !!saved?.id && saved.id !== '-', title: 'Stable identifier; edit the file to change it', oninput: (e: Event) => { d.id = (e.target as HTMLInputElement).value; touch() } })),
+      h('label.field', h('span', 'Name'), h('input', { value: d.name, disabled: readonly, oninput: (e: Event) => { d.name = (e.target as HTMLInputElement).value; touch() } })),
+      h('label.field', h('span', 'Intent'), h('textarea', { rows: 4, value: d.intent, disabled: readonly, oninput: (e: Event) => { d.intent = (e.target as HTMLTextAreaElement).value; touch() } })),
+    )
+    const goals = h('ol.goals')
+    d.goals.forEach((g, i) => goals.append(h('li',
+      h('input', { value: g, disabled: readonly, 'aria-label': `Goal ${i + 1}`, oninput: (e: Event) => { d.goals[i] = (e.target as HTMLInputElement).value; touch() } }),
+      h('button.icon-btn', { title: 'Remove goal', disabled: readonly, onclick: () => { d.goals.splice(i, 1); touch(true) } }, '×'))))
+    card.append(h('div.field', h('span', 'Goals'), goals, h('button.ghost', { disabled: readonly, onclick: () => { d.goals.push(''); touch(true) } }, '+ Add goal')))
+    const issues = validateProject(d)
+    card.append(
+      h('ul.issues', issues.map(i => h(`li.${i.severity}`, i.message))),
+      h('div.save-row',
+        h('button.primary', { disabled: readonly || !dirty(), onclick: () => void save() }, 'Save project.yaml'),
+        h('span.save-state', saveError ? h('span.error', saveError) : dirty() ? 'Unsaved changes' : saveState || 'Saved'),
+      ),
+    )
+    return card
+  }
+
+  function touch(rerender = false) {
+    saveState = ''
+    if (rerender) render(); else updateSaveRow()
+  }
+  function updateSaveRow() {
+    const btn = main.querySelector<HTMLButtonElement>('.project-meta .save-row button')
+    const state = main.querySelector('.project-meta .save-state')
+    if (btn) btn.disabled = !dirty()
+    if (state && !saveError) state.textContent = dirty() ? 'Unsaved changes' : 'Saved'
+    const list = main.querySelector('.project-meta ul.issues')
+    if (list && draft) list.replaceChildren(...validateProject(draft).map(i => h(`li.${i.severity}`, i.message)))
+  }
+
+  async function save() {
+    if (!draft) return
+    saveError = ''
+    try {
+      await api.saveProject(wsId, draft)
+      saved = structuredClone(draft)
+      saveState = `Saved ${new Date().toLocaleTimeString()}`
+      externalChange = false
+      await load(false)
+    } catch (e) {
+      saveError = `Save failed: ${(e as Error).message}. Your edits are kept; retry when resolved.`
+      render()
+    }
+  }
+
+  function renderRepos(): HTMLElement {
+    const card = h('section.card.repos')
+    const workflows = data?.workflows.filter(w => w.id) ?? []
+    card.append(h('div.card-head', h('h2', 'Sub-repositories (Git submodules)'),
+      h('label.inline', 'Access in workflow ', h('select', {
+        'aria-label': 'Show access for workflow',
+        onchange: async (e: Event) => {
+          accessWorkflow = (e.target as HTMLSelectElement).value
+          accessData = accessWorkflow ? await api.workflow(wsId, accessWorkflow).catch(() => null) : null
+          render()
+        },
+      }, h('option', { value: '' }, '— none —'), workflows.map(w => h('option', { value: w.file, selected: w.file === accessWorkflow }, w.name || w.id))))))
+    if (!data) return card
+    const bindings = accessData?.workflow ? Object.entries(accessData.workflow.repositories) : []
+    for (const g of GROUPS) {
+      const repos = data.repositories.filter(r => g.key.includes(r.category))
+      if (!repos.length && g.key[0] !== 'study' && g.key[0] !== 'wedo') continue
+      const group = h('div.repo-group', h('h3', g.title))
+      if (!repos.length) group.append(h('p.muted.small', 'None.'))
+      for (const r of repos) {
+        const access = bindings.filter(([, b]) => (b.path.replace(/^\.\//, '').replace(/\/$/, '') || '.') === r.path)
+        group.append(h('div.repo-row', { dataset: { path: r.path } },
+          repoIcon(r),
+          h('div.repo-main', h('strong', r.name), h('span.muted.small', r.path === '.' ? '.' : r.path),
+            r.url ? h('span.muted.small', { title: 'Source as written in .gitmodules / remote.origin.url' }, `source ${r.kind === 'root' ? '(origin)' : r.url}`) : null),
+          h('div.chips', statusChips(r)),
+          h('div.access', accessWorkflow
+            ? (access.length ? access.map(([key, b]) => h(`span.access-badge.${b.access === 'editable' ? 'editable' : 'readonly'}`, { title: `binding "${key}"` }, b.access === 'editable' ? 'Editable' : 'Read-only')) : h('span.muted.small', 'not bound'))
+            : null),
+        ))
+      }
+      card.append(group)
+    }
+    // Bindings whose path is not a repository of this project.
+    const unresolved = bindings.filter(([, b]) => !data!.repositories.some(r => r.path === (b.path.replace(/^\.\//, '').replace(/\/$/, '') || '.')))
+    if (unresolved.length) card.append(h('div.banner.error', `Unresolved in ${accessData?.workflow?.name}: `, unresolved.map(([k, b]) => `${k} → ${b.path}`).join(', ')))
+    card.append(renderAddRepo())
+    return card
+  }
+
+  function renderAddRepo(): HTMLElement {
+    const path = h('input', { placeholder: 'study/evals', 'aria-label': 'Submodule path' })
+    const url = h('input', { placeholder: '../study-evals.git', 'aria-label': 'Repository location' })
+    const button = h('button', {
+      onclick: async () => {
+        button.disabled = true
+        addResult = h('p.muted', 'Running git submodule add…')
+        render()
+        try {
+          const r = await api.addSubmodule(wsId, path.value, url.value)
+          addResult = r.ok
+            ? h('div.banner.ok', r.message)
+            : h('div.banner.error', h('strong', r.message), r.stderr ? h('pre', r.stderr) : null,
+              r.partial ? h('p', `Left behind — .gitmodules entry: ${r.partial.gitmodulesEntry ? 'yes' : 'no'}; path exists: ${r.partial.pathExists ? 'yes' : 'no'}; staged: ${r.partial.staged ? 'yes' : 'no'}; module git dir: ${r.partial.gitDirExists ? 'yes' : 'no'}.`) : null)
+        } catch (e) {
+          addResult = h('div.banner.error', (e as ApiError).message)
+        }
+        await load(false)
+      },
+    }, 'Add submodule')
+    return h('div.add-repo', h('h3', 'Add a local repository'),
+      h('p.muted.small', 'Runs git submodule add in this workspace and stages the result. It does not commit. A relative location resolves against the project\'s origin.'),
+      h('div.row', h('label.field', h('span', 'Path'), path), h('label.field', h('span', 'Location'), url), button),
+      addResult)
+  }
+
+  function renderWorkspaces(): HTMLElement {
+    const card = h('section.card.workspaces', h('h2', 'Workspaces'),
+      h('p.muted.small', 'Registered in this machine\'s local registry. Availability is what this service observes now; other hosts are not contacted.'))
+    for (const w of workspaces) {
+      const same = w.observed.projectId && data?.project?.id && w.observed.projectId === data.project.id
+      card.append(h(`div.ws-row${w.id === wsId ? '.current' : ''}`,
+        h(`span.dot.${w.observed.available ? 'on' : 'off'}`),
+        h('div.ws-main', h('strong', w.label), h('span.muted.small',
+          `${w.host} · `, w.observed.available
+            ? `available · ${w.observed.branch ?? 'detached'} @ ${short(w.observed.head)}${w.observed.projectId ? ` · project ${w.observed.projectId}${same ? '' : ' (different project)'}` : ''}${w.observed.reason ? ` · ${w.observed.reason}` : ''}`
+            : `registered, not available: ${w.observed.reason}`)),
+        w.id === wsId ? h('span.pill', 'selected') : h('button', { disabled: !w.observed.available, onclick: () => { location.hash = `#/ws/${encodeURIComponent(w.id)}` } }, 'Open')))
+    }
+    return card
+  }
+
+  function renderWorkflows(): HTMLElement {
+    const card = h('section.card.workflows', h('h2', 'Workflows'), h('p.muted.small', 'devdocs/workflows/ in this workspace'))
+    if (!data) return card
+    if (!data.workflowsDir.exists) card.append(h('div.banner.warn', data.workflowsDir.reason ?? 'no workflow directory'))
+    for (const w of data.workflows) {
+      const approved = w.approvals && w.approvals.intent === 'approved' && w.approvals.definition === 'approved'
+      card.append(h('div.wf-row', { dataset: { file: w.file } },
+        h('div.wf-main', h('strong', w.name || w.id || w.file), h('span.muted.small', `${w.file}${w.id ? ` · id ${w.id}` : ''}`),
+          h('div.chips',
+            w.problem ? h('span.chip.error', `${w.problem.kind}: ${w.problem.message}`) : null,
+            w.approvals ? approvalChip('intent', w.approvals.intent) : null,
+            w.approvals ? approvalChip('definition', w.approvals.definition) : null,
+            approved ? h('span.chip.ok', 'Author approved') : null,
+            w.errors && !w.problem ? h('span.chip.error', `${w.errors} error${w.errors > 1 ? 's' : ''}`) : null,
+            w.warnings ? h('span.chip.warn', `${w.warnings} warning${w.warnings > 1 ? 's' : ''}`) : null)),
+        h('a.button', { href: `#/ws/${encodeURIComponent(wsId)}/wf/${encodeURIComponent(w.file)}` }, 'Open Editor')))
+    }
+    const id = h('input', { placeholder: 'release-check', 'aria-label': 'New workflow id' })
+    const name = h('input', { placeholder: 'Release Check', 'aria-label': 'New workflow name' })
+    card.append(h('div.create-wf', h('h3', 'New workflow'),
+      h('div.row', h('label.field', h('span', 'Id'), id), h('label.field', h('span', 'Name'), name),
+        h('button', {
+          disabled: !data.workflowsDir.exists,
+          onclick: async () => {
+            try {
+              const r = await api.createWorkflow(wsId, id.value.trim(), name.value.trim())
+              location.hash = `#/ws/${encodeURIComponent(wsId)}/wf/${encodeURIComponent(r.file)}`
+            } catch (e) { createError = (e as Error).message; render() }
+          },
+        }, 'Create')),
+      createError ? h('p.error', createError) : null))
+    return card
+  }
+
+  function render() {
+    renderHeader()
+    main.replaceChildren(
+      h('div.col', renderProjectCard(), renderRepos()),
+      h('div.col', renderWorkspaces(), renderWorkflows()),
+    )
+  }
+
+  // External changes: reload what has no draft; guard the project draft.
+  const events = api.events(wsId)
+  let pending: ReturnType<typeof setTimeout> | undefined
+  events.addEventListener('change', (e: MessageEvent) => {
+    const ev = JSON.parse(e.data) as ChangeEvent
+    if (ev.kind === 'project' && dirty()) {
+      if (ev.rev && data?.rev === ev.rev) return
+      externalChange = true
+      render()
+      return
+    }
+    clearTimeout(pending)
+    pending = setTimeout(() => void load(false), 150)
+  })
+
+  void load()
+  return {
+    dispose: () => { disposed = true; events.close(); clearTimeout(pending) },
+    isDirty: dirty,
+  }
+}
+
+export function approvalChip(kind: string, status: string): HTMLElement {
+  const label = `${kind} ${status === 'approved' ? 'approved' : status === 'stale' ? 'changed since approval' : 'draft'}`
+  return h(`span.chip.approval.${status}`, label)
+}
