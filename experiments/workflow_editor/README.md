@@ -32,9 +32,42 @@ workspaces is `registry.json` there; it is machine-specific and never tracked.
 Local file transport for submodules is enabled per command
 (`-c protocol.file.allow=always`), not in any Git config file.
 
+## Start the editor
+
+Development (two processes):
+
+```sh
+npm run service   # local service on http://127.0.0.1:8095
+npm run dev       # Vite on http://127.0.0.1:5175, proxying /api
+```
+
+Single process, serving the production build:
+
+```sh
+npm start         # builds, then serves UI and API on http://127.0.0.1:8095
+```
+
+Open the page and pick a workspace. The service reads the registry at
+`pj-agdev/.local/workflow-editor/registry.json` by default
+(`--registry <file>` or `WFE_REGISTRY` to change; `--port`, `--poll-ms`).
+
+The service binds to 127.0.0.1 only and answers only to `127.0.0.1` /
+`localhost` host names. Browser writes are accepted from its own origin and
+the Vite dev origin; clients without an `Origin` header (curl, scripts) are
+local processes and may write too.
+
 ## Checks
 
 ```sh
 npm test        # contract, persistence and Git fixture tests
 npm run check   # type check, tests and production build
+```
+
+Browser checks drive the real UI with `playwright-core` and its cached
+Chromium. They need a fresh seed, the service and the dev server, and write
+screenshots to `pj-agdev/.local/workflow-editor/screenshots/`:
+
+```sh
+npm run seed -- --reset && node checks/step2.ts
+npm run seed -- --reset && node checks/step3.ts
 ```
