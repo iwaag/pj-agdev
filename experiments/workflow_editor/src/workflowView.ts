@@ -40,8 +40,9 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
   const readonly = () => !!problem
 
   // ---- static structure (inputs keep focus across updates) --------------
-  const nameInput = h('input.wf-name', { 'aria-label': 'Workflow name', placeholder: 'Workflow name' })
-  const intentInput = h('textarea.intent-text', { rows: 3, 'aria-label': 'Workflow intent', placeholder: 'What this workflow is for. Everything else is reviewed against it.' })
+  // Disabled until the file is loaded, so nothing typed early is overwritten.
+  const nameInput = h('input.wf-name', { 'aria-label': 'Workflow name', placeholder: 'Workflow name', disabled: true })
+  const intentInput = h('textarea.intent-text', { rows: 3, 'aria-label': 'Workflow intent', placeholder: 'What this workflow is for. Everything else is reviewed against it.', disabled: true })
   const crumbs = h('div.crumbs')
   const saveButton = h('button.primary', { onclick: () => void save() }, 'Save')
   const saveStateEl = h('span.save-state')
@@ -264,6 +265,7 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
     renderCrumbs()
     renderModeSwitch()
     if (!draft) {
+      nameInput.disabled = intentInput.disabled = true
       rawView.textContent = resp?.text ?? ''
       rawView.hidden = !resp?.text
       canvas.el.hidden = true

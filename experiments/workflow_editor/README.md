@@ -71,4 +71,12 @@ screenshots to `pj-agdev/.local/workflow-editor/screenshots/`:
 npm run seed -- --reset && node checks/step2.ts
 npm run seed -- --reset && node checks/step3.ts
 npm run seed -- --reset && node checks/step4.ts
+node checks/e2e.ts   # the p1 acceptance scenario; reseeds by itself
 ```
+
+## Not in p1
+
+Workflow execution, agent chat, Gitea, agdevworld integration, migration of
+existing projects, remote workspace discovery, conditional branches, loops,
+retries, author authentication, OS-level readonly enforcement and concurrent
+editing. The editor never commits or pushes; Git publishing is done by hand.
