@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agdev.wfe-service</string>
+  <!-- The workflow editor service of the agdev area (workflow_editor p4):
+       the deployed release (service/current, scripts/deploy.sh of the
+       pj-workflow-editor project), never a workspace being edited. Loopback
+       only; agdevworld reaches it at http://localhost:8093/wfe/. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>__PROJECTS_ROOT__/pj-agdev/.local/agdev/service/current/server/main.ts</string>
+    <string>--serve-dist</string>
+    <string>--port</string><string>8098</string>
+    <string>--registry</string><string>__PROJECTS_ROOT__/pj-agdev/.local/agdev/registry.json</string>
+    <string>--origins</string><string>http://localhost:8093,http://127.0.0.1:8093</string>
+  </array>
+  <key>WorkingDirectory</key><string>__PROJECTS_ROOT__/pj-agdev/.local/agdev</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/.local/agdev/service.log</string>
+  <key>StandardErrorPath</key><string>__PROJECTS_ROOT__/pj-agdev/.local/agdev/service.log</string>
+</dict>
+</plist>

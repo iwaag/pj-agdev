@@ -62,3 +62,13 @@ own `assetplan-`/`assetrun-` conversations, as autolab's have since p1. The
 relay now holds three credentials, all Zulip. An installed copy still
 carrying the variable is harmless (nothing reads it) until the next
 `bootout`/`bootstrap`.
+
+`com.agdev.wfe-service.plist.in` is the workflow editor service of the agdev
+area (`workflow_editor` p4): it runs the deployed release
+`.local/agdev/service/current` (written by the `pj-workflow-editor` project's
+`scripts/deploy.sh`), on 127.0.0.1:8098, which agdevworld's loopback origin
+proxies at `http://localhost:8093/wfe/`.
+
+`com.agdev.agautolab-wfexec.plist.in` is autolab as the executor of workflow
+runs (`agautolab.wfexec`, one execution slot). It needs
+`agautolab/.local/wfexec.toml` with `wfe = ["<projects>/pj-agdev/.local/agdev/bin/wfe"]`.

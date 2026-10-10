@@ -1,3 +1,8 @@
+> **Frozen (workflow_editor p4, 2026-10-10).** The editor is its own project
+> since p4: `developer/pj-workflow-editor` on the local Gitea, developed
+> through agdevworld and deployed with its `scripts/deploy.sh`. This copy is
+> the history up to the split (`91be3bb`) and is no longer developed here.
+
 # Workflow and project editor (experiment, `workflow_editor` p1, p2/pre1, p3/pre1, p4)
 
 A standalone MVP that edits Git-backed project and workflow definitions from a
