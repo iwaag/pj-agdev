@@ -423,3 +423,22 @@ test('HTTP: list, read, answer with the stale-view guard, read a report; the sam
     server.closeAllConnections(); server.close()
   }
 })
+
+test('watcher: run.json changes, report files and new runs are separate events; report bodies are not read', async () => {
+  const { Watcher } = await import('../server/watch.ts')
+  const w = new Watcher(1000, { registryFile: registry })
+  const c = await createRun(ws, base({ name: 'run-watch' }))
+  const s0 = await w.snapshot({ ws, snapshot: null })
+  await runOp(ws, c.ref, { op: 'node.start', node: 'survey' }, { via: 'cli' })
+  const s1 = await w.snapshot({ ws, snapshot: s0 })
+  assert.deepEqual(w.diff('r', s0, s1).map(e => [e.kind, e.run]), [['run', 'ship/run-watch']])
+  await writeFile(join(dir, c.dir, 'report1.md'), '# r\n')
+  const s2 = await w.snapshot({ ws, snapshot: s1 })
+  const e2 = w.diff('r', s1, s2)
+  assert.deepEqual(e2.map(e => [e.kind, e.run]), [['run', 'ship/run-watch']])
+  assert.equal(e2[0].rev, s1.get('\0run:ship/run-watch')?.hash, 'the record itself did not change')
+  const d = await createRun(ws, base({ name: 'run-watch2' }))
+  const s3 = await w.snapshot({ ws, snapshot: s2 })
+  assert.deepEqual(w.diff('r', s2, s3).map(e => [e.kind, e.run ?? null]), [['run', `ship/${d.ref.run}`], ['runs', null]])
+  assert.equal(w.diff('r', s3, await w.snapshot({ ws, snapshot: s3 })).length, 0, 'an idle tick reports nothing')
+})

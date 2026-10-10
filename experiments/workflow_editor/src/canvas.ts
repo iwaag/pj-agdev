@@ -18,6 +18,8 @@ export interface CanvasContext {
   workflows: WorkflowSummary[]
   errorNodes: Set<string>
   readonly: boolean
+  // Run view: each node's recorded state, shown as text and color.
+  run?: Record<string, { state: string; label: string; title?: string }>
 }
 
 export interface CanvasEvents {
@@ -133,6 +135,13 @@ export class Canvas {
     })
     const head = h('div.node-head', icon(t, 'icon type-icon'), h('span.type-label', TYPE_LABEL[t] ?? (node.type || 'no type')))
     card.append(head, h('div.node-title', title))
+    const run = this.ctx.run?.[id]
+    if (run) {
+      card.classList.add('in-run', `run-${run.state}`)
+      card.dataset.state = run.state
+      card.setAttribute('aria-label', `${card.getAttribute('aria-label')}, ${run.label}`)
+      card.append(h(`div.run-status.state-${run.state}`, { title: run.title ?? run.label }, run.label))
+    }
     if (this.mode === 'compact') {
       if (node.type === 'delegate') {
         card.append(h(`div.delegate-target${target ? '' : '.missing'}`, '→ ', target ? (target.name || target.id) : node.workflow ? `${node.workflow} (missing)` : 'no target'))

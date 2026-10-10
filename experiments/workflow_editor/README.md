@@ -139,7 +139,11 @@ of the workflow and its transitive delegates in `definition/`, and
 `run.json`, whose current state must equal the replay of its history by
 `shared/run.ts`. `wfe run create` makes one; `wfe run start/complete/wait/
 ask/answer/take-up/delegate/…` append one history entry each; `wfe run show`
-and the browser's run view (`#/ws/<ws>/run/<workflow>/<run>`) show it.
+and the browser show it: the project view lists runs, and the run view
+(`#/ws/<ws>/run/<workflow>/<run>`, or `…/at/<devdocs commit>` for history)
+draws the run's fixed graph with each node's state as text and color, what
+waits for whom, questions (the person can record an answer there), related
+runs, reports and history.
 Nothing executes nodes; the executor records what it does, and the tools
 enforce readiness (a join waits for every predecessor; failures never satisfy
 a dependency). Files are saved, never committed. See
@@ -163,6 +167,17 @@ npm run seed -- --reset && node checks/step2.ts
 npm run seed -- --reset && node checks/step3.ts
 npm run seed -- --reset && node checks/step4.ts
 node checks/e2e.ts   # the p1 acceptance scenario; reseeds by itself
+```
+
+`checks/runs.ts` (p3/pre1) checks the run views on its own temporary project
+and private service (port 8196): node states as text, branches and joins,
+answers and the stale-view guard, delegation links, source edits, malformed
+records, outages, run switching, an open definition draft, history at a
+commit, and the update latency. It writes its record and screenshots to
+`pj-agdev/.local/workflow-editor-p3pre1/`:
+
+```sh
+npm run build && node checks/runs.ts [--repeat 20] [--keep]
 ```
 
 These start their own service on a temporary area and registry (after

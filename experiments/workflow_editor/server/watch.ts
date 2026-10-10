@@ -11,6 +11,10 @@
 //   whether it is checked out and its HEAD and reflog (file reads). Git runs
 //   with GIT_OPTIONAL_LOCKS=0, so it never takes the index lock.
 //
+// Runs (docs/runs.md) are observed with the definitions: each
+// devdocs/<workflow>/runs/<run>/run.json like a definition file, and each run
+// folder's top-level listing by stat only, so report bodies are never read.
+//
 // The registry file is watched with the definitions (and alone by the
 // workspace-less stream of the home page). A new stream takes its first
 // snapshot before it says hello, and every hello means "re-read everything":
@@ -21,10 +25,15 @@ import { join } from 'node:path'
 import type { ChangeEvent } from '../shared/api.ts'
 import { inside, readTextOrNull, textHash } from './files.ts'
 import { git } from './git.ts'
+import { ID_PATTERN } from '../shared/model.ts'
+import { RUN_ID } from '../shared/run.ts'
 import { WORKFLOW_FILE, WORKFLOWS_DIR, type Workspace } from './workspace.ts'
 
 const MAX_FILES = 200
+const MAX_RUNS = 500
 const REGISTRY = '\0registry'
+const RUN = '\0run:' // + <workflow>/<run>: run.json
+const RUN_FILES = '\0runfiles:' // + <workflow>/<run>: the folder's listing, by stat
 
 type Snapshot = Map<string, { sig: string; hash: string | null }>
 
@@ -90,16 +99,43 @@ export class Watcher {
     const dir = await inside(ws.root, WORKFLOWS_DIR)
     const files = (await readdir(dir).catch(() => [] as string[])).filter(f => WORKFLOW_FILE.test(f)).sort().slice(0, MAX_FILES)
     for (const f of files) await this.file(prev, next, `${WORKFLOWS_DIR}/${f}`, join(dir, f))
+    await this.runs(prev, next, ws)
     return next
+  }
+
+  private async runs(prev: Snapshot | null, next: Snapshot, ws: Workspace) {
+    const devdocs = await inside(ws.root, 'devdocs')
+    const tops = (await readdir(devdocs, { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && ID_PATTERN.test(d.name)).map(d => d.name).sort()
+    let count = 0
+    for (const wf of tops) {
+      const runs = (await readdir(join(devdocs, wf, 'runs'), { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && RUN_ID.test(d.name)).map(d => d.name).sort()
+      for (const run of runs) {
+        if (count++ >= MAX_RUNS) return
+        const dir = join(devdocs, wf, 'runs', run)
+        await this.file(prev, next, `${RUN}${wf}/${run}`, join(dir, 'run.json'))
+        const names = (await readdir(dir).catch(() => [] as string[])).sort().slice(0, MAX_FILES)
+        const sigs = await Promise.all(names.map(async n => `${n} ${await sigOf(join(dir, n))}`))
+        next.set(`${RUN_FILES}${wf}/${run}`, { sig: '', hash: textHash(sigs.join('\n')) })
+      }
+    }
   }
 
   diff(wsId: string, before: Snapshot, after: Snapshot): ChangeEvent[] {
     const events: ChangeEvent[] = []
     const keys = new Set([...before.keys(), ...after.keys()])
-    let listChanged = false
+    let listChanged = false, runsChanged = false
+    const runEvents = new Map<string, ChangeEvent>()
     for (const key of keys) {
       const a = before.get(key)?.hash ?? null, b = after.get(key)?.hash ?? null
       if (a === b && before.has(key) === after.has(key)) continue
+      if (key.startsWith(RUN) || key.startsWith(RUN_FILES)) {
+        const record = key.startsWith(RUN)
+        const run = key.slice(record ? RUN.length : RUN_FILES.length)
+        if (!record && (!before.has(key) || !after.has(key))) runsChanged = true
+        // One event per run and tick; its rev is run.json's content hash.
+        runEvents.set(run, { type: 'changed', workspace: wsId, kind: 'run', run, rev: after.get(`${RUN}${run}`)?.hash ?? null })
+        continue
+      }
       const byEditor = b !== null && this.ownWrites.get(`${wsId}\0${key}`) === b
       if (key === REGISTRY) events.push({ type: 'changed', workspace: wsId, kind: 'registry', rev: b })
       else if (key === 'project.yaml') events.push({ type: 'changed', workspace: wsId, kind: 'project', rev: b, byEditor })
@@ -110,6 +146,8 @@ export class Watcher {
       }
     }
     if (listChanged) events.push({ type: 'changed', workspace: wsId, kind: 'workflows', rev: null })
+    events.push(...runEvents.values())
+    if (runsChanged) events.push({ type: 'changed', workspace: wsId, kind: 'runs', rev: null })
     return events
   }
 

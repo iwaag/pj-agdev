@@ -1,6 +1,7 @@
 // Thin client for the local service. Errors carry the service's message.
 import type {
-  AddSubmoduleResponse, CreateProjectResult, ProjectResponse, RegisterResponse, SaveResponse, WorkflowResponse, WorkspacesResponse,
+  AddSubmoduleResponse, CreateProjectResult, ProjectResponse, RegisterResponse, RunOpResponse, RunResponse, RunSummary, SaveResponse,
+  WorkflowResponse, WorkspacesResponse,
 } from '../shared/api.ts'
 import type { ApprovalState } from '../shared/canonical.ts'
 import type { ApprovalKind, Project, Workflow } from '../shared/model.ts'
@@ -44,5 +45,13 @@ export const api = {
   saveWorkflow: (id: string, file: string, workflow: Workflow) => call<SaveResponse>('PUT', wf(id, file), { workflow }),
   approve: (id: string, file: string, kind: ApprovalKind, approver: string) =>
     call<SaveResponse & { state: ApprovalState }>('POST', `${wf(id, file)}/approve`, { kind, approver }),
+  runs: (id: string) => call<RunSummary[]>('GET', `${ws(id)}/runs`),
+  run: (id: string, workflow: string, run: string, rev?: string) =>
+    call<RunResponse>('GET', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}${rev ? `?rev=${encodeURIComponent(rev)}` : ''}`),
+  runFile: (id: string, workflow: string, run: string, path: string) =>
+    call<{ path: string; text: string }>('GET', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/file?path=${encodeURIComponent(path)}`),
+  // One run operation (docs/runs.md); `by` is the declared actor, `expectSeq` the sequence the view showed.
+  runOp: (id: string, workflow: string, run: string, op: Record<string, unknown> & { op: string; by: string; expectSeq?: number }) =>
+    call<RunOpResponse>('POST', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/ops`, op),
   eventsUrl: (id?: string) => (id ? `${ws(id)}/events` : '/api/events'),
 }

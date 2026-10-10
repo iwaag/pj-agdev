@@ -334,7 +334,8 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
         if (dirty() && ev.rev !== null) { externalChange = true; renderBanners(); return null }
         return ['content']
       }
-      if (ev.kind === 'registry') return null
+      // Run progress never touches a definition or its draft.
+      if (ev.kind === 'registry' || ev.kind === 'run' || ev.kind === 'runs') return null
       // Other workflows, the project, .gitmodules or Git state: references and repositories.
       return ['context']
     },

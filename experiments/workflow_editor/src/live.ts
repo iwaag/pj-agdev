@@ -6,7 +6,7 @@
 // the stream is reported to the view, which keeps it visible.
 import type { ChangeEvent } from '../shared/api.ts'
 
-export type Need = 'content' | 'context' | 'git' | 'registry'
+export type Need = 'content' | 'context' | 'git' | 'registry' | 'runs'
 
 export interface LiveOptions {
   // Maps an event to what must be re-read; null ignores it.

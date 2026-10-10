@@ -1,5 +1,5 @@
 // Project editor: metadata, sub-repositories, workspaces and workflows.
-import type { ProjectResponse, RepositoryStatus, WorkflowResponse, WorkspaceSummary } from '../shared/api.ts'
+import type { ProjectResponse, RepositoryStatus, RunSummary, WorkflowResponse, WorkspaceSummary } from '../shared/api.ts'
 import { PROJECT_SCHEMA, type Project } from '../shared/model.ts'
 import { validateProject } from '../shared/validate.ts'
 import { api, ApiError } from './api.ts'
@@ -8,6 +8,7 @@ import { h, short } from './dom.ts'
 import { diagnosticList } from './homeView.ts'
 import { icon } from './icons.ts'
 import type { ViewHandle } from './main.ts'
+import { ago, runHash, STATE_LABEL } from './runView.ts'
 
 const GROUPS: { key: RepositoryStatus['category'][]; title: string }[] = [
   { key: ['root', 'devdocs'], title: 'Fixed repositories' },
@@ -46,8 +47,12 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
   let createError = ''
   let disposed = false
   let connected = true
+  let runs: RunSummary[] | null = null
+  let runsError = ''
 
   const dirty = () => !!draft && !!saved && JSON.stringify(draft) !== JSON.stringify(saved)
+  // Kept across renders: run progress refreshes only this card.
+  const runsCard = h('section.card.runs-card')
 
   const header = h('header.topbar')
   const main = h('main.project-grid', h('p.muted', 'Loading project…'))
@@ -282,11 +287,45 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
     return card
   }
 
+  // Runs (docs/runs.md): every run of every workflow, newest first.
+  const loadRuns = serial<object>(async () => {
+    try {
+      const r = await api.runs(wsId)
+      if (disposed) return
+      runs = r; runsError = ''
+    } catch (e) { runsError = (e as Error).message }
+    renderRuns()
+  }, a => a)
+
+  function renderRuns() {
+    runsCard.replaceChildren(h('div.card-head', h('h2', 'Runs')),
+      h('p.muted.small', 'devdocs/<workflow>/runs/ — executions recorded by their executor (wfe run). Each follows its own fixed copy of the workflow.'))
+    if (runsError) runsCard.append(h('div.banner.error', runsError))
+    if (!runs) { runsCard.append(h('p.muted.small', 'Loading…')); return }
+    if (!runs.length) { runsCard.append(h('p.muted.small', 'No runs yet. An IDE agent creates one with wfe run create.')); return }
+    const sorted = runs.slice().sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? '') || a.ref.localeCompare(b.ref))
+    for (const r of sorted) {
+      const state = r.execution ?? 'problem'
+      runsCard.append(h('div.run-row', { dataset: { run: r.ref } },
+        h('div.wf-main',
+          h('strong', r.ref),
+          h('span.muted.small', r.problem ? r.dir : `${r.input === 'request' ? 'request' : 'braindump'} · ${r.executor} · updated ${ago(r.updated)}${r.parent ? ` · child of ${r.parent}` : ''}`),
+          h('div.chips',
+            r.problem ? h('span.chip.error', `cannot be used — ${r.problem.code ?? r.problem.kind}: ${r.problem.message}`) : h(`span.state-chip.state-${state}`, STATE_LABEL[state] ?? state),
+            ...Object.entries(r.counts ?? {}).filter(([, n]) => n).map(([k, n]) => h('span.chip', `${n} ${k}`)),
+            r.decision ? h(`span.chip.${r.decision === 'accepted' ? 'ok' : 'error'}`, r.decision) : null),
+          ...(r.waiting ?? []).map(w => h('span.small', `⏳ ${w.node} — next move: ${w.holder}`)),
+          r.ready?.length ? h('span.small', `▶ ready: ${r.ready.join(', ')}`) : null,
+          r.failed?.length ? h('span.small.error', `✖ failed: ${r.failed.join(', ')}`) : null),
+        h('a.button', { href: runHash(wsId, r.ref) }, 'Open run')))
+    }
+  }
+
   function render() {
     renderHeader()
     main.replaceChildren(
       h('div.col', renderProjectCard(), renderRepos()),
-      h('div.col', renderWorkspaces(), renderWorkflows()),
+      h('div.col', renderWorkspaces(), runsCard, renderWorkflows()),
     )
   }
 
@@ -299,13 +338,19 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
         render()
         return null
       }
+      if (ev.kind === 'run' || ev.kind === 'runs') return ['runs']
       return ev.kind === 'registry' ? ['registry'] : ['content']
     },
-    flush: (needs, all) => load({ workspaces: all || needs.has('registry') }),
+    flush: async (needs, all) => {
+      if (all || needs.has('runs')) void loadRuns({})
+      if (all || needs.has('content') || needs.has('registry')) await load({ workspaces: all || needs.has('registry') })
+    },
     state: c => { connected = c; renderHeader() },
   })
 
   void load({ workspaces: true, force: true })
+  void loadRuns({})
+  renderRuns()
   return {
     dispose: () => { disposed = true; stream.close() },
     isDirty: dirty,
