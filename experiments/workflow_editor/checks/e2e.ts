@@ -3,10 +3,10 @@
 // Writers take turns: every external edit happens while the UI waits.
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { DEFAULT_ROOT, seed } from '../scripts/seed.ts'
+import { seed } from '../scripts/seed.ts'
 import { gitOk, LOCAL_TRANSPORT } from '../server/git.ts'
 import { parseWorkflow } from '../server/yamlDoc.ts'
-import { BASE, check, done, open, shot, wsDir } from './lib.ts'
+import { BASE, check, done, FIXTURE, open, shot, wsDir } from './lib.ts'
 import { addBinding, addNode, connectDrag, connectVia, dragNode, ideSave, pillStatus, save, selectNode, waitFor } from './ui.ts'
 
 const A = wsDir('a'), B = wsDir('b')
@@ -17,7 +17,7 @@ const commitConfig = { 'user.name': 'Fixture Author', 'user.email': 'fixture@exa
 
 // 1 ------------------------------------------------------------------------
 step(1, 'Seed sources, a project with devdocs/study/wedo/other submodules, two workspaces')
-await seed(DEFAULT_ROOT, true)
+await seed(FIXTURE, true)
 const modules = await gitOk(A, ['config', '-f', '.gitmodules', '--get-regexp', 'path$'])
 check(['devdocs', 'study/', 'wedo/', 'assets/shared'].every(p => modules.includes(p)), 'project records devdocs, study, wedo and other submodules')
 check(await stat(join(B, 'project.yaml')).then(() => true), 'workspace B is a second clone of the same project')

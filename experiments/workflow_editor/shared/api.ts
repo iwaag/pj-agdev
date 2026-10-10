@@ -26,6 +26,37 @@ export interface WorkspaceSummary {
   }
 }
 
+// The registry and the authoring area as the service sees them.
+export interface WorkspacesResponse {
+  approver: string
+  workspaces: WorkspaceSummary[]
+  registry: { path: string; exists: boolean }
+  area: { path: string; sources: string } // where browser-created projects and new sources go
+}
+
+// Something a project root lacks, with the action that fixes it.
+export interface Diagnostic { severity: 'error' | 'warning'; code: string; message: string; fix?: string }
+
+export interface CreateStep { name: string; status: 'done' | 'kept' | 'failed'; detail: string }
+export interface CreateProjectResult {
+  ok: boolean
+  message: string
+  root: string
+  workspace?: string
+  steps: CreateStep[]
+  commits: { repository: string; commit: string; message: string }[]
+  resumable?: boolean // an unfinished creation can be continued with resume
+  diagnostics?: Diagnostic[]
+}
+
+export interface RegisterResponse {
+  ok: boolean
+  status: 'registered' | 'already-registered' | 'refused'
+  message: string
+  registration?: { id: string; label: string; host: string; path: string }
+  diagnostics: Diagnostic[]
+}
+
 export type RepoCategory = 'root' | 'devdocs' | 'study' | 'wedo' | 'other'
 
 export interface RepositoryStatus extends RepositoryInfo {
@@ -61,6 +92,7 @@ export interface ProjectResponse {
   repositories: RepositoryStatus[]
   workflows: WorkflowSummary[]
   workflowsDir: { exists: boolean; reason?: string }
+  structure: Diagnostic[]
 }
 
 export interface WorkflowResponse {

@@ -1,4 +1,4 @@
-# Workflow and project editor (experiment, `workflow_editor` p1)
+# Workflow and project editor (experiment, `workflow_editor` p1, p2/pre1)
 
 A standalone MVP that edits Git-backed project and workflow definitions from a
 browser UI while the same YAML files stay editable in any text editor or agent
@@ -11,11 +11,13 @@ IDE. The file contract is in [docs/contract.md](docs/contract.md).
 | Path | Purpose |
 | --- | --- |
 | `shared/` | Models, validation, canonicalization and digests (service and browser) |
-| `server/` | Local service: YAML round-trip, Git inspection, file persistence, watching |
+| `server/` | Local service: YAML round-trip, Git inspection, file persistence, watching, project creation and registration |
+| `cli/wfe.ts` | `wfe`, the command-line surface over the same modules (`wfe help`) |
 | `src/` | Browser UI (TypeScript, Vite, DOM cards and SVG edges) |
 | `examples/` | Synthetic project and workflow files; `invalid/` for validation tests |
 | `scripts/seed.ts` | Builds the local fixture repositories and workspaces |
 | `test/` | `node --test` suites |
+| `checks/` | Browser checks and the update measurement (`measure.ts`) |
 
 ## Fixture
 
@@ -47,14 +49,60 @@ Single process, serving the production build:
 npm start         # builds, then serves UI and API on http://127.0.0.1:8095
 ```
 
-Open the page and pick a workspace. The service reads the registry at
+The page opens on the projects list (`#/`). The service reads the registry at
 `pj-agdev/.local/workflow-editor/registry.json` by default
-(`--registry <file>` or `WFE_REGISTRY` to change; `--port`, `--poll-ms`).
+(`--registry <file>` or `WFE_REGISTRY` to change; `--area`, `--port`,
+`--poll-ms`). `wfe serve` builds the UI and starts the service for the
+registry it is given.
 
 The service binds to 127.0.0.1 only and answers only to `127.0.0.1` /
 `localhost` host names. Browser writes are accepted from its own origin and
 the Vite dev origin; clients without an `Origin` header (curl, scripts) are
 local processes and may write too.
+
+## Projects: create and register
+
+A project is created or registered from the browser's home page (`#/`,
+"Create project" / "Register workspace") or with `wfe create` /
+`wfe register`. Both run the same operations (`server/create.ts`,
+`server/registry.ts`):
+
+- **Create** makes a Git repository with `project.yaml`, `.gitignore`
+  (`.local/`), an empty `.local/` and `devdocs` as a submodule, then registers
+  it. devdocs comes from a new local source `sources/<id>-devdocs.git` in the
+  authoring area, or from a given existing repository. The submodule URL is
+  relative to the project root. Two commits are made with the person's Git
+  identity (the new source's initial commit and the root's); a missing
+  identity stops creation before anything is written. An occupied destination
+  is refused. A creation that stops partway reports what was done and is
+  continued with resume ("Continue creation" / `--resume`).
+- **Register** records the Git root containing a directory. Repeating it
+  changes nothing. What the project lacks is reported with its fix.
+
+The browser creates projects only beneath the service's authoring area
+(`--area`, default: the registry's directory); `wfe create` is the caller's
+own process and takes any destination. A missing registry is an empty setup
+state; a malformed one is shown as an error and never overwritten.
+
+## Command line
+
+`wfe help` lists the commands; `wfe help <command>` says what each reads or
+changes, its inputs and its result. No command needs the running service.
+
+```sh
+node cli/wfe.ts help          # from the checkout (or: npm run wfe -- help)
+```
+
+| Command | Purpose |
+| --- | --- |
+| `create`, `register`, `list`, `status` | projects, workspaces, Git state |
+| `add-repo` | `git submodule add`, as the project view does |
+| `workflow new`, `validate`, `approve`, `arrange` | workflows: template, validation, approvals, auto-arrange |
+| `serve` | build the UI and start the service for this registry |
+
+`--registry` / `WFE_REGISTRY`, `--area` / `WFE_AREA` and `--port` /
+`WFE_PORT` select the registry, area and service port, with the same defaults
+as the service.
 
 ## Checks
 
@@ -64,8 +112,10 @@ npm run check   # type check, tests and production build
 ```
 
 Browser checks drive the real UI with `playwright-core` and its cached
-Chromium. They need a fresh seed, the service and the dev server, and write
-screenshots to `pj-agdev/.local/workflow-editor/screenshots/`:
+Chromium. The p1 checks need a fresh seed, the service and the dev server,
+and write screenshots to `pj-agdev/.local/workflow-editor/screenshots/`.
+`WFE_FIXTURE=<dir>` and `WFE_URL=<url>` point them at a private seed
+(`npm run seed -- --root <dir>`) and service instead:
 
 ```sh
 npm run seed -- --reset && node checks/step2.ts
@@ -74,9 +124,18 @@ npm run seed -- --reset && node checks/step4.ts
 node checks/e2e.ts   # the p1 acceptance scenario; reseeds by itself
 ```
 
+These start their own service on a temporary area and registry (after
+`npm run build`):
+
+```sh
+node checks/setup.ts                  # home view: create, register, registry states
+node checks/measure.ts --label <name> --out <file.json>   # update latency, load, probes
+```
+
 ## Not in p1
 
 Workflow execution, agent chat, Gitea, agdevworld integration, migration of
 existing projects, remote workspace discovery, conditional branches, loops,
 retries, author authentication, OS-level readonly enforcement and concurrent
-editing. The editor never commits or pushes; Git publishing is done by hand.
+editing. The editor never commits or pushes after a project's initial
+commits; Git publishing is done by hand.

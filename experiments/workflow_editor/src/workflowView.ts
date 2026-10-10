@@ -10,7 +10,7 @@ import { Canvas, TYPE_LABEL, type Selection } from './canvas.ts'
 import { h, when } from './dom.ts'
 import { icon } from './icons.ts'
 import { renderInspector } from './inspector.ts'
-import { completeLayout, freeSlot, type DisplayMode } from './layout.ts'
+import { autoArrange, completeLayout, freeSlot, type DisplayMode } from '../shared/layout.ts'
 import type { ViewHandle } from './main.ts'
 
 const MODE_KEY = 'workflow-editor.mode'
@@ -84,7 +84,7 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
   }
   toolbar.append(h('button.arrange', {
     title: 'Lay the graph out by rank. Only positions change; approvals are unaffected.',
-    onclick: () => { if (!draft || readonly()) return; draft.layout.nodes = {}; completeLayout(draft); update(false); canvas.fit() },
+    onclick: () => { if (!draft || readonly()) return; autoArrange(draft); update(false); canvas.fit() },
   }, 'Auto-arrange'))
   toolbar.append(h('span.toolbar-hint', 'Drag a card to move it, drag its right handle onto another card to connect, drag the background to pan.'))
 
@@ -210,6 +210,7 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
 
   function renderCrumbs() {
     crumbs.replaceChildren(
+      h('a', { href: '#/' }, 'Projects'), h('span.sep', '/'),
       h('a', { href: `#/ws/${encodeURIComponent(wsId)}` }, projectName), h('span.sep', '/'),
       h('span.muted', `workflows/${file}`), h('span.pill', `workspace ${wsId}`))
   }

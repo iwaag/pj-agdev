@@ -1,8 +1,7 @@
-// Hash routes: #/ws/<workspace> (project editor) and
-// #/ws/<workspace>/wf/<file> (workflow editor).
+// Hash routes: #/ (projects, create and register), #/ws/<workspace>
+// (project editor) and #/ws/<workspace>/wf/<file> (workflow editor).
 import './styles.css'
-import { api } from './api.ts'
-import { h } from './dom.ts'
+import { renderHomeView } from './homeView.ts'
 import { renderProjectView } from './projectView.ts'
 import { renderWorkflowView } from './workflowView.ts'
 
@@ -14,7 +13,7 @@ export interface ViewHandle { dispose: () => void; isDirty: () => boolean }
 let current: ViewHandle | undefined
 let lastHash = location.hash
 
-async function route() {
+function route() {
   if (current?.isDirty() && location.hash !== lastHash) {
     if (!confirm('Discard unsaved changes in this view?')) { history.replaceState(null, '', lastHash); return }
   }
@@ -27,14 +26,11 @@ async function route() {
   } else if (parts[0] === 'ws' && parts[1]) {
     current = renderProjectView(app, parts[1])
   } else {
-    const list = await api.workspaces().catch(e => { app.append(h('p.error', String(e.message))); return null })
-    const first = list?.workspaces.find(w => w.observed.available)
-    if (first) { location.replace(`#/ws/${encodeURIComponent(first.id)}`); return }
-    app.append(h('p.empty', 'No registered workspace is available. Run `npm run seed -- --reset` or edit the registry.'))
+    current = renderHomeView(app)
   }
   dispose = current?.dispose
 }
 
-window.addEventListener('hashchange', () => void route())
+window.addEventListener('hashchange', route)
 window.addEventListener('beforeunload', e => { if (current?.isDirty()) e.preventDefault() })
-void route()
+route()

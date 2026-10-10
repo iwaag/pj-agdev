@@ -9,7 +9,7 @@ import {
 } from '../shared/model.ts'
 import { delegateTargets, hasErrors, validateProject, validateWorkflow, type ValidationContext } from '../shared/validate.ts'
 import type {
-  AddSubmoduleResponse, FileProblem, ProjectResponse, RepoCategory, RepositoryStatus,
+  AddSubmoduleResponse, Diagnostic, FileProblem, ProjectResponse, RepoCategory, RepositoryStatus,
   WorkflowResponse, WorkflowSummary,
 } from '../shared/api.ts'
 import { atomicWrite, createExclusive, inside, readTextOrNull, textHash } from './files.ts'
@@ -110,6 +110,42 @@ export class Workspace {
     return status
   }
 
+  // What this project root lacks, each with the action that fixes it.
+  async structure(): Promise<{ projectId?: string; projectName?: string; diagnostics: Diagnostic[] }> {
+    const root = this.root
+    const out: Diagnostic[] = []
+    let projectId: string | undefined, projectName: string | undefined
+    const text = await readTextOrNull(join(root, 'project.yaml')).catch(() => null)
+    if (text === null) {
+      out.push({ severity: 'error', code: 'project-missing', message: 'project.yaml does not exist', fix: 'Write project.yaml (schema ag.project.v1, see docs/contract.md), or use "Create project.yaml" in the project view.' })
+    } else {
+      const parsed = parseProject(text)
+      if (!parsed.ok) {
+        out.push({ severity: 'error', code: 'project-unreadable', message: `project.yaml: ${parsed.problem.message}${'line' in parsed.problem && parsed.problem.line ? ` (line ${parsed.problem.line})` : ''}`, fix: 'Fix the YAML by hand.' })
+      } else {
+        projectId = parsed.model.id || undefined
+        projectName = parsed.model.name || undefined
+        for (const i of validateProject(parsed.model)) out.push({ severity: 'warning', code: `project-${i.code}`, message: `project.yaml: ${i.message}`, fix: 'Edit project.yaml or the project view.' })
+      }
+    }
+    const ignore = await readTextOrNull(join(root, '.gitignore')).catch(() => null)
+    if (!ignore || !ignore.split('\n').some(l => /^\/?\.local\/?\s*$/.test(l))) {
+      out.push({ severity: 'warning', code: 'gitignore-local', message: '.gitignore does not ignore .local/', fix: 'Add the line ".local/" to .gitignore.' })
+    }
+    const subs = await this.submodulePaths()
+    if (!subs.some(s => s.path.replace(/\/$/, '') === 'devdocs')) {
+      out.push({ severity: 'error', code: 'devdocs-missing', message: 'devdocs is not a submodule of this project', fix: 'wfe add-repo devdocs <location of a devdocs repository> (or "Add submodule" in the project view).' })
+    } else {
+      const dir = await this.workflowsDir()
+      if (!dir.exists && dir.reason === 'devdocs submodule is not initialized') {
+        out.push({ severity: 'error', code: 'devdocs-uninitialized', message: 'devdocs is not checked out in this workspace', fix: 'git submodule update --init devdocs' })
+      } else if (!dir.exists) {
+        out.push({ severity: 'warning', code: 'workflows-missing', message: 'devdocs/workflows/ does not exist yet', fix: 'Create the directory devdocs/workflows/.' })
+      }
+    }
+    return { projectId, projectName, diagnostics: out }
+  }
+
   // ---- project.yaml ---------------------------------------------------
 
   async readProject(): Promise<{ text: string | null; project?: Project; problem?: FileProblem }> {
@@ -121,13 +157,13 @@ export class Workspace {
   }
 
   async projectResponse(): Promise<ProjectResponse> {
-    const [read, repositories, wf] = await Promise.all([this.readProject(), this.repositories(), this.workflowSummaries()])
+    const [read, repositories, wf, structure] = await Promise.all([this.readProject(), this.repositories(), this.workflowSummaries(), this.structure()])
     return {
       workspace: this.reg.id,
       rev: read.text === null ? null : textHash(read.text),
       project: read.project, problem: read.problem,
       issues: read.project ? validateProject(read.project) : [],
-      repositories, workflows: wf.list, workflowsDir: wf.dir,
+      repositories, workflows: wf.list, workflowsDir: wf.dir, structure: structure.diagnostics,
     }
   }
 

@@ -1,6 +1,6 @@
 // Thin client for the local service. Errors carry the service's message.
 import type {
-  AddSubmoduleResponse, ProjectResponse, SaveResponse, WorkflowResponse, WorkspaceSummary,
+  AddSubmoduleResponse, CreateProjectResult, ProjectResponse, RegisterResponse, SaveResponse, WorkflowResponse, WorkspacesResponse,
 } from '../shared/api.ts'
 import type { ApprovalState } from '../shared/canonical.ts'
 import type { ApprovalKind, Project, Workflow } from '../shared/model.ts'
@@ -31,7 +31,10 @@ const ws = (id: string) => `/api/workspaces/${encodeURIComponent(id)}`
 const wf = (id: string, file: string) => `${ws(id)}/workflows/${encodeURIComponent(file)}`
 
 export const api = {
-  workspaces: () => call<{ approver: string; workspaces: WorkspaceSummary[] }>('GET', '/api/workspaces'),
+  workspaces: () => call<WorkspacesResponse>('GET', '/api/workspaces'),
+  createProject: (input: { id: string; name: string; intent: string; goals: string[]; dir?: string; devdocsSource?: string; resume?: boolean }) =>
+    call<CreateProjectResult>('POST', '/api/projects', input, [422]),
+  register: (path: string, id?: string) => call<RegisterResponse>('POST', '/api/workspaces', { path, id }, [422]),
   project: (id: string) => call<ProjectResponse>('GET', `${ws(id)}/project`),
   saveProject: (id: string, project: Project) => call<SaveResponse>('PUT', `${ws(id)}/project`, { project }),
   addSubmodule: (id: string, path: string, url: string) => call<AddSubmoduleResponse>('POST', `${ws(id)}/submodules`, { path, url }, [422]),

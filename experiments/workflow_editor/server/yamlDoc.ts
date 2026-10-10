@@ -86,14 +86,14 @@ export function parseProject(text: string): Parsed<Project> {
 // "list" is a sequence compared item by item; "scalar" is a leaf.
 type Shape =
   | { kind: 'scalar' }
-  | { kind: 'list'; item: Shape }
+  | { kind: 'list'; item: Shape; block?: boolean }
   | { kind: 'record'; fields: Record<string, Shape>; flow?: boolean }
   | { kind: 'dict'; value: Shape }
 
 const scalar: Shape = { kind: 'scalar' }
 const record = (fields: Record<string, Shape>, flow = false): Shape => ({ kind: 'record', fields, flow })
 const dict = (value: Shape): Shape => ({ kind: 'dict', value })
-const list = (item: Shape): Shape => ({ kind: 'list', item })
+const list = (item: Shape, block = false): Shape => ({ kind: 'list', item, block })
 
 const approval = record({ digest: scalar, approver: scalar, at: scalar })
 export const WORKFLOW_SHAPE = record({
@@ -104,7 +104,8 @@ export const WORKFLOW_SHAPE = record({
   approvals: record({ intent: approval, definition: approval }),
   layout: record({ nodes: dict(record({ x: scalar, y: scalar }, true)) }),
 })
-export const PROJECT_SHAPE = record({ schema: scalar, id: scalar, name: scalar, intent: scalar, goals: list(scalar) })
+// Goals are sentences: a new goals list is written one item per line.
+export const PROJECT_SHAPE = record({ schema: scalar, id: scalar, name: scalar, intent: scalar, goals: list(scalar, true) })
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
@@ -142,7 +143,7 @@ function styleNode(node: unknown, shape: Shape, flow: boolean) {
     return
   }
   if (isSeq(node)) {
-    if (flow || (shape.kind === 'list' && shape.item.kind === 'scalar')) node.flow = true
+    if (flow || (shape.kind === 'list' && shape.item.kind === 'scalar' && !shape.block)) node.flow = true
     if (shape.kind === 'list') for (const item of node.items) styleNode(item, shape.item, false)
     return
   }

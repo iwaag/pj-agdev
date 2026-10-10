@@ -4,6 +4,7 @@ import { PROJECT_SCHEMA, type Project } from '../shared/model.ts'
 import { validateProject } from '../shared/validate.ts'
 import { api, ApiError } from './api.ts'
 import { h, short } from './dom.ts'
+import { diagnosticList } from './homeView.ts'
 import { icon } from './icons.ts'
 import type { ViewHandle } from './main.ts'
 
@@ -75,7 +76,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
       onchange: (e: Event) => { location.hash = `#/ws/${encodeURIComponent((e.target as HTMLSelectElement).value)}` },
     }, workspaces.map(w => h('option', { value: w.id, selected: w.id === wsId, disabled: !w.observed.available }, `${w.label}${w.observed.available ? '' : ' (unavailable)'}`)))
     header.replaceChildren(
-      h('div.crumbs', h('span.muted', 'Project'), h('span.sep', '/'), h('strong', name),
+      h('div.crumbs', h('a', { href: '#/' }, 'Projects'), h('span.sep', '/'), h('strong', name),
         h('span.pill.ok', icon('check', 'icon small'), `workspace ${wsId}`)),
       h('div.top-actions', h('label.ws-label', 'Workspace ', select)),
     )
@@ -85,6 +86,9 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
     const card = h('section.card.project-meta')
     card.append(h('h2', 'Project'))
     if (!data) return card
+    // project.yaml problems are shown below; the rest of the structure here.
+    const missing = data.structure.filter(d => !d.code.startsWith('project-'))
+    if (missing.length) card.append(h('div.banner.warn', 'This project is incomplete:'), diagnosticList(missing)!)
     if (data.problem) {
       card.append(h('div.banner.error', `project.yaml cannot be edited: ${data.problem.message}${data.problem.line ? ` (line ${data.problem.line})` : ''}. Fix the file; the view reloads when it changes.`))
       if (!saved) return card

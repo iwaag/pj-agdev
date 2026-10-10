@@ -1,9 +1,10 @@
-// Positions for the canvas. Stored positions (layout.nodes) are in compact
+// Positions for the canvas, and the auto-arrange used by the UI and the CLI
+// (`wfe arrange`). Stored positions (layout.nodes) are in compact
 // units; mini mode draws the same positions scaled down, so both modes show
 // the same arrangement. Nodes without a stored position are placed by rank
 // (longest path from a source), in file order within a rank, below anything
 // already occupying that column.
-import type { Point, Workflow } from '../shared/model.ts'
+import type { Point, Workflow } from './model.ts'
 
 export type DisplayMode = 'compact' | 'mini'
 
@@ -54,9 +55,16 @@ export function positions(w: Workflow): Map<string, Point> {
   return out
 }
 
-// Fills in every missing position (used by "Store layout").
+// Fills in every missing position.
 export function completeLayout(w: Workflow) {
   for (const [id, p] of positions(w)) w.layout.nodes[id] = { x: Math.round(p.x), y: Math.round(p.y) }
+}
+
+// "Auto-arrange": discards stored positions and lays the graph out by rank.
+// Only layout changes, so approvals are unaffected.
+export function autoArrange(w: Workflow) {
+  w.layout.nodes = {}
+  completeLayout(w)
 }
 
 // A free slot for a new node: right of the selected node if there is one,

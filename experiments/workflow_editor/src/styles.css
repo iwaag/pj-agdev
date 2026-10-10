@@ -266,3 +266,11 @@ pre { white-space: pre-wrap; font-size: 12px; background: rgba(0,0,0,.05); paddi
 .add-binding input { width: 90px; }
 .add-binding select { width: auto; max-width: 160px; }
 .toolbar .arrange { font-size: 13px; padding: 4px 10px; }
+
+/* home: projects, create and register */
+ul.diagnostics, ul.steps { margin: 6px 0; padding-left: 18px; font-size: 13px; }
+ul.diagnostics li.error, ul.steps li.failed { color: var(--error); }
+ul.diagnostics li.warning { color: var(--warn); }
+ul.diagnostics .fix { color: var(--muted); }
+ul.steps li.kept { color: var(--muted); }
+a.button[hidden] { display: none; }

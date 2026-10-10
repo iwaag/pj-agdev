@@ -1,16 +1,20 @@
 // HTTP routes of the local service. JSON in, JSON out; the UI is one client.
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { readFile, stat } from 'node:fs/promises'
-import { extname, join, normalize, sep } from 'node:path'
-import type { WorkspaceSummary } from '../shared/api.ts'
+import { mkdir, readFile, stat } from 'node:fs/promises'
+import { dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
+import type { WorkspaceSummary, WorkspacesResponse } from '../shared/api.ts'
 import { APPROVAL_KINDS, type ApprovalKind, type Project, type Workflow } from '../shared/model.ts'
-import { BoundaryError } from './files.ts'
-import { loadRegistry, observe, type Registry } from './registry.ts'
+import { createProject } from './create.ts'
+import { BoundaryError, inside } from './files.ts'
+import { loadRegistry, observe, registerWorkspace, RegistryError, type Registry } from './registry.ts'
 import type { Watcher } from './watch.ts'
 import { RequestError, Workspace } from './workspace.ts'
 
 export interface ServiceConfig {
   registryFile: string
+  // The authoring area: browser-created projects go beneath it and new
+  // devdocs sources into its sources/. Defaults to the registry's directory.
+  area?: string
   allowedOrigins: string[]
   allowedHosts: string[]
   distDir?: string // serve the built UI from the same origin
@@ -76,6 +80,8 @@ const MIME: Record<string, string> = {
 
 export function createHandler(config: ServiceConfig) {
   async function registry(): Promise<Registry> { return loadRegistry(config.registryFile) }
+  const area = config.area ?? dirname(config.registryFile)
+  const texts = (v: unknown) => Array.isArray(v) && v.every(x => typeof x === 'string')
 
   async function workspace(id: string): Promise<Workspace> {
     const reg = (await registry()).workspaces.find(w => w.id === id)
@@ -130,7 +136,33 @@ export function createHandler(config: ServiceConfig) {
           const o = await observe(w)
           return { id: w.id, label: w.label, host: w.host, observed: { available: o.available, reason: o.reason, projectId: o.projectId, projectName: o.projectName, branch: o.branch, head: o.head } }
         }))
-        return send(res, 200, { approver: reg.approver, workspaces: list })
+        const out: WorkspacesResponse = { approver: reg.approver, workspaces: list, registry: { path: config.registryFile, exists: reg.exists }, area: { path: area, sources: join(area, 'sources') } }
+        return send(res, 200, out)
+      }
+      // Registration writes only the registry. A relative path is taken from the authoring area.
+      if (a === 'workspaces' && !wsId && method === 'POST') {
+        const input = await body(req) as Record<string, unknown>
+        if (typeof input.path !== 'string' || !input.path.trim()) throw new RequestError(400, 'path is required')
+        const id = typeof input.id === 'string' && input.id.trim() ? input.id.trim() : undefined
+        const path = input.path.trim()
+        const result = await registerWorkspace(config.registryFile, isAbsolute(path) ? path : join(area, path), { id })
+        return send(res, result.ok ? 200 : 422, result)
+      }
+      // Creation writes only beneath the authoring area (the CLI takes any destination).
+      if (a === 'projects' && !wsId && method === 'POST') {
+        const input = await body(req) as Record<string, unknown>
+        for (const k of ['id', 'name']) if (typeof input[k] !== 'string') throw new RequestError(400, `${k} is required`)
+        if (input.goals !== undefined && !texts(input.goals)) throw new RequestError(400, 'goals must be a list of text')
+        await mkdir(area, { recursive: true })
+        const rel = typeof input.dir === 'string' && input.dir.trim() ? input.dir.trim() : `pj-${input.id}`
+        const dir = await inside(area, rel)
+        const result = await createProject({
+          dir, id: String(input.id).trim(), name: String(input.name), intent: typeof input.intent === 'string' ? input.intent : '',
+          goals: (input.goals as string[] | undefined) ?? [], sourcesDir: join(area, 'sources'),
+          devdocsSource: typeof input.devdocsSource === 'string' && input.devdocsSource.trim() ? input.devdocsSource.trim() : undefined,
+          registryFile: config.registryFile, resume: input.resume === true,
+        })
+        return send(res, result.ok ? 201 : 422, result)
       }
       if (a !== 'workspaces' || !wsId) throw new RequestError(404, 'not found')
 
@@ -185,6 +217,7 @@ export function createHandler(config: ServiceConfig) {
       if (res.headersSent) { res.end(); return }
       if (e instanceof RequestError) return send(res, e.status, { error: e.message, detail: e.detail })
       if (e instanceof BoundaryError) return send(res, 400, { error: e.message })
+      if (e instanceof RegistryError) return send(res, 500, { error: e.message })
       const err = e as NodeJS.ErrnoException
       // File system failures (permissions, disk) are reported, not hidden.
       if (err.code) return send(res, 500, { error: `${err.code}: ${err.message}` })

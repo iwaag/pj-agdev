@@ -5,7 +5,7 @@ import type { RepositoryStatus, WorkflowSummary } from '../shared/api.ts'
 import { NODE_TYPES, normalizeRepoPath, type Point, type Workflow } from '../shared/model.ts'
 import { h } from './dom.ts'
 import { icon } from './icons.ts'
-import { METRICS, PAD, positions, type DisplayMode } from './layout.ts'
+import { METRICS, PAD, positions, type DisplayMode } from '../shared/layout.ts'
 
 const NS = 'http://www.w3.org/2000/svg'
 export const TYPE_LABEL: Record<string, string> = { study: 'Study', do: 'Do', delegate: 'Delegate', talk: 'Talk' }
