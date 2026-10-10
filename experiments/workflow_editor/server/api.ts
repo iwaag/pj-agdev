@@ -115,6 +115,11 @@ export function createHandler(config: ServiceConfig) {
       const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
       if (parts[0] !== 'api') {
         if (method === 'GET' && await serveStatic(res, url)) return
+        if (method === 'GET' && !config.distDir && url.pathname === '/') {
+          res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('This is the workflow editor API only.\nOpen the UI through the Vite dev server (npm run dev → http://127.0.0.1:5175),\nor run `npm start` to serve the built UI here.\n')
+          return
+        }
         throw new RequestError(404, 'not found')
       }
       const [, a, wsId, b, file, action] = parts

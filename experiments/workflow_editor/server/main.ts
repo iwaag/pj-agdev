@@ -31,7 +31,13 @@ const handler = createHandler({
   watcher: new Watcher(pollMs),
 })
 
-createServer((req, res) => void handler(req, res)).listen(port, '127.0.0.1', () => {
+const server = createServer((req, res) => void handler(req, res))
+server.on('error', (e: NodeJS.ErrnoException) => {
+  if (e.code === 'EADDRINUSE') console.error(`Port ${port} is already in use on 127.0.0.1 — another editor service is probably running. Stop it, or pass --port.`)
+  else console.error(e)
+  process.exit(1)
+})
+server.listen(port, '127.0.0.1', () => {
   console.log(`workflow editor service on http://127.0.0.1:${port}${serveDist ? ' (serving dist/)' : ''}`)
   console.log(`registry: ${registryFile}`)
 })
