@@ -1,11 +1,12 @@
 // Workflow editor: top area (name, intent, validation, save, approvals),
 // canvas and inspector. The file on disk is the authority; the view holds a
 // draft until an explicit Save, and guards the draft against external changes.
-import type { ChangeEvent, FileProblem, WorkflowResponse } from '../shared/api.ts'
+import type { FileProblem, WorkflowResponse } from '../shared/api.ts'
 import { approvalStates, canonicalJson, type ApprovalState } from '../shared/canonical.ts'
 import { NODE_TYPES, cloneWorkflow, type ApprovalKind, type NodeType, type Workflow } from '../shared/model.ts'
 import { hasErrors, validateWorkflow, type ValidationContext } from '../shared/validate.ts'
 import { api } from './api.ts'
+import { live, serial } from './live.ts'
 import { Canvas, TYPE_LABEL, type Selection } from './canvas.ts'
 import { h, when } from './dom.ts'
 import { icon } from './icons.ts'
@@ -35,6 +36,7 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
   let approvalError = ''
   let defaultApprover = ''
   let disposed = false
+  let connected = true
 
   const dirty = () => !!draft && !!saved && canonicalJson(draft) !== canonicalJson(saved)
   const readonly = () => !!problem
@@ -45,6 +47,7 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
   const intentInput = h('textarea.intent-text', { rows: 3, 'aria-label': 'Workflow intent', placeholder: 'What this workflow is for. Everything else is reviewed against it.', disabled: true })
   const crumbs = h('div.crumbs')
   const saveButton = h('button.primary', { onclick: () => void save() }, 'Save')
+  const refreshButton = h('button', { title: 'Re-read the file and the repositories\' Git state now', onclick: () => void load({ refresh: true }) }, 'Refresh')
   const saveStateEl = h('span.save-state')
   const modeSwitch = h('div.mode-switch', { role: 'group', 'aria-label': 'Display mode' })
   const approvalBox = h('div.approval-box')
@@ -67,7 +70,7 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
 
   root.append(
     h('header.wf-top',
-      h('div.wf-row1', crumbs, h('div.top-actions', modeSwitch, saveStateEl, saveButton)),
+      h('div.wf-row1', crumbs, h('div.top-actions', modeSwitch, refreshButton, saveStateEl, saveButton)),
       h('div.wf-row2',
         h('div.wf-title', nameInput, approvalBox),
         h('div.intent-box', icon('intent', 'icon intent-icon'), h('div.intent-main', h('label', { htmlFor: 'intent' }, 'Workflow Intent (Ground Truth)'), intentInput))),
@@ -98,18 +101,28 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
     }
   }
 
-  async function load(opts: { force?: boolean; contextOnly?: boolean } = {}) {
+  interface LoadOpts { force?: boolean; contextOnly?: boolean; refresh?: boolean }
+  // Loads run one at a time; merged requests never lose a content reload.
+  const load = serial<LoadOpts>(async opts => {
     try {
-      const r = await api.workflow(wsId, file)
+      const r = await api.workflow(wsId, file, opts.refresh)
       if (disposed) return
       resp = r
-      if (opts.contextOnly) { update(true); return }
+      // A refresh that keeps the draft does not rebuild the inspector while
+      // someone is typing in it; it is rebuilt on the next selection or edit.
+      const typing = inspector.contains(document.activeElement)
+      if (opts.contextOnly) { update(!typing); return }
+      const changedOnDisk = r.rev !== rev
+      const before = draft
       rev = r.rev
       if (r.workflow) {
         const wasDirty = dirty()
         problem = undefined
         saved = cloneWorkflow(r.workflow)
-        if (!wasDirty || opts.force || !draft) { draft = cloneWorkflow(r.workflow); externalChange = false; saveError = '' }
+        if (!wasDirty || opts.force || !draft) {
+          if (opts.force || !draft || canonicalJson(draft) !== canonicalJson(r.workflow)) draft = cloneWorkflow(r.workflow)
+          externalChange = false; saveError = ''
+        } else if (changedOnDisk) externalChange = true // e.g. edited while the stream was down
         if (opts.force) saveState = 'Reloaded from disk'
       } else {
         // Keep the last valid rendering (if any) and show why the file cannot be used.
@@ -117,12 +130,13 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
         if (opts.force && saved) draft = cloneWorkflow(saved)
         externalChange = false
       }
-      update(true, true)
+      const replaced = draft !== before
+      update(replaced || !typing, replaced)
     } catch (e) {
       notice = (e as Error).message
       update(true)
     }
-  }
+  }, (a, b) => ({ force: a.force || b.force, refresh: a.refresh || b.refresh, contextOnly: !!a.contextOnly && !!b.contextOnly }))
 
   async function loadProjectName() {
     const p = await api.project(wsId).catch(() => null)
@@ -199,7 +213,7 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
     try {
       const r = await api.approve(wsId, file, kind, approver)
       rev = r.rev
-      await load()
+      await load({})
     } catch (e) {
       approvalError = `Approval refused: ${(e as Error).message}`
       renderApprovals()
@@ -249,7 +263,15 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
 
   function renderBanners() {
     banners.replaceChildren()
-    if (problem) {
+    if (!connected) {
+      banners.append(h('div.banner.warn', h('strong', 'Not connected to the editor service.'), ' Changes on disk are not shown until it reconnects; this view re-reads everything when it does.'))
+    }
+    if (problem?.kind === 'missing') {
+      const moved = saved && resp?.workflows.find(w => w.id === saved!.id && w.file !== file)
+      banners.append(h('div.banner.error', h('strong', `${file} no longer exists on disk`), ' (deleted or renamed). ',
+        saved ? 'The last version is shown read-only; saving is disabled and nothing is recreated. ' : '',
+        moved ? h('a.button', { href: `#/ws/${encodeURIComponent(wsId)}/wf/${encodeURIComponent(moved.file)}` }, `Open ${moved.file} (same workflow id)`) : 'Restore the file, or open the workflow under its new name from the project.'))
+    } else if (problem) {
       banners.append(h('div.banner.error', h('strong', `The file on disk cannot be used: ${problem.kind}`), ` — ${problem.message}${problem.line ? ` (line ${problem.line}${problem.col ? `, column ${problem.col}` : ''})` : ''}. `,
         saved ? 'Showing the last valid version read-only; saving is disabled so it cannot overwrite the file. Fix the file and the editor recovers.' : 'Fix the file; the editor reloads when it changes.'))
     }
@@ -305,20 +327,19 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
 
   // ---- external changes ----------------------------------------------------
 
-  const events = api.events(wsId)
-  let pending: ReturnType<typeof setTimeout> | undefined
-  events.addEventListener('change', (e: MessageEvent) => {
-    const ev = JSON.parse(e.data) as ChangeEvent
-    if (ev.kind === 'workflow' && ev.file === file) {
-      if (ev.rev !== null && ev.rev === rev) return // our own save, or content we already show
-      if (dirty()) { externalChange = true; renderBanners(); return }
-      clearTimeout(pending)
-      pending = setTimeout(() => void load(), 100)
-      return
-    }
-    // Other workflows, the project or .gitmodules: refresh references only.
-    clearTimeout(pending)
-    pending = setTimeout(() => void load({ contextOnly: true }), 150)
+  const stream = live(api.eventsUrl(wsId), {
+    classify: ev => {
+      if (ev.kind === 'workflow' && ev.file === file) {
+        if (ev.rev !== null && ev.rev === rev) return null // our own save, or content we already show
+        if (dirty() && ev.rev !== null) { externalChange = true; renderBanners(); return null }
+        return ['content']
+      }
+      if (ev.kind === 'registry') return null
+      // Other workflows, the project, .gitmodules or Git state: references and repositories.
+      return ['context']
+    },
+    flush: (needs, all) => load(all || needs.has('content') ? {} : { contextOnly: true }),
+    state: c => { connected = c; renderBanners() },
   })
 
   const onKey = (e: KeyboardEvent) => {
@@ -333,11 +354,11 @@ export function renderWorkflowView(root: HTMLElement, wsId: string, file: string
   window.addEventListener('keydown', onKey)
 
   renderCrumbs()
-  void load().then(() => canvas.fit())
+  void load({}).then(() => canvas.fit())
   void loadProjectName()
 
   return {
-    dispose: () => { disposed = true; events.close(); clearTimeout(pending); window.removeEventListener('keydown', onKey) },
+    dispose: () => { disposed = true; stream.close(); window.removeEventListener('keydown', onKey) },
     isDirty: dirty,
   }
 }

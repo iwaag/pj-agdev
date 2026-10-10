@@ -52,7 +52,7 @@ npm start         # builds, then serves UI and API on http://127.0.0.1:8095
 The page opens on the projects list (`#/`). The service reads the registry at
 `pj-agdev/.local/workflow-editor/registry.json` by default
 (`--registry <file>` or `WFE_REGISTRY` to change; `--area`, `--port`,
-`--poll-ms`). `wfe serve` builds the UI and starts the service for the
+`--poll-ms` (definitions, default 1000), `--git-poll-ms` (Git state, default 3000)). `wfe serve` builds the UI and starts the service for the
 registry it is given.
 
 The service binds to 127.0.0.1 only and answers only to `127.0.0.1` /

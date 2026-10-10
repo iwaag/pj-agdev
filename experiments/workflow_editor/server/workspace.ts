@@ -18,6 +18,7 @@ import type { Registration } from './registry.ts'
 import { newProjectText, newWorkflowText, parseProject, parseWorkflow, renderProject, renderWorkflow } from './yamlDoc.ts'
 
 export const WORKFLOWS_DIR = 'devdocs/workflows'
+const readCache = new Map<string, { sig: string; text: string; workflow?: Workflow; problem?: FileProblem }>()
 export const WORKFLOW_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$/
 
 export class RequestError extends Error {
@@ -40,6 +41,9 @@ async function isDir(p: string) { try { return (await stat(p)).isDirectory() } c
 
 export class Workspace {
   readonly reg: Registration
+  // Set by the service when the watcher vouches that Git state has not
+  // changed since these were inspected; repositories() then reuses them.
+  knownRepositories?: RepositoryStatus[]
   constructor(reg: Registration) { this.reg = reg }
   get root() { return this.reg.path }
 
@@ -60,6 +64,7 @@ export class Workspace {
   }
 
   async repositories(): Promise<RepositoryStatus[]> {
+    if (this.knownRepositories) return this.knownRepositories
     const rootHead = await git(this.root, ['rev-parse', 'HEAD'])
     const rootBranch = await git(this.root, ['symbolic-ref', '-q', '--short', 'HEAD'])
     const rootDirty = await git(this.root, ['status', '--porcelain=v1', '--ignore-submodules=all'])
@@ -157,7 +162,8 @@ export class Workspace {
   }
 
   async projectResponse(): Promise<ProjectResponse> {
-    const [read, repositories, wf, structure] = await Promise.all([this.readProject(), this.repositories(), this.workflowSummaries(), this.structure()])
+    const repositories = await this.repositories()
+    const [read, wf, structure] = await Promise.all([this.readProject(), this.workflowSummaries(repositories), this.structure()])
     return {
       workspace: this.reg.id,
       rev: read.text === null ? null : textHash(read.text),
@@ -203,11 +209,22 @@ export class Workspace {
 
   async readWorkflowFile(file: string): Promise<{ text: string | null; workflow?: Workflow; problem?: FileProblem }> {
     if (!WORKFLOW_FILE.test(file)) throw new RequestError(400, `invalid workflow file name "${file}"`)
-    const text = await readTextOrNull(await inside(this.root, `${WORKFLOWS_DIR}/${file}`))
-    if (text === null) return { text, problem: { kind: 'missing', message: `${file} does not exist` } }
+    const path = await inside(this.root, `${WORKFLOWS_DIR}/${file}`)
+    // Parsing every workflow on every refresh dominated large projects; an
+    // unchanged file (same size, mtime and inode) reuses its last reading.
+    const st = await stat(path).catch(() => null)
+    const sig = st ? `${st.size}:${st.mtimeMs}:${st.ino}` : null
+    const hit = sig ? readCache.get(path) : undefined
+    if (hit && hit.sig === sig) return { text: hit.text, problem: hit.problem, workflow: hit.workflow && structuredClone(hit.workflow) }
+    const text = await readTextOrNull(path)
+    if (text === null) { readCache.delete(path); return { text, problem: { kind: 'missing', message: `${file} does not exist` } } }
     const parsed = parseWorkflow(text)
-    if (!parsed.ok) return { text, problem: parsed.problem }
-    return { text, workflow: parsed.model }
+    const reading = parsed.ok ? { text, workflow: parsed.model } : { text, problem: parsed.problem }
+    if (sig) {
+      if (readCache.size > 2000) readCache.clear()
+      readCache.set(path, { sig, ...reading, workflow: reading.workflow && structuredClone(reading.workflow) })
+    }
+    return reading
   }
 
   async workflowSummaries(repos?: RepositoryStatus[]): Promise<{ list: WorkflowSummary[]; dir: { exists: boolean; reason?: string } }> {

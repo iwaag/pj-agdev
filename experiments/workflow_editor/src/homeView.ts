@@ -4,6 +4,7 @@
 // `wfe register` run the same operations.
 import type { CreateProjectResult, Diagnostic, RegisterResponse, WorkspacesResponse } from '../shared/api.ts'
 import { api } from './api.ts'
+import { live } from './live.ts'
 import { append, h, short } from './dom.ts'
 import type { ViewHandle } from './main.ts'
 
@@ -137,7 +138,10 @@ export function renderHomeView(root: HTMLElement): ViewHandle {
     main.replaceChildren(h('div.col', renderList(), renderRegister()), h('div.col', renderCreate()))
   }
 
+  // The registry may change from the CLI or by hand; the list follows it.
+  const stream = live(api.eventsUrl(), { classify: ev => (ev.kind === 'registry' ? ['registry'] : null), flush: () => load(), state: () => {} })
+
   render()
   void load()
-  return { dispose: () => { disposed = true }, isDirty: () => false }
+  return { dispose: () => { disposed = true; stream.close() }, isDirty: () => false }
 }

@@ -1,8 +1,9 @@
 // Project editor: metadata, sub-repositories, workspaces and workflows.
-import type { ChangeEvent, ProjectResponse, RepositoryStatus, WorkflowResponse, WorkspaceSummary } from '../shared/api.ts'
+import type { ProjectResponse, RepositoryStatus, WorkflowResponse, WorkspaceSummary } from '../shared/api.ts'
 import { PROJECT_SCHEMA, type Project } from '../shared/model.ts'
 import { validateProject } from '../shared/validate.ts'
 import { api, ApiError } from './api.ts'
+import { live, serial } from './live.ts'
 import { h, short } from './dom.ts'
 import { diagnosticList } from './homeView.ts'
 import { icon } from './icons.ts'
@@ -44,6 +45,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
   let addResult: HTMLElement | null = null
   let createError = ''
   let disposed = false
+  let connected = true
 
   const dirty = () => !!draft && !!saved && JSON.stringify(draft) !== JSON.stringify(saved)
 
@@ -51,23 +53,27 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
   const main = h('main.project-grid', h('p.muted', 'Loading project…'))
   root.append(header, main)
 
-  async function load(full = true) {
+  interface LoadOpts { workspaces?: boolean; force?: boolean; refresh?: boolean }
+  // Loads run one at a time; a forced reload discards the draft, any other
+  // keeps it and flags a change on disk.
+  const load = serial<LoadOpts>(async opts => {
     try {
-      const [p, w] = await Promise.all([api.project(wsId), full ? api.workspaces() : Promise.resolve(null)])
+      const [p, w] = await Promise.all([api.project(wsId, opts.refresh), opts.workspaces ? api.workspaces() : Promise.resolve(null)])
       if (disposed) return
+      const changedOnDisk = !!data && data.rev !== p.rev
       data = p
       if (w) workspaces = w.workspaces
-      if (!dirty() || full) {
+      if (!dirty() || opts.force) {
         saved = p.project ? structuredClone(p.project) : null
         draft = p.project ? structuredClone(p.project) : null
         externalChange = false
-      }
+      } else if (changedOnDisk) externalChange = true
       if (accessWorkflow) accessData = await api.workflow(wsId, accessWorkflow).catch(() => null)
       render()
     } catch (e) {
       main.replaceChildren(h('p.error', (e as Error).message))
     }
-  }
+  }, (a, b) => ({ workspaces: a.workspaces || b.workspaces, force: a.force || b.force, refresh: a.refresh || b.refresh }))
 
   function renderHeader() {
     const name = data?.project?.name || data?.project?.id || 'Project'
@@ -78,7 +84,10 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
     header.replaceChildren(
       h('div.crumbs', h('a', { href: '#/' }, 'Projects'), h('span.sep', '/'), h('strong', name),
         h('span.pill.ok', icon('check', 'icon small'), `workspace ${wsId}`)),
-      h('div.top-actions', h('label.ws-label', 'Workspace ', select)),
+      h('div.top-actions',
+        connected ? null : h('span.pill.warn', { title: 'Changes on disk are not shown until the editor service is reachable again; the view re-reads everything then.' }, 'Not connected — not live'),
+        h('button', { title: 'Re-read the project and the repositories\' Git state now', onclick: () => void load({ workspaces: true, refresh: true }) }, 'Refresh'),
+        h('label.ws-label', 'Workspace ', select)),
     )
   }
 
@@ -102,7 +111,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
     const d = draft
     if (externalChange) {
       card.append(h('div.banner.warn', 'project.yaml changed on disk while you have unsaved edits. ',
-        h('button', { onclick: () => void load() }, 'Reload from disk (discard my edits)')))
+        h('button', { onclick: () => void load({ force: true }) }, 'Reload from disk (discard my edits)')))
     }
     const readonly = !!data.problem
     card.append(
@@ -147,7 +156,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
       saved = structuredClone(draft)
       saveState = `Saved ${new Date().toLocaleTimeString()}`
       externalChange = false
-      await load(false)
+      await load({})
     } catch (e) {
       saveError = `Save failed: ${(e as Error).message}. Your edits are kept; retry when resolved.`
       render()
@@ -211,7 +220,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
         } catch (e) {
           addResult = h('div.banner.error', (e as ApiError).message)
         }
-        await load(false)
+        await load({})
       },
     }, 'Add submodule')
     return h('div.add-repo', h('h3', 'Add a local repository'),
@@ -279,23 +288,23 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
   }
 
   // External changes: reload what has no draft; guard the project draft.
-  const events = api.events(wsId)
-  let pending: ReturnType<typeof setTimeout> | undefined
-  events.addEventListener('change', (e: MessageEvent) => {
-    const ev = JSON.parse(e.data) as ChangeEvent
-    if (ev.kind === 'project' && dirty()) {
-      if (ev.rev && data?.rev === ev.rev) return
-      externalChange = true
-      render()
-      return
-    }
-    clearTimeout(pending)
-    pending = setTimeout(() => void load(false), 150)
+  const stream = live(api.eventsUrl(wsId), {
+    classify: ev => {
+      if (ev.kind === 'project' && dirty()) {
+        if (ev.rev && data?.rev === ev.rev) return null
+        externalChange = true
+        render()
+        return null
+      }
+      return ev.kind === 'registry' ? ['registry'] : ['content']
+    },
+    flush: (needs, all) => load({ workspaces: all || needs.has('registry') }),
+    state: c => { connected = c; renderHeader() },
   })
 
-  void load()
+  void load({ workspaces: true, force: true })
   return {
-    dispose: () => { disposed = true; events.close(); clearTimeout(pending) },
+    dispose: () => { disposed = true; stream.close() },
     isDirty: dirty,
   }
 }

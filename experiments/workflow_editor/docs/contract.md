@@ -1,4 +1,4 @@
-# Workflow editor file contract (p1)
+# Workflow editor file contract (p1, p2/pre1)
 
 The definition files are the authority. The editor reads and writes them; it
 keeps no database. A person or an agent can edit the same files with any text
@@ -201,10 +201,21 @@ directly. Approval actions work on saved content without errors.
 - Saves write a temporary file in the same directory and rename it over the
   target, so a reader never sees a half-written file. This protects file
   integrity, not against a simultaneous external writer.
-- The service watches the workspace's definition files (bounded polling) and
-  tells the UI when they change. Without unsaved UI changes the UI reloads
-  automatically. With unsaved changes it keeps the draft, shows that the file
-  changed, and offers an explicit reload that discards the draft.
+- While a browser view is open, the service watches the workspace and tells
+  the UI what changed. It polls the definition files every second; a file is
+  re-read only when its size, modification time or inode changed. It checks
+  Git state every three seconds: HEAD, the index, uncommitted files in the
+  root and in submodules, and submodule checkouts. Nothing is watched while no
+  view is open. Each view also has a Refresh action that re-reads at once.
+- Without unsaved UI changes the UI reloads automatically. With unsaved
+  changes it keeps the draft, shows that the file changed, and offers an
+  explicit reload that discards the draft.
+- After the connection to the service drops, the view says that it is not
+  live. When it reconnects, it re-reads everything, so edits made in between
+  are shown.
+- A deleted or renamed open workflow is shown read-only with that fact, and
+  with a link when another file has the same workflow id. Nothing is
+  recreated, and saving is refused.
 - If the file on disk is malformed or unsupported, the UI keeps the last valid
   rendering read-only with the parse error, and the service refuses to save
   over the invalid file. Correcting the file restores editing.

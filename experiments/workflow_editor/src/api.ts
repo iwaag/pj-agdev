@@ -35,13 +35,13 @@ export const api = {
   createProject: (input: { id: string; name: string; intent: string; goals: string[]; dir?: string; devdocsSource?: string; resume?: boolean }) =>
     call<CreateProjectResult>('POST', '/api/projects', input, [422]),
   register: (path: string, id?: string) => call<RegisterResponse>('POST', '/api/workspaces', { path, id }, [422]),
-  project: (id: string) => call<ProjectResponse>('GET', `${ws(id)}/project`),
+  project: (id: string, refresh = false) => call<ProjectResponse>('GET', `${ws(id)}/project${refresh ? '?refresh=1' : ''}`),
   saveProject: (id: string, project: Project) => call<SaveResponse>('PUT', `${ws(id)}/project`, { project }),
   addSubmodule: (id: string, path: string, url: string) => call<AddSubmoduleResponse>('POST', `${ws(id)}/submodules`, { path, url }, [422]),
   createWorkflow: (id: string, wid: string, name: string) => call<{ file: string }>('POST', `${ws(id)}/workflows`, { id: wid, name }),
-  workflow: (id: string, file: string) => call<WorkflowResponse>('GET', wf(id, file)),
+  workflow: (id: string, file: string, refresh = false) => call<WorkflowResponse>('GET', `${wf(id, file)}${refresh ? '?refresh=1' : ''}`),
   saveWorkflow: (id: string, file: string, workflow: Workflow) => call<SaveResponse>('PUT', wf(id, file), { workflow }),
   approve: (id: string, file: string, kind: ApprovalKind, approver: string) =>
     call<SaveResponse & { state: ApprovalState }>('POST', `${wf(id, file)}/approve`, { kind, approver }),
-  events: (id: string) => new EventSource(`${ws(id)}/events`),
+  eventsUrl: (id?: string) => (id ? `${ws(id)}/events` : '/api/events'),
 }

@@ -124,7 +124,9 @@ export interface ChangeEvent {
   byEditor?: boolean // the content matches the editor's own last save of that file
   type: 'changed'
   workspace: string
-  kind: 'project' | 'workflow' | 'workflows' | 'repositories'
+  // workflows: a file appeared or disappeared; git: HEAD, index, dirty or
+  // submodule checkout state changed; registry: the workspace list changed.
+  kind: 'project' | 'workflow' | 'workflows' | 'repositories' | 'git' | 'registry'
   file?: string
   rev: string | null
 }

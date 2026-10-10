@@ -2,7 +2,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
-import type { WorkspaceSummary, WorkspacesResponse } from '../shared/api.ts'
+import type { RepositoryStatus, WorkspaceSummary, WorkspacesResponse } from '../shared/api.ts'
 import { APPROVAL_KINDS, type ApprovalKind, type Project, type Workflow } from '../shared/model.ts'
 import { createProject } from './create.ts'
 import { BoundaryError, inside } from './files.ts'
@@ -91,6 +91,22 @@ export function createHandler(config: ServiceConfig) {
     return new Workspace(reg)
   }
 
+  // Repository inspection costs several Git commands per submodule. While a
+  // watcher observes a workspace, its result is reused until the Git
+  // fingerprint or .gitmodules changes; `?refresh=1` always inspects anew.
+  const repoCache = new Map<string, { key: string; repos: RepositoryStatus[] }>()
+  async function withRepositories(ws: Workspace, refresh: boolean) {
+    const gitKey = config.watcher?.gitKey(ws.reg.id)
+    if (!gitKey) return
+    const modules = await readFile(join(ws.root, '.gitmodules'), 'utf8').catch(() => '')
+    const key = `${gitKey}\0${modules}`
+    const hit = repoCache.get(ws.reg.id)
+    if (hit && hit.key === key && !refresh) { ws.knownRepositories = hit.repos; return }
+    const repos = await ws.repositories()
+    repoCache.set(ws.reg.id, { key, repos })
+    ws.knownRepositories = repos
+  }
+
   async function serveStatic(res: ServerResponse, url: URL): Promise<boolean> {
     if (!config.distDir) return false
     const rel = normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, '')
@@ -129,6 +145,12 @@ export function createHandler(config: ServiceConfig) {
         throw new RequestError(404, 'not found')
       }
       const [, a, wsId, b, file, action] = parts
+
+      // The home page's stream: registry changes only.
+      if (a === 'events' && method === 'GET') {
+        if (!config.watcher) throw new RequestError(404, 'watching is disabled')
+        return await config.watcher.stream(undefined, req, res)
+      }
 
       if (a === 'workspaces' && !wsId && method === 'GET') {
         const reg = await registry()
@@ -169,10 +191,11 @@ export function createHandler(config: ServiceConfig) {
       if (b === 'events' && method === 'GET') {
         if (!config.watcher) throw new RequestError(404, 'watching is disabled')
         const ws = await workspace(wsId)
-        return config.watcher.stream(ws, req, res)
+        return await config.watcher.stream(ws, req, res)
       }
 
       const ws = await workspace(wsId)
+      if (method === 'GET') await withRepositories(ws, url.searchParams.get('refresh') === '1')
       if (b === 'project' && !file) {
         if (method === 'GET') return send(res, 200, await ws.projectResponse())
         if (method === 'PUT') {

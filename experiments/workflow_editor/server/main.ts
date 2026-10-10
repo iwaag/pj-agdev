@@ -1,6 +1,7 @@
 // Starts the local editor service.
 //
-//   node server/main.ts [--registry <file>] [--area <dir>] [--port 8095] [--poll-ms 1000] [--serve-dist]
+//   node server/main.ts [--registry <file>] [--area <dir>] [--port 8095]
+//     [--poll-ms 1000] [--git-poll-ms 3000] [--serve-dist]
 //
 // The registry defaults to pj-agdev/.local/workflow-editor/registry.json (the
 // p1 fixture); `wfe serve` starts it for an authoring area's registry instead.
@@ -27,6 +28,7 @@ const registryFile = resolve(option('--registry', join(experiment, '..', '..', '
 const area = resolve(option('--area', dirname(registryFile)))
 const serveDist = args.includes('--serve-dist')
 const pollMs = Number(option('--poll-ms', '1000'))
+const gitPollMs = Number(option('--git-poll-ms', '3000'))
 
 const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://127.0.0.1:${DEV_PORT}`, `http://localhost:${DEV_PORT}`]
 const handler = createHandler({
@@ -35,7 +37,7 @@ const handler = createHandler({
   allowedOrigins: origins,
   allowedHosts: ['127.0.0.1', 'localhost'],
   distDir: serveDist ? join(experiment, 'dist') : undefined,
-  watcher: new Watcher(pollMs),
+  watcher: new Watcher(pollMs, { gitIntervalMs: gitPollMs, registryFile }),
 })
 
 const server = createServer((req, res) => void handler(req, res))
