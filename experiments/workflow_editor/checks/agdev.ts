@@ -38,7 +38,7 @@ try {
   await page.goto(`${B}/#/`)
   await waitText('.dash-status', /Gitea http/)
   check(/No project is registered yet|registry does not exist/.test(await page.locator('.dash-projects').innerText()), 'an empty registry says so')
-  check(/execution host: not-configured/.test(await page.locator('.dash-status').innerText()), 'execution host availability is stated')
+  check(/execution host: unknown — the executor has never reported/.test(await page.locator('.dash-status').innerText()), 'execution host availability is stated')
 
   console.log('create a project (directory mode) through the dashboard')
   await page.getByLabel('Project id').fill('rts')

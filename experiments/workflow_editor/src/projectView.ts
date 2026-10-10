@@ -19,6 +19,11 @@ const GROUPS: { key: RepositoryStatus['category'][]; title: string }[] = [
 
 export function statusChips(r: RepositoryStatus): HTMLElement[] {
   const chips: HTMLElement[] = []
+  if (r.kind === 'directory') {
+    chips.push(h('span.chip', { title: 'devdocs is a folder of the project root repository (devdocs: directory)' }, 'folder of the root'))
+    if (r.dirty) chips.push(h('span.chip.warn', { title: 'Uncommitted changes under devdocs/' }, `${r.dirty} uncommitted`))
+    return chips
+  }
   if (!r.initialized) chips.push(h('span.chip.warn', { title: 'The submodule is recorded but not checked out in this workspace' }, 'not initialized'))
   else if (r.kind === 'submodule') chips.push(r.branch ? h('span.chip', { title: 'Checked-out branch' }, `⑂ ${r.branch}`) : h('span.chip.muted', { title: 'HEAD is detached (normal after git submodule update)' }, 'detached HEAD'))
   else chips.push(h('span.chip', `⑂ ${r.branch ?? 'detached HEAD'}`))
@@ -28,7 +33,7 @@ export function statusChips(r: RepositoryStatus): HTMLElement[] {
   if (r.initialized && r.kind === 'submodule' && r.matchesRecorded === false) chips.push(h('span.chip.warn', { title: `Checked out ${r.head}` }, `HEAD ${short(r.head)} ≠ recorded`))
   if (r.dirty) chips.push(h('span.chip.warn', { title: 'Uncommitted changes (git status --porcelain)' }, `${r.dirty} uncommitted`))
   if (r.publication?.ahead) chips.push(h('span.chip.warn', { title: `Commits that no remote branch contains, as last fetched${r.publication.upstream ? ` (upstream ${r.publication.upstream})` : ''}` }, `${r.publication.ahead} unpublished`))
-  else if (r.initialized && r.publication && r.kind !== 'directory') chips.push(h('span.chip.muted', { title: `Every commit is on a remote branch, as last fetched${r.publication.upstream ? ` (upstream ${r.publication.upstream})` : ''}` }, 'published'))
+  else if (r.initialized && r.publication) chips.push(h('span.chip.muted', { title: `Every commit is on a remote branch, as last fetched${r.publication.upstream ? ` (upstream ${r.publication.upstream})` : ''}` }, 'published'))
   if (r.error) chips.push(h('span.chip.error', r.error))
   return chips
 }
@@ -343,12 +348,45 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
     renderRuns()
   }, a => a)
 
+  // A person's request to the executor (autolab). The receipt is kept until
+  // the service confirms, so a retry after a lost response is not a second run.
+  const reqText = h('textarea', { rows: 4, 'aria-label': 'Request text', placeholder: 'Your words: what you want done. They are kept as the run\'s braindump.md.' })
+  const reqWorkflow = h('select', { 'aria-label': 'Request workflow' })
+  const reqAuthor = h('input', { 'aria-label': 'Request author', placeholder: 'your name' })
+  let reqReceipt = ''
+  let reqResult: HTMLElement | null = null
+  function renderRequest(): HTMLElement {
+    const workflows = data?.workflows.filter(w => w.id && !w.problem) ?? []
+    const current = reqWorkflow.value
+    reqWorkflow.replaceChildren(...workflows.map(w => h('option', { value: w.id!, disabled: w.delegates.length > 0, selected: w.id === current }, `${w.name || w.id}${w.delegates.length ? ' — has a delegate node: not executable' : w.errors ? ' — has validation errors' : ''}`)))
+    if (!reqAuthor.value) reqAuthor.value = localStorage.getItem('workflow-editor.actor') ?? ''
+    const go = h('button.primary', {
+      onclick: async () => {
+        if (!reqText.value.trim() || !reqAuthor.value.trim() || !reqWorkflow.value) { reqResult = h('div.banner.error', 'Choose a workflow, and give your name and your words.'); renderRuns(); return }
+        reqReceipt ||= `browser-${crypto.randomUUID()}`
+        go.disabled = true
+        try {
+          const r = await api.requestRun(wsId, { workflow: reqWorkflow.value, text: reqText.value, author: reqAuthor.value.trim(), receipt: reqReceipt })
+          localStorage.setItem('workflow-editor.actor', reqAuthor.value.trim())
+          reqResult = h('div.banner.ok', `${r.duplicate ? 'Already requested' : 'Requested'}: `, h('a', { href: runHash(wsId, `${r.ref.workflow}/${r.ref.run}`) }, `${r.ref.workflow}/${r.ref.run}`), ` — the executor is queued (job ${r.job.id}, ${r.job.state}).`)
+          reqText.value = ''; reqReceipt = ''
+        } catch (e) { reqResult = h('div.banner.error', `Not requested: ${(e as Error).message}`) }
+        await load({})
+      },
+    }, 'Request run')
+    return h('div.request-run', h('h3', 'Request a run'),
+      h('p.muted.small', 'autolab performs it in this workspace: study, do and talk nodes; questions come back here. Another run cannot start in this workspace until the current one completes or is cancelled.'),
+      h('div.row', h('label.field', h('span', 'Workflow'), reqWorkflow), h('label.field', h('span', 'Your name'), reqAuthor)),
+      reqText, h('div.save-row', go), reqResult)
+  }
+
   function renderRuns() {
     runsCard.replaceChildren(h('div.card-head', h('h2', 'Runs')),
-      h('p.muted.small', 'devdocs/runs/<workflow>/<run>/ — executions recorded by their executor (wfe run). Each follows its own fixed copy of the workflow.'))
+      h('p.muted.small', 'devdocs/runs/<workflow>/<run>/ — executions recorded by their executor (wfe run). Each follows its own fixed copy of the workflow.'),
+      renderRequest())
     if (runsError) runsCard.append(h('div.banner.error', runsError))
     if (!runs) { runsCard.append(h('p.muted.small', 'Loading…')); return }
-    if (!runs.length) { runsCard.append(h('p.muted.small', 'No runs yet. An IDE agent creates one with wfe run create.')); return }
+    if (!runs.length) { runsCard.append(h('p.muted.small', 'No runs yet.')); return }
     const sorted = runs.slice().sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? '') || a.ref.localeCompare(b.ref))
     for (const r of sorted) {
       const state = r.execution ?? 'problem'

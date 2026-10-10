@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
 import { createHandler } from './api.ts'
 import { Gitea, loadGiteaSetting } from './gitea.ts'
+import { ExecStore } from './exec.ts'
 import { Watcher } from './watch.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -50,6 +51,7 @@ const handler = createHandler({
   distDir: serveDist ? join(experiment, 'dist') : undefined,
   watcher: new Watcher(pollMs, { gitIntervalMs: gitPollMs, registryFile }),
   gitea, giteaProblem,
+  exec: new ExecStore({ registryFile, area, gitea }),
 })
 
 const server = createServer((req, res) => void handler(req, res))

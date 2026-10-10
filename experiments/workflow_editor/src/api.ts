@@ -6,6 +6,14 @@ import type {
 import type { ApprovalState } from '../shared/canonical.ts'
 import type { ApprovalKind, Project, Workflow } from '../shared/model.ts'
 
+// One run's execution on this host (server/exec.ts runView).
+export interface RunExecView {
+  attempts: { id: string; state: string; began: string; ended: string | null; exit_code: number | null; signal: string | null; outcome: string | null; backend: string | null; pid: number | null; alive: boolean | null; stop_requested: string | null; log: string | null }[]
+  jobs: { id: number; kind: string; state: string; reason: string; created: string; note: string | null }[]
+  checkpoints: { id: number; kind: string; state: string; created: string; updated: string; error: string | null; steps: { repo: string; include: string[]; excluded: string[]; conflicts: string[]; commit?: string; pushed?: boolean; branch?: string; error?: string }[] }[]
+  executor: { state: string; detail?: string; at?: string }
+}
+
 export class ApiError extends Error {
   status: number
   detail?: unknown
@@ -63,5 +71,9 @@ export const api = {
   // One run operation (docs/runs.md); `by` is the declared actor, `expectSeq` the sequence the view showed.
   runOp: (id: string, workflow: string, run: string, op: Record<string, unknown> & { op: string; by: string; expectSeq?: number }) =>
     call<RunOpResponse>('POST', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/ops`, op),
+  runExec: (id: string, workflow: string, run: string) => call<RunExecView>('GET', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/exec`),
+  retryCheckpoint: (id: string, workflow: string, run: string, checkpoint: number) => call<unknown>('POST', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/checkpoints/${checkpoint}/publish`),
+  requestRun: (id: string, input: { workflow: string; text: string; author: string; receipt: string }) =>
+    call<{ ok: true; duplicate: boolean; ref: { workflow: string; run: string }; job: { id: number; state: string } }>('POST', `${ws(id)}/runs`, input),
   eventsUrl: (id?: string) => (id ? `${ws(id)}/events` : 'api/events'),
 }

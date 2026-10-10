@@ -89,6 +89,21 @@ export interface Execution {
   failed: string[]
 }
 
+// Execution control (p4): which launch of the executor is current, how the
+// last one ended, and whether the work is held until a person resumes it.
+// `running` on a node says work started; whether a process is alive is a
+// fact of the execution host, not of this record.
+export const ATTEMPT_OUTCOMES = ['exited', 'stopped', 'interrupted', 'unknown'] as const
+export type AttemptOutcome = typeof ATTEMPT_OUTCOMES[number]
+export type HoldKind = 'stopped' | 'interrupted' | 'unknown'
+export interface Control {
+  attempt: { id: string; reason: string; began: string; backend: string | null } | null // the open attempt; backend: what served it (Agent ≠ Model)
+  attempts: number
+  last: { id: string; outcome: AttemptOutcome; ended: string; detail: string; backend: string | null } | null
+  hold: { kind: HoldKind; since: string; by: string; reason: string } | null // nothing resumes it but run.resume
+  stop: { at: string; by: string; reason: string } | null // stop requested; not yet confirmed by the attempt's end
+}
+
 export interface RunState {
   schema: string
   project: string
@@ -105,6 +120,7 @@ export interface RunState {
   artifacts: Artifact[]
   decisions: Decision[]
   cancelled: { reason: string; at: string; by: string } | null
+  control: Control
   execution: Execution
   started: string | null
   ended: string | null
@@ -129,17 +145,31 @@ export type OpInput =
   | { op: 'artifact.attach'; path: string; node?: string; title?: string }
   | { op: 'run.cancel'; reason: string }
   | { op: 'run.decide'; decision: 'accepted' | 'rejected'; evidence: string; note?: string }
+  | { op: 'attempt.begin'; attempt: string; reason: string; backend?: string }
+  | { op: 'attempt.end'; attempt: string; outcome: AttemptOutcome; detail?: string }
+  | { op: 'run.stop'; reason: string }
+  | { op: 'run.resume'; reason: string }
 
 export const OPS = ['run.create', 'node.start', 'node.progress', 'node.wait', 'node.complete', 'node.fail', 'node.cancel',
-  'question.ask', 'question.answer', 'question.take-up', 'question.withdraw', 'artifact.attach', 'run.cancel', 'run.decide'] as const
+  'question.ask', 'question.answer', 'question.take-up', 'question.withdraw', 'artifact.attach', 'run.cancel', 'run.decide',
+  'attempt.begin', 'attempt.end', 'run.stop', 'run.resume'] as const
+// The executor's own reports. While an attempt is open they must carry its
+// id (`attempt`), so a stopped or superseded attempt cannot write into the
+// record of the one that replaced it.
+export const EXECUTOR_OPS: readonly string[] = ['node.start', 'node.progress', 'node.wait', 'node.complete', 'node.fail', 'question.ask', 'question.take-up', 'question.withdraw', 'artifact.attach']
+// Every entry may carry `attempt` (the executor's launch) and `receipt` (an
+// idempotency key: a retransmitted request with the same receipt is not
+// recorded twice).
+export interface EntryMeta { attempt?: string; receipt?: string }
 
 // What one entry changed, kept in the entry for readers of the raw history.
 export interface Change {
   nodes?: Record<string, [NodeState | null, NodeState]>
   question?: [string | null, string]
   execution?: [ExecutionState | null, ExecutionState]
+  hold?: [HoldKind | null, HoldKind | null]
 }
-export type HistoryEntry = OpInput & { seq: number; at: string; by: string; via: string; change: Change }
+export type HistoryEntry = OpInput & EntryMeta & { seq: number; at: string; by: string; via: string; change: Change }
 export interface RunRecord extends RunState { history: HistoryEntry[] }
 
 // The graph the run follows: the root workflow of its bundle.
@@ -239,7 +269,9 @@ const TERMINAL: ExecutionState[] = ['completed', 'stopped', 'cancelled']
 
 // Applies one entry. Returns the next state and what changed; throws RunError
 // for an operation the current state does not allow.
-export function apply(prev: RunState | null, e: HistoryEntry | (OpInput & { seq: number; at: string; by: string; via: string }), graph: RunGraph): { state: RunState; change: Change } {
+export const emptyControl = (): Control => ({ attempt: null, attempts: 0, last: null, hold: null, stop: null })
+
+export function apply(prev: RunState | null, e: HistoryEntry | (OpInput & EntryMeta & { seq: number; at: string; by: string; via: string }), graph: RunGraph): { state: RunState; change: Change } {
   const at = text(e.at, 'at'), by = text(e.by, 'by')
   text(e.via, 'via')
   if (Number.isNaN(Date.parse(at))) fail('shape', `history ${e.seq}: "at" is not a timestamp`)
@@ -257,7 +289,7 @@ export function apply(prev: RunState | null, e: HistoryEntry | (OpInput & { seq:
       schema: RUN_SCHEMA, project: e.project, workflow: e.workflow, run: e.run, created: at,
       input: e.input, executor: e.executor, predecessor: e.predecessor ?? null,
       definition: e.definition, context: e.context,
-      nodes, questions: {}, artifacts: [], decisions: [], cancelled: null,
+      nodes, questions: {}, artifacts: [], decisions: [], cancelled: null, control: emptyControl(),
       execution: summarize({ nodes, cancelled: null }, graph), started: null, ended: null, updated: at, seq: e.seq,
     }
     return { state, change: { execution: [null, state.execution.state] } }
@@ -283,6 +315,14 @@ export function apply(prev: RunState | null, e: HistoryEntry | (OpInput & { seq:
     return s.questions[id as string]
   }
   const live = () => { if (s.cancelled) fail('run-cancelled', 'the run is cancelled; no further execution is recorded') }
+  const ctl = s.control
+  const holdBefore = ctl.hold?.kind ?? null
+  // Fencing: the executor's reports belong to the open attempt.
+  if (EXECUTOR_OPS.includes(e.op)) {
+    if (e.attempt !== undefined && e.attempt !== null) {
+      if (!ctl.attempt || ctl.attempt.id !== e.attempt) fail('attempt-stale', `attempt ${e.attempt} is not the current attempt of this run (${ctl.attempt ? `${ctl.attempt.id} is` : 'none is open'}); a stopped or superseded attempt records nothing`)
+    } else if (ctl.attempt) fail('attempt-required', `attempt ${ctl.attempt.id} is executing this run; its reports carry its id (WFE_ATTEMPT), and nobody else records execution meanwhile`)
+  }
   const ready = () => readiness(s.nodes, graph).ready
 
   switch (e.op) {
@@ -415,6 +455,54 @@ export function apply(prev: RunState | null, e: HistoryEntry | (OpInput & { seq:
       }
       break
     }
+    case 'attempt.begin': {
+      live()
+      if (typeof e.attempt !== 'string' || !/^a[0-9a-z-]{1,64}$/.test(e.attempt)) fail('shape', 'attempt id must match a[0-9a-z-]+')
+      if (ctl.attempt) fail('attempt-open', `attempt ${ctl.attempt.id} is still open; it ends before another begins`)
+      if (ctl.hold) fail('held', `the run is held (${ctl.hold.kind}: ${ctl.hold.reason}); a person resumes it first (run.resume)`)
+      if (ctl.stop) fail('held', 'a stop was requested; nothing begins until it is confirmed and the run is resumed')
+      ctl.attempt = { id: e.attempt, reason: text(e.reason, 'the reason'), began: at, backend: optText(e.backend, 'backend') || null }
+      ctl.attempts++
+      break
+    }
+    case 'attempt.end': {
+      if (!ctl.attempt || ctl.attempt.id !== e.attempt) fail('attempt-stale', `attempt ${String(e.attempt)} is not open (${ctl.attempt ? `${ctl.attempt.id} is` : 'none is'})`)
+      if (!(ATTEMPT_OUTCOMES as readonly string[]).includes(e.outcome)) fail('shape', `outcome must be one of ${ATTEMPT_OUTCOMES.join(', ')}`)
+      const detail = optText(e.detail, 'detail')
+      // An exit is a normal end only when nothing is left as running and
+      // the remaining work waits on someone; anything else needs a person to
+      // look and resume (side effects may have happened after the last record).
+      const ex = summarize(s, graph)
+      let outcome: AttemptOutcome = e.outcome
+      let why = detail
+      if (outcome === 'exited' && !s.cancelled && ex.state === 'in-progress' && (ex.active.length || ex.ready.length)) {
+        outcome = 'interrupted'
+        why = `the executor exited with ${ex.active.length ? `${ex.active.join(', ')} recorded as running` : `${ex.ready.join(', ')} ready and nothing waiting`}${detail ? `; ${detail}` : ''}`
+      }
+      if (ctl.stop && outcome !== 'unknown') outcome = 'stopped'
+      ctl.last = { id: ctl.attempt!.id, outcome, ended: at, detail: why, backend: ctl.attempt!.backend }
+      ctl.attempt = null
+      // A stop is the person's: the hold names who stopped and why.
+      if (!s.cancelled && outcome !== 'exited') ctl.hold = outcome === 'stopped' && ctl.stop ? { kind: 'stopped', since: at, by: ctl.stop.by, reason: ctl.stop.reason } : { kind: outcome as HoldKind, since: at, by, reason: why || outcome }
+      ctl.stop = null
+      break
+    }
+    case 'run.stop': {
+      live()
+      const reason = text(e.reason, 'the reason')
+      if (ctl.hold?.kind === 'stopped' || ctl.stop) fail('state', 'the run is already stopped or stopping')
+      if (ctl.attempt) ctl.stop = { at, by, reason } // confirmed by the attempt's end
+      else ctl.hold = { kind: 'stopped', since: at, by, reason }
+      break
+    }
+    case 'run.resume': {
+      live()
+      if (!ctl.hold) fail('state', 'the run is not held; there is nothing to resume')
+      if (ctl.attempt) fail('attempt-open', `attempt ${ctl.attempt.id} is still open`)
+      text(e.reason, 'the resume instruction')
+      ctl.hold = null
+      break
+    }
     case 'run.decide': {
       if (e.decision !== 'accepted' && e.decision !== 'rejected') fail('shape', 'decision must be accepted or rejected')
       if (e.decision === 'accepted' && prev.execution.state !== 'completed') fail('not-completed', `the execution is ${prev.execution.state}; only a completed execution can be accepted`)
@@ -440,6 +528,7 @@ export function apply(prev: RunState | null, e: HistoryEntry | (OpInput & { seq:
     change.execution = [before, s.execution.state]
     s.ended = TERMINAL.includes(s.execution.state) ? at : null
   }
+  if ((ctl.hold?.kind ?? null) !== holdBefore) change.hold = [holdBefore, ctl.hold?.kind ?? null]
   return { state: s, change }
 }
 
@@ -497,7 +586,14 @@ export function checkRecord(raw: unknown, graph: RunGraph): { ok: true; record: 
 
 // Appends one operation: the next record, written by the caller in one
 // atomic replacement. `expectSeq` refuses an operation based on an outdated view.
-export function operate(record: RunRecord | null, input: OpInput, ctx: { at: string; by: string; via: string; graph: RunGraph; expectSeq?: number }): RunRecord {
+export function operate(record: RunRecord | null, input: OpInput & EntryMeta, ctx: { at: string; by: string; via: string; graph: RunGraph; expectSeq?: number }): RunRecord {
+  if (input.receipt !== undefined && (typeof input.receipt !== 'string' || !/^[A-Za-z0-9:._/#-]{1,200}$/.test(input.receipt))) fail('shape', 'a receipt is 1–200 characters of A-Z a-z 0-9 : . _ / # -')
+  const dup = input.receipt ? record?.history.find(h => h.receipt === input.receipt) : undefined
+  if (dup) {
+    if (dup.op !== input.op) fail('receipt-reused', `receipt ${input.receipt} already recorded ${dup.op} at seq ${dup.seq}`)
+    return record! // a retransmission: already recorded, nothing changes
+  }
+  for (const k of ['attempt', 'receipt'] as const) if (input[k] === undefined || input[k] === null) delete input[k]
   const seq = (record?.seq ?? 0) + 1
   if (ctx.expectSeq !== undefined && ctx.expectSeq !== (record?.seq ?? 0)) {
     fail('outdated', `the run changed since it was read (now at ${record?.seq ?? 0}, expected ${ctx.expectSeq}); reload and retry`)
@@ -509,3 +605,45 @@ export function operate(record: RunRecord | null, input: OpInput, ctx: { at: str
 }
 
 export const runKey = (r: RunRef) => `${r.workflow}/${r.run}`
+
+// ---- what the control state means to a reader -------------------------------------
+
+// The run's situation as the views state it. `executing` means an attempt is
+// open in the record; whether its process is alive is said separately by
+// the execution host.
+export type Situation = 'executing' | 'stopping' | 'awaiting-person' | 'stopped' | 'interrupted' | 'unknown' | 'completed' | 'cancelled' | 'not-started' | 'idle'
+export function situation(s: Pick<RunState, 'control' | 'execution' | 'cancelled'>): Situation {
+  if (s.cancelled) return 'cancelled'
+  if (s.control.attempt) return s.control.stop ? 'stopping' : 'executing'
+  if (s.control.hold) return s.control.hold.kind
+  if (s.execution.state === 'completed') return 'completed'
+  if (s.execution.waiting.length) return 'awaiting-person'
+  if (s.execution.state === 'not-started') return 'not-started'
+  return 'idle'
+}
+
+// ---- notification boundary (p4: selection only, no delivery) ----------------------
+
+// Events a coordinator would announce, selected from committed history
+// entries. Each carries a stable id (project/workflow/run#seq) and points at
+// the record for details. Nothing here sends anything.
+export type NotableType = 'acknowledged' | 'question' | 'answered' | 'blocked' | 'stopped' | 'completed' | 'decided' | 'cancelled'
+export interface NotableEvent { id: string; seq: number; type: NotableType; at: string; question?: string; node?: string; detail: string }
+export function notableEvents(r: RunRecord, sinceSeq = 0): NotableEvent[] {
+  const out: NotableEvent[] = []
+  const id = (seq: number) => `${r.project}/${r.workflow}/${r.run}#${seq}`
+  for (const e of r.history) {
+    if (e.seq <= sinceSeq) continue
+    const d = e as unknown as Record<string, string>
+    const push = (type: NotableType, detail: string, extra: Partial<NotableEvent> = {}) => out.push({ id: id(e.seq), seq: e.seq, type, at: e.at, detail, ...extra })
+    if (e.op === 'attempt.begin' && d.reason === 'start') push('acknowledged', `${r.executor.name} began the run`)
+    else if (e.op === 'question.ask') push('question', d.text, { question: d.question, node: d.node })
+    else if (e.op === 'question.answer') push('answered', `answer to ${d.question} recorded`, { question: d.question })
+    else if (e.op === 'node.fail') push('blocked', `${d.node} failed: ${d.reason}`, { node: d.node })
+    else if (e.change.hold?.[1]) push(e.change.hold[1] === 'stopped' ? 'stopped' : 'blocked', `held: ${e.change.hold[1]}`)
+    if (e.change.execution?.[1] === 'completed') push('completed', 'every node completed')
+    if (e.op === 'run.decide') push('decided', `${d.decision} by ${e.by}`)
+    if (e.op === 'run.cancel') push('cancelled', d.reason)
+  }
+  return out
+}

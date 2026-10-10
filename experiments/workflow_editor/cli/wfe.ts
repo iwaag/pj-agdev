@@ -13,7 +13,8 @@ import { addNewRepository, createProject } from '../server/create.ts'
 import { addSharedRepository, createSharedRepository, dashboard, obtainWorkspace, registerGiteaProject, registerSharedRepository, type AgdevContext } from '../server/agdev.ts'
 import { Gitea, GiteaError, loadGiteaSetting } from '../server/gitea.ts'
 import { REPO_CATEGORIES, type RepoCategory } from '../server/registry.ts'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { ExecStore } from '../server/exec.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, workspaceAt, type Registration } from '../server/registry.ts'
 import { RequestError, Workspace } from '../server/workspace.ts'
 import { listRuns } from '../server/runs.ts'
@@ -227,6 +228,31 @@ Creates devdocs/workflows/<id>.yaml with the editor's template (schema, id,
 name, empty intent, no nodes), as the project view's "New workflow" does.
 Refuses an id already used by another workflow file. Writing the file by hand
 is equally valid; see docs/contract.md.`,
+  request: `wfe request <workflow> --braindump <file|-> --author <person> [--receipt <id>] [--workspace <id>]
+
+A person's request to the executor (autolab): creates the run with their
+words as braindump.md and queues its start. The same receipt twice queues
+once. Refused while another run of the executor holds the workspace (it has
+begun and has not completed or been cancelled); use another workspace.`,
+  exec: `wfe exec <subcommand> …   (the executor's interface; JSON output)
+
+claim [--backend <text>]          take the next queued job if the slot is free:
+                                  records attempt.begin; prints the attempt,
+                                  workspace, run and a brief for its prompt
+started <attempt> --pid <pid>     the attempt's process is running
+finished <attempt> --exit-code <n> [--signal <name>] [--lost]
+                                  how it ended; records attempt.end, publishes
+                                  the checkpoint, queues a resume if an answer
+                                  already waits
+stops                             attempts to terminate (stop or cancel requested)
+heartbeat --pid <pid> [--name …] [--detail …]
+reconcile                         after a restart: gone processes become
+                                  "unknown"; requests and answers that were not
+                                  queued are queued again under their receipts
+publish <checkpoint id>           retry a publication; finished steps are kept
+status [<run>]                    the executor, or one run's attempts, jobs and
+                                  checkpoints
+State is <area>/.local/exec/exec.sqlite (this host only).`,
   project: `wfe project register <owner>/<name>
 wfe project obtain <project id>
 
@@ -284,6 +310,8 @@ Projects and workspaces
   project register|obtain   a project on Gitea: register it here, or clone a workspace of it
   repo register|create|add  shared repositories on Gitea, and adding one to this project
   dashboard                 every project and shared repository, with where each fact was read
+  request <workflow> …      a person's request to the executor (autolab): a run, queued
+  exec <subcommand>         the executor's interface: claim, started, finished, stops, reconcile …
 
 Workflows (by file name or id)
   workflow new <id>         create devdocs/workflows/<id>.yaml from the template
@@ -478,6 +506,7 @@ async function cmdServe(p: Parsed): Promise<number> {
 }
 
 async function cmdRun(p: Parsed): Promise<number> {
+  await openExec(p)
   return runCommand({
     positional: p.positional,
     opt: k => opt(p, k),
@@ -488,7 +517,70 @@ async function cmdRun(p: Parsed): Promise<number> {
     usage: m => new UsageError(m),
     refused: (m, detail) => new Refused(m, detail),
     serviceUrl: async () => { const s = await serviceState(p); return s.running && s.sameRegistry ? s.url : null },
-  })
+    exec: () => execStore!,
+  }).finally(() => { execStore?.close(); execStore = undefined })
+}
+
+let execStore: ExecStore | undefined
+async function openExec(p: Parsed): Promise<ExecStore> {
+  execStore ??= new ExecStore({ registryFile: registryFile(p), area: areaDir(p), gitea: await giteaOf(p) })
+  return execStore
+}
+
+// The executor's interface to this host's execution management. Every
+// subcommand prints JSON; the rules are in server/exec.ts and shared/run.ts.
+async function cmdExec(p: Parsed): Promise<number> {
+  const [sub, arg] = p.positional
+  const x = await openExec(p)
+  json = true
+  const num = (k: string) => { const v = opt(p, k); if (v === undefined || !/^-?\d+$/.test(v)) throw new UsageError(`--${k} <integer> is required`); return Number(v) }
+  try {
+    switch (sub) {
+      case 'claim': out('', await x.claim(opt(p, 'backend') ?? null)); return 0
+      case 'started': if (!arg) throw new UsageError('started <attempt> --pid <pid>'); x.started(arg, num('pid')); out('', { ok: true }); return 0
+      case 'finished': {
+        if (!arg) throw new UsageError('finished <attempt> --exit-code <n> [--signal <name>]')
+        const code = opt(p, 'exit-code') !== undefined ? num('exit-code') : null
+        const r = await x.finished(arg, { code, signal: opt(p, 'signal') ?? null, lost: p.flags.has('lost') })
+        out('', { ok: true, ...r }); return 0
+      }
+      case 'stops': out('', x.stopsDue().map(a => ({ id: a.id, pid: a.pid, run: `${a.workflow}/${a.run}`, workspace: a.workspace, requested: a.stop_requested }))); return 0
+      case 'heartbeat': x.heartbeat(opt(p, 'name') ?? 'autolab', num('pid'), opt(p, 'detail') ?? ''); out('', { ok: true }); return 0
+      case 'reconcile': out('', { ok: true, notes: await x.reconcile() }); return 0
+      case 'publish': { if (!arg) throw new UsageError('publish <checkpoint id>'); out('', await x.publishCheckpoint(Number(arg))); return 0 }
+      case 'status': {
+        const ws = await workspace(p)
+        if (!arg) { out('', { executor: x.executorState() }); return 0 }
+        const ref = await import('../server/runs.ts').then(m => m.resolveRef(ws, arg))
+        out('', x.runView(ws.reg.id, ref)); return 0
+      }
+    }
+  } catch (e) {
+    if (e instanceof RequestError) throw new Refused(e.message, e.detail)
+    throw e
+  } finally { x.close(); execStore = undefined }
+  throw new UsageError('wfe exec claim|started|finished|stops|heartbeat|reconcile|publish|status')
+}
+
+// A person's request: their words become the run's braindump.md, and the
+// executor is queued.
+async function cmdRequest(p: Parsed): Promise<number> {
+  const [workflow] = p.positional
+  if (!workflow) throw new UsageError('request needs a workflow')
+  const file = opt(p, 'braindump'); if (!file) throw new UsageError('--braindump <file|-> is required: the person\'s words')
+  const author = opt(p, 'author'); if (!author) throw new UsageError('--author <person> is required')
+  const receipt = opt(p, 'receipt') ?? `cli-${Date.now()}-${process.pid}`
+  const ws = await workspace(p)
+  const x = await openExec(p)
+  try {
+    const text = readFileSync(file === '-' ? 0 : resolve(file), 'utf8')
+    const r = await x.request({ workspace: ws.reg.id, workflow, text, author, receipt, by: opt(p, 'by'), via: 'cli' })
+    out(`${r.duplicate ? 'Already requested (same receipt)' : 'Requested'}: run ${r.ref.workflow}/${r.ref.run} in ${ws.reg.id}; job ${r.job.id} is ${r.job.state}.`, r)
+    return 0
+  } catch (e) {
+    if (e instanceof RequestError) throw new Refused(e.message, e.detail)
+    throw e
+  } finally { x.close(); execStore = undefined }
 }
 
 async function agdevRun(f: () => Promise<{ ok: boolean; message: string } & Record<string, unknown>>): Promise<number> {
@@ -550,7 +642,7 @@ async function cmdDashboard(p: Parsed): Promise<number> {
 }
 
 const COMMANDS: Record<string, (p: Parsed) => Promise<number>> = {
-  run: cmdRun, project: cmdProject, repo: cmdRepo, dashboard: cmdDashboard,
+  run: cmdRun, project: cmdProject, repo: cmdRepo, dashboard: cmdDashboard, exec: cmdExec, request: cmdRequest,
   create: cmdCreate, register: cmdRegister, list: cmdList, status: cmdStatus, validate: cmdValidate,
   approve: cmdApprove, arrange: cmdArrange, 'add-repo': cmdAddRepo, workflow: cmdWorkflow, serve: cmdServe, setup: cmdSetup,
 }

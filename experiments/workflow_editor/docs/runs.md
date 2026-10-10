@@ -11,10 +11,15 @@ people involved recorded, in order. It is not authenticated or tamper-proof
 evidence, and `running` means "the executor reported that work started", not
 "a process is alive".
 
-**Writers take turns**, as for definitions. One operation reads `run.json`,
-checks it, and replaces it atomically. Two writers between that read and the
-rename are not detected. The `--expect-seq` guard (below) refuses an operation
-based on an outdated view; it is not a lock.
+**Every operation holds the run's lock** (p4, `server/lock.ts`): the read,
+the `--expect-seq` check, the transition and the atomic replacement of
+`run.json` happen under a cross-process lock, so the CLI, the service and the
+executor never lose each other's records. `--expect-seq` still refuses an
+operation based on an outdated view; the lock does not replace it. A
+retransmitted operation with the same `receipt` is not recorded twice.
+`run.json` is changed only through these operations; external edits of it are
+not a safe concurrent route (definitions and Markdown stay editable by hand,
+writers taking turns per file).
 
 ## Where things live
 
@@ -273,6 +278,65 @@ same for a node's outcome. A path that leaves the project is refused; a path
 that does not exist when attached is recorded with a warning and shown as
 missing.
 
+## Execution by autolab (p4)
+
+A person requests a run through agdevworld (Project Editor → Request a run,
+or `wfe request`): the run is created with their words and the executor —
+autolab, `agautolab.wfexec` — is queued. Two kinds of fact are kept apart:
+
+| Where | What |
+| --- | --- |
+| `run.json` (durable work record) | `control`: the open attempt (id, reason, backend), how the last one ended, a hold, a requested stop; the history of `attempt.begin`, `attempt.end`, `run.stop`, `run.resume` |
+| `<area>/.local/exec/exec.sqlite` (this host) | the queue, the one execution slot, each attempt's process id, times and log, publication checkpoints, the executor's heartbeat (`server/exec.ts`) |
+
+**Attempts.** One run can take several launches of the agent. `attempt.begin`
+(by the execution host when it claims a job) opens one; while it is open the
+executor's own reports (`start`, `progress`, `wait`, `complete`, `fail`,
+`ask`, `take-up`, `withdraw`, `attach`) must carry its id (`WFE_ATTEMPT`), and
+nobody else records execution meanwhile. A stopped or superseded attempt's
+late report is refused (`attempt-stale`). `attempt.end` says how the process
+ended: `exited`, `stopped`, `interrupted` or `unknown`. An exit that leaves a
+node recorded as running, or ready work with nothing waiting on a person, is
+recorded as `interrupted`, never as success.
+
+**Holds.** `stopped`, `interrupted` and `unknown` hold the run: nothing
+begins until a person records `run.resume` with an instruction (after looking
+at the working tree — side effects may have happened after the last record).
+`run.stop` while an attempt is open is a request (`control.stop`, shown as
+"stopping"); the hold is recorded only when the attempt's end confirms that
+the process is gone. Cancellation (`run.cancel`) is final: after it, reports,
+resumption and further attempts are refused.
+
+**Human waits.** A talk node asks and the agent ends its session; no process
+runs during the wait. An answer is persisted first, then the resumption is
+queued (once per answer, by receipt). A stopped run is not resumed by an
+answer. Recording an answer, taking it up, completing the node and accepting
+the result remain separate records.
+
+**One slot, one workspace.** One attempt executes at a time on this host;
+other requests wait in the queue. A run of the executor that has begun and is
+neither completed nor cancelled holds its workspace: another request there is
+refused (another workspace of the project can be used).
+
+**Recovery.** After a restart, an attempt whose process is gone is ended as
+`unknown`; one whose process lives keeps the slot. Requests and answers whose
+queue entry was lost are queued again under their receipts. Nothing is
+completed, failed or rerun by itself.
+
+**Publication** happens at checkpoints after the process has ended (a human
+wait, a stop or interruption, completion) and after a result decision
+(`server/publish.ts`): the paths the attempt changed are committed and pushed,
+submodules (devdocs first) before the root that records their gitlinks.
+Changes present before the attempt began are left out; a pre-existing change
+the run changed again needs a person. A failed push is retried without
+repeating the work (the journaled commits are pushed). Work completion and
+publication are shown separately.
+
+**Notification boundary.** `wfe run events` selects the events a future
+coordinator would announce (acknowledged, question, answered, blocked,
+stopped, completed, decided, cancelled), each with a stable id
+`<project>/<workflow>/<run>#<seq>`. Nothing is sent.
+
 ## Operations
 
 All operations are in `server/runs.ts` (files) over `shared/run.ts`
@@ -288,6 +352,11 @@ HTTP routes call them; neither needs the other running.
 | Start / resume, progress note | `start`, `progress` | `POST runs/<wf>/<run>/ops` | — |
 | Wait, complete, fail | `wait`, `complete`, `fail` | same | — |
 | Cancel a node or the run | `cancel [<node>]` | same | run view → Cancel run |
+| Request a run (the person's words; queues autolab) | `wfe request <workflow> …` | `POST runs` | Project Editor → Request a run |
+| Stop (resumable), resume a held run | `stop`, `resume` | same (`run.stop`, `run.resume`) | run view → Execution |
+| Attempts, queue, publication of one run | `wfe exec status <run>` | `GET runs/<wf>/<run>/exec` | run view → Execution |
+| Retry a publication | `wfe exec publish <checkpoint>` | `POST runs/<wf>/<run>/checkpoints/<id>/publish` | run view → Retry publication |
+| Notable events | `events <run> [--since]` | — | — |
 | Ask, take up, withdraw | `ask`, `take-up`, `withdraw` | same | — |
 | Answer | `answer <run> <q>` | same | run view → question → Answer |
 | Attach an artifact | `attach <run> <path>` | same | — (reports listed and readable) |

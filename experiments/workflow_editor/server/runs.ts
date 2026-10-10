@@ -12,9 +12,10 @@ import { ID_PATTERN, normalizeRepoPath, type Workflow } from '../shared/model.ts
 import {
   checkRecord, delegateNodes, operate, RUN_ID, RunError, runKey, validRunRef,
   type BundleEntry, type DefinitionRef, type EntrustRef, type Executor, type OpInput, type RepoContext, type RunGraph,
-  type RunInput, type RunRecord, type RunRef,
+  type EntryMeta, type RunInput, type RunRecord, type RunRef,
 } from '../shared/run.ts'
 import { atomicWrite, inside, readTextOrNull } from './files.ts'
+import { withLock } from './lock.ts'
 import { blobSizeAt, listAt, resolveRev, RevError, showAt, type DevdocsInfo, type DevdocsRev } from './devdocs.ts'
 import { RequestError, WORKFLOWS_DIR, type Workspace } from './workspace.ts'
 import { parseWorkflow } from './yamlDoc.ts'
@@ -500,12 +501,24 @@ function nextQuestionId(record: RunRecord): string {
   return `q${n}`
 }
 
-// Applies one operation to a run and writes it. Delegate completion reads the
-// child run and records its state as evidence.
-export async function runOp(ws: Workspace, ref: RunRef, input: OpInput, ctx: OpContext): Promise<{ record: RunRecord; ref: RunRef }> {
+// Applies one operation to a run and writes it: read, version check,
+// transition and atomic replacement under the run's cross-process lock
+// (server/lock.ts), so the CLI, the service and the executor never lose
+// each other's records. A retransmission (same receipt) changes nothing.
+export async function runOp(ws: Workspace, ref: RunRef, input: OpInput & EntryMeta, ctx: OpContext): Promise<{ record: RunRecord; ref: RunRef; duplicate?: boolean }> {
   if (input.op === 'run.create') throw new RequestError(400, 'runs are created with create, not as an operation')
+  const file = join(await inside(ws.root, runDir(ref)), RUN_FILE)
+  try {
+    return await withLock(file, () => runOpLocked(ws, ref, input, ctx), { what: `run ${runKey(ref)}` })
+  } catch (e) {
+    if ((e as Error).name === 'LockTimeout' || (e as Error).constructor?.name === 'LockTimeout') throw new RequestError(409, (e as Error).message)
+    throw e
+  }
+}
+
+async function runOpLocked(ws: Workspace, ref: RunRef, input: OpInput & EntryMeta, ctx: OpContext): Promise<{ record: RunRecord; ref: RunRef; duplicate?: boolean }> {
   const { record, graph, dir } = await usableRun(ws, ref)
-  const op = structuredClone(input) as OpInput
+  const op = structuredClone(input) as OpInput & EntryMeta
   if (op.op === 'question.ask' && !op.question) op.question = nextQuestionId(record)
   if (op.op === 'artifact.attach' || (op.op === 'node.complete' && op.artifacts)) {
     for (const p of op.op === 'artifact.attach' ? [op.path] : op.artifacts ?? []) {
@@ -520,6 +533,7 @@ export async function runOp(ws: Workspace, ref: RunRef, input: OpInput, ctx: OpC
     if (e instanceof RunError) throw new RequestError(e.code === 'outdated' ? 409 : 422, e.message, { code: e.code })
     throw e
   }
+  if (next === record) return { record, ref, duplicate: true }
   await writeRecord(dir, next)
   return { record: next, ref }
 }

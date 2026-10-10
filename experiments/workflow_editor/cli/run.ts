@@ -6,11 +6,12 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { RunResponse } from '../shared/api.ts'
 import { accessAt } from '../shared/access.ts'
 import { normalizeRepoPath } from '../shared/model.ts'
-import { holderOf, questionState, runKey, type EntrustRef, type HistoryEntry, type OpInput, type RunRecord, type RunRef } from '../shared/run.ts'
+import { EXECUTOR_OPS, holderOf, notableEvents, questionState, runKey, type EntrustRef, type HistoryEntry, type OpInput, type RunRecord, type RunRef } from '../shared/run.ts'
 import {
   checkRun, createRun, listRuns, resolveRef, runDir, runOp, runResponse, type CreateRunOptions,
 } from '../server/runs.ts'
 import { RequestError, type Workspace } from '../server/workspace.ts'
+import type { ExecStore } from '../server/exec.ts'
 
 export interface RunCli {
   positional: string[]
@@ -22,10 +23,14 @@ export interface RunCli {
   usage: (m: string) => Error
   refused: (m: string, detail?: unknown) => Error
   serviceUrl: () => Promise<string | null> // the editor's base URL when it serves this registry
+  exec: () => ExecStore // this host's execution management (queue, attempts, publication)
 }
 
 const COMMON = `Common options: --by <name> (who records; default the run's executor),
   --expect-seq <n> (refuse if the run moved past sequence n), --json,
+  --receipt <id> (a retransmission with the same receipt is not recorded twice),
+  --attempt <id> (default WFE_ATTEMPT: the executor's launch; while an attempt
+  is open, execution reports must carry its id),
   --workspace <id> (default: the workspace containing the current directory).
 <run> is <workflow>/<run-id>, or a run id that is unique in the project.`
 
@@ -121,6 +126,26 @@ Records that the executor took up the latest answer (or answer --index, from
 
 Closes a question without an answer; a node waiting on it resumes running.
 Writes run.json.`,
+  events: `wfe run events <run> [--since <seq>]
+
+The notification boundary (p4: selection only, nothing is sent): the events
+a coordinator would announce, selected from committed history entries —
+acknowledged, question, answered, blocked, stopped, completed, decided,
+cancelled — each with a stable id (<project>/<workflow>/<run>#<seq>) and a
+pointer to the record. Reads only.`,
+  stop: `wfe run stop <run> --reason <text> --by <person>
+
+Stops execution; resumable. While an attempt executes, the stop is a request
+until the executor confirms the process is gone (the record shows "stopping");
+then the run is held as stopped. Without an attempt, it is held at once (for
+example while it waits for a person: an answer then does not resume it).
+Nothing resumes a stopped run but wfe run resume. Writes run.json.`,
+  resume: `wfe run resume <run> --reason <instruction> --by <person>
+
+Resumes a run held as stopped, interrupted or unknown: the person's explicit
+instruction after looking at the working tree and records. It queues the
+executor; the instruction reaches the next attempt. Refused after
+cancellation. Writes run.json.`,
   access: `wfe run access <run> [<path>]...
 
 Says what this run's fixed definition declares for each path (relative to
@@ -154,7 +179,9 @@ export function runIndex(): string {
   wait <run> <node>        wait for an external result
   complete <run> <node>    record completion with an outcome
   fail <run> <node>        record a failure
-  cancel <run> [<node>]    discontinue a node or the run
+  cancel <run> [<node>]    discontinue a node or the run (final)
+  stop / resume <run>      stop execution (resumable), resume a held run
+  events <run>             notification-worthy events (selection only)
   ask / answer / take-up / withdraw    questions
   access <run> [<path>]... what the run's definition declares for a path
   attach <run> <path>      record an artifact
@@ -315,10 +342,14 @@ export async function runCommand(c: RunCli): Promise<number> {
       { ok: true, ref: runKey(r), seq: record.seq, execution: ex, url })
     return 0
   }
-  const op = async (input: OpInput, what: (rec: RunRecord) => string, r?: RunRef) => {
+  const attempt = c.opt('attempt') ?? process.env.WFE_ATTEMPT ?? undefined
+  const receipt = c.opt('receipt')
+  const op = async (input: OpInput, what: (rec: RunRecord) => string, r?: RunRef, after?: (target: RunRef, rec: RunRecord) => Promise<string | null>) => {
     const target = r ?? await ref()
-    const res = await wrap(() => runOp(ws, target, input, { by, via: 'cli', expectSeq }))
-    return report(target, res.record, what(res.record))
+    const meta = { ...(attempt && EXECUTOR_OPS.includes(input.op) ? { attempt } : {}), ...(receipt ? { receipt } : {}) }
+    const res = await wrap(() => runOp(ws, target, { ...input, ...meta }, { by, via: 'cli', expectSeq }))
+    const extra = after ? await wrap(() => after(target, res.record)) : null
+    return report(target, res.record, `${res.duplicate ? 'Already recorded (same receipt); nothing changed.' : what(res.record)}${extra ? `\n${extra}` : ''}`)
   }
   const node = () => { if (!args[1]) throw c.usage('<node> is required'); return args[1] }
 
@@ -381,12 +412,27 @@ export async function runCommand(c: RunCli): Promise<number> {
     case 'cancel':
       return args[1]
         ? op({ op: 'node.cancel', node: args[1], reason: need(c, 'reason', 'why it is discontinued') }, () => `Recorded: ${args[1]} cancelled.`)
-        : op({ op: 'run.cancel', reason: need(c, 'reason', 'why the run is discontinued') }, () => 'Recorded: the run is cancelled.')
+        : (async () => {
+          const r = await ref()
+          const rec = await wrap(() => c.exec().cancel(ws, r, by ?? 'person', need(c, 'reason', 'why the run is discontinued'), 'cli'))
+          return report(r, rec, 'Recorded: the run is cancelled. An executing attempt is terminated by the executor; nothing it reports afterwards is recorded.')
+        })()
+    case 'stop': {
+      const r = await ref()
+      const rec = await wrap(() => c.exec().stop(ws, r, by ?? 'person', need(c, 'reason', 'why it stops'), 'cli'))
+      return report(r, rec, rec.control.stop ? `Stop requested; attempt ${rec.control.attempt?.id} ends when the executor confirms its process is gone. The run then waits for a resume.` : 'Recorded: the run is stopped. Nothing resumes it until a person does (wfe run resume).')
+    }
+    case 'resume': {
+      const r = await ref()
+      const res = await wrap(() => c.exec().resume(ws, r, by ?? 'person', need(c, 'reason', 'the resume instruction: what the executor should do now'), 'cli', receipt))
+      return report(r, res.record, `Recorded: resumed.${res.job ? ` Queued job ${res.job.id} (${res.job.state}).` : ''}`)
+    }
     case 'ask': return op({ op: 'question.ask', question: c.opt('id') ?? '', node: args[1], text: need(c, 'question', 'the question'), to: need(c, 'to', 'to whom it is addressed') },
       rec => { const q = Object.values(rec.questions).at(-1)!; return `Recorded question ${q.id} to ${q.to}${q.node ? `; ${q.node} waits on it` : ''}.` })
     case 'answer': {
       if (!args[1]) throw c.usage('<question> is required')
-      return op({ op: 'question.answer', question: args[1], text: need(c, 'answer', 'the answer text'), from: c.opt('from') }, () => `Recorded an answer to ${args[1]}. A node waiting on it keeps waiting until the answer is taken up.`)
+      return op({ op: 'question.answer', question: args[1], text: need(c, 'answer', 'the answer text'), from: c.opt('from') }, () => `Recorded an answer to ${args[1]}. A node waiting on it keeps waiting until the answer is taken up.`, undefined,
+        async (t, rec) => { if (rec.executor.name !== c.exec().executor) return null; const j = await c.exec().afterAnswer(ws, t, args[1]); return j ? `The executor resumes the run (job ${j.id}, ${j.state}).` : 'The run is not resumed automatically now (held, executing, or not waiting on this question).' })
     }
     case 'take-up': {
       if (!args[1]) throw c.usage('<question> is required')
@@ -396,6 +442,15 @@ export async function runCommand(c: RunCli): Promise<number> {
     case 'withdraw': {
       if (!args[1]) throw c.usage('<question> is required')
       return op({ op: 'question.withdraw', question: args[1], reason: need(c, 'reason', 'why the question is withdrawn') }, () => `Recorded: ${args[1]} withdrawn.`)
+    }
+    case 'events': {
+      const r = await ref()
+      const resp = await wrap(() => runResponse(ws, r))
+      if (!resp.record) throw c.refused(`run ${runKey(r)} cannot be used: ${resp.problem?.message}`)
+      const since = Number(c.opt('since') ?? 0)
+      const events = notableEvents(resp.record, since)
+      c.out(events.length ? events.map(e => `${e.id}  ${e.type.padEnd(12)} ${e.at}  ${e.detail.split('\n')[0].slice(0, 120)}`).join('\n') : `No notable events after seq ${since}.`, { ref: runKey(r), events })
+      return 0
     }
     case 'access': {
       const r = await ref()
@@ -421,7 +476,8 @@ export async function runCommand(c: RunCli): Promise<number> {
       const decision = need(c, 'decision', 'accepted or rejected')
       if (decision !== 'accepted' && decision !== 'rejected') throw c.usage('--decision is accepted or rejected')
       if (!by?.trim()) throw c.usage('--by is required: the person who decides')
-      return op({ op: 'run.decide', decision, evidence: need(c, 'evidence', 'what the decision rests on'), note: c.opt('note') }, () => `Recorded: ${decision} by ${by}.`)
+      return op({ op: 'run.decide', decision, evidence: need(c, 'evidence', 'what the decision rests on'), note: c.opt('note') }, () => `Recorded: ${decision} by ${by}.`, undefined,
+        async (t, rec) => { if (rec.executor.name !== c.exec().executor) return null; const cp = await c.exec().afterDecision(ws, t, decision); return `Publication checkpoint ${cp.id}: ${cp.state}${cp.error ? ` — ${cp.error}` : ''}` })
     }
   }
   return 2

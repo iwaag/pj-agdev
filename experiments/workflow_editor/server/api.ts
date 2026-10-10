@@ -7,6 +7,7 @@ import { APPROVAL_KINDS, type ApprovalKind, type Project, type Workflow } from '
 import { addNewRepository, createProject } from './create.ts'
 import { addSharedRepository, createSharedRepository, dashboard, obtainWorkspace, registerGiteaProject, registerSharedRepository, type AgdevContext } from './agdev.ts'
 import type { Gitea } from './gitea.ts'
+import type { ExecStore } from './exec.ts'
 import { REPO_CATEGORIES, type RepoCategory } from './registry.ts'
 import { BoundaryError, inside } from './files.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, type Registry } from './registry.ts'
@@ -26,7 +27,7 @@ export interface ServiceConfig {
   watcher?: Watcher
   gitea?: Gitea
   giteaProblem?: string
-  executor?: AgdevContext['executor']
+  exec?: ExecStore // this host's execution management (queue, attempts, publication)
 }
 
 // Requests forwarded by agdevworld's same-origin route carry this header
@@ -97,7 +98,8 @@ export function createHandler(config: ServiceConfig) {
   const area = config.area ?? dirname(config.registryFile)
   const texts = (v: unknown) => Array.isArray(v) && v.every(x => typeof x === 'string')
 
-  const agdev: AgdevContext = { registryFile: config.registryFile, area, gitea: config.gitea, giteaProblem: config.giteaProblem, executor: config.executor }
+  const agdev: AgdevContext = { registryFile: config.registryFile, area, gitea: config.gitea, giteaProblem: config.giteaProblem, executor: config.exec ? async () => config.exec!.executorState() : undefined }
+  const needExec = () => { if (!config.exec) throw new RequestError(503, 'execution is not configured on this service'); return config.exec }
   const str = (v: unknown, what: string) => { if (typeof v !== 'string' || !v.trim()) throw new RequestError(400, `${what} is required`); return v.trim() }
   const category = (v: unknown): RepoCategory => { if (!REPO_CATEGORIES.includes(v as RepoCategory)) throw new RequestError(400, `category must be one of ${REPO_CATEGORIES.join(', ')}`); return v as RepoCategory }
 
@@ -261,20 +263,41 @@ export function createHandler(config: ServiceConfig) {
       // POST runs/<wf>/<run>/ops {op, …, by, expectSeq}.
       if (b === 'runs') {
         if (!file && method === 'GET') return send(res, 200, await listRuns(ws))
+        // A person's request: the run with their words, queued for the executor.
+        if (!file && method === 'POST') {
+          const input = await body(req) as Record<string, unknown>
+          const r = await needExec().request({ workspace: ws.reg.id, workflow: str(input.workflow, 'workflow'), text: str(input.text, 'the request text'), author: str(input.author, 'author'), receipt: str(input.receipt, 'receipt'), by: typeof input.by === 'string' ? input.by : undefined, via: 'browser' })
+          return send(res, r.duplicate ? 200 : 201, { ok: true, ...r })
+        }
         const ref: RunRef = { workflow: parts[4] ?? '', run: parts[5] ?? '' }
         const sub = parts[6]
-        if (!ref.workflow || !ref.run || parts.length > 7) throw new RequestError(404, 'not found')
+        if (!ref.workflow || !ref.run || (parts.length > 7 && sub !== 'checkpoints')) throw new RequestError(404, 'not found')
         if (!sub && method === 'GET') return send(res, 200, await runResponse(ws, ref, { rev: url.searchParams.get('rev') || undefined }))
+        if (sub === 'exec' && method === 'GET') return send(res, 200, needExec().runView(ws.reg.id, ref))
+        if (sub === 'checkpoints' && parts[7] && parts[8] === 'publish' && method === 'POST') return send(res, 200, await needExec().publishCheckpoint(Number(parts[7])))
         if (sub === 'file' && method === 'GET') return send(res, 200, await readRunFile(ws, ref, url.searchParams.get('path') ?? '', { rev: url.searchParams.get('rev') ?? undefined }))
         if (sub === 'ops' && method === 'POST') {
           const input = await body(req) as Record<string, unknown>
-          if (!(OPS as readonly string[]).includes(input.op as string) || input.op === 'run.create') throw new RequestError(400, `op must be one of ${OPS.filter(o => o !== 'run.create').join(', ')}`)
+          const offered = OPS.filter(o => o !== 'run.create' && !o.startsWith('attempt.'))
+          if (!(offered as readonly string[]).includes(input.op as string)) throw new RequestError(400, `op must be one of ${offered.join(', ')} (attempts are the execution host's)`)
           const by = typeof input.by === 'string' ? input.by : ''
           if (!by.trim()) throw new RequestError(400, 'by is required: the name of who records this')
           const expectSeq = typeof input.expectSeq === 'number' ? input.expectSeq : undefined
           const { by: _b, expectSeq: _e, ...op } = input
+          const x = config.exec
+          const reason = typeof op.reason === 'string' ? op.reason : ''
+          // The person's control operations go through execution management,
+          // which also terminates, queues or publishes as they require.
+          if (x && op.op === 'run.stop') { const rec = await x.stop(ws, ref, by, reason, 'browser'); return send(res, 200, { ok: true, seq: rec.seq, record: rec }) }
+          if (x && op.op === 'run.cancel') { const rec = await x.cancel(ws, ref, by, reason, 'browser'); return send(res, 200, { ok: true, seq: rec.seq, record: rec }) }
+          if (x && op.op === 'run.resume') { const r = await x.resume(ws, ref, by, reason, 'browser', typeof op.receipt === 'string' ? op.receipt : undefined); return send(res, 200, { ok: true, seq: r.record.seq, record: r.record, job: r.job }) }
           const r = await runOp(ws, ref, op as unknown as OpInput, { by, via: 'browser', expectSeq })
-          return send(res, 200, { ok: true, seq: r.record.seq, record: r.record })
+          const extra: Record<string, unknown> = { duplicate: r.duplicate ?? false }
+          if (x && r.record.executor.name === x.executor) {
+            if (op.op === 'question.answer') extra.job = await x.afterAnswer(ws, ref, String(op.question)) // persisted first, then queued
+            if (op.op === 'run.decide' && !r.duplicate) extra.checkpoint = await x.afterDecision(ws, ref, String(op.decision)).catch(e => ({ state: 'failed', error: (e as Error).message }))
+          }
+          return send(res, 200, { ok: true, seq: r.record.seq, record: r.record, ...extra })
         }
         throw new RequestError(404, `no route for ${method} ${url.pathname}`)
       }

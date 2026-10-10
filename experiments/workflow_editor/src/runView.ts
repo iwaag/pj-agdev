@@ -5,8 +5,8 @@
 // answering a question, deciding on the result, cancelling the run. It never
 // edits a definition, and recording an answer does not wake any agent.
 import type { RunResponse } from '../shared/api.ts'
-import { holderOf, questionState, runKey, type NodeRecord, type Question, type RunRecord } from '../shared/run.ts'
-import { api, ApiError } from './api.ts'
+import { holderOf, questionState, runKey, situation, type NodeRecord, type Question, type RunRecord } from '../shared/run.ts'
+import { api, ApiError, type RunExecView } from './api.ts'
 import { Canvas, TYPE_LABEL } from './canvas.ts'
 import { h, when } from './dom.ts'
 import { icon } from './icons.ts'
@@ -68,6 +68,8 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
   let viewing: { path: string; text?: string; error?: string } | null = null
   const drafts = new Map<string, string>() // answer and form drafts, kept across reloads
   let actor = stored(ACTOR_KEY, '')
+  let execView: RunExecView | null = null
+  let execError = ''
 
   const crumbs = h('div.crumbs')
   const refreshButton = h('button', { title: 'Re-read the run now', onclick: () => void load({}) }, 'Refresh')
@@ -93,6 +95,9 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
       const r = await api.run(wsId, workflow, run, rev)
       if (disposed) return
       resp = r
+      if (!rev) {
+        try { execView = await api.runExec(wsId, workflow, run); execError = '' } catch (e) { execView = null; execError = (e as Error).message }
+      }
       loadError = ''
       if (r.record) shown = r
       render()
@@ -158,7 +163,7 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
     const input = rec.input
     summary.append(
       h('div.run-title',
-        chip(ex.state), h('span.run-wf', { title: 'The run follows this fixed copy; editing the workflow does not change it.' }, icon('doc', 'icon small'), `Snapshot of ${rec.definition.root}`),
+        chip(ex.state), situationChip(rec), h('span.run-wf', { title: 'The run follows this fixed copy; editing the workflow does not change it.' }, icon('doc', 'icon small'), `Snapshot of ${rec.definition.root}`),
         src?.file ? h('a.button.small-btn', { href: `#/ws/${encodeURIComponent(wsId)}/wf/${encodeURIComponent(src.file.replace(/^devdocs\/workflows\//, ''))}`, title: 'The editable definition in devdocs/workflows; it may differ from this run' }, 'Open current definition') : null,
         srcText ? h(`span.src-state.${src!.status}`, srcText + (src?.renamed ? ` (now ${src.file})` : '')) : null),
       h('div.run-facts',
@@ -175,8 +180,14 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
         ex.blocked.length ? line('Blocked', ex.blocked.map(n => nodeLink(n)), 'warn') : null,
         rec.cancelled ? line('Cancelled', [`by ${rec.cancelled.by}: ${rec.cancelled.reason}`], 'error') : null,
         rec.decisions.length ? line('Decision', [`${rec.decisions.at(-1)!.decision} by ${rec.decisions.at(-1)!.by}`], rec.decisions.at(-1)!.decision === 'accepted' ? 'ok' : 'error') : null),
-      h('p.run-note', '“Running” means the executor recorded a start. Neither the time since the last update nor this live view says whether an agent is still working; the conversation in VS Code does.'),
+      h('p.run-note', '“Running” on a node means the executor recorded a start. Whether a process is executing now is the execution host\'s fact, shown under Execution; the time since the last update says neither.'),
     )
+  }
+
+  function situationChip(rec: RunRecord): HTMLElement | null {
+    const sit = situation(rec)
+    const LABEL: Record<string, string> = { executing: 'Executing', stopping: 'Stopping', 'awaiting-person': 'Awaiting a person', stopped: 'Stopped', interrupted: 'Interrupted', unknown: 'Unknown — look before resuming' }
+    return LABEL[sit] ? h(`span.chip.sit-${sit}`, { title: 'What runs now (Execution, at the side)' }, LABEL[sit]) : null
   }
   const fact = (k: string, v: string, cls = '') => h(`div.fact${cls ? `.${cls}` : ''}`, h('span.k', k), h('span.v', v))
   const line = (k: string, items: (Node | string | null)[], cls = '') => h(`div.now-line${cls ? `.${cls}` : ''}`, h('span.k', k), h('span.v', ...items.filter((x): x is Node | string => x !== null).flatMap((x, i) => (i ? [', ', x] : [x]))))
@@ -306,6 +317,7 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
       viewing ? h('div.file-view', h('div.row.tight', h('strong', viewing.path), h('button.icon-btn', { onclick: () => { viewing = null; render() } }, '×')),
         viewing.error ? h('p.error', viewing.error) : viewing.text === undefined ? h('p.muted', 'Loading…') : h('pre', viewing.text)) : null))
 
+    if (!rev) side.append(section('Execution', ...executionPanel(rec)))
     if (!rev) side.append(section('Result', ...decisionForm(rec)))
 
     const history = rec.history.slice().reverse()
@@ -323,6 +335,56 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
       const el = side.querySelector<HTMLTextAreaElement | HTMLInputElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)
       if (el) { el.focus(); if (caret && caret[0] !== null) el.setSelectionRange(caret[0], caret[1]) }
     }
+  }
+
+  // What runs, what waits and what is published: the record's control state
+  // with this host's facts (process, queue, checkpoints) beside it.
+  function executionPanel(rec: RunRecord): (Node | null)[] {
+    const out: (Node | null)[] = []
+    const sit = situation(rec)
+    const open = execView?.attempts.find(a => a.state !== 'ended')
+    const SIT: Record<string, string> = {
+      executing: 'Executing', stopping: 'Stop requested — waiting for the process to end', 'awaiting-person': 'Awaiting a person — no process runs meanwhile',
+      stopped: 'Stopped — resumes only when you resume it', interrupted: 'Interrupted — look at the working tree, then resume', unknown: 'Unknown — the process was lost; look, then resume',
+      completed: 'Completed', cancelled: 'Cancelled', 'not-started': 'Not started', idle: 'Idle',
+    }
+    const process = open ? (open.alive === true ? `process ${open.pid} alive` : open.alive === false ? (open.pid ? `process ${open.pid} not seen alive` : 'launching') : 'process on another host') : ''
+    out.push(h('div.row.tight', h(`span.chip.sit-${sit}`, SIT[sit] ?? sit), process ? h('span.muted.small', process) : null))
+    if (rec.control.hold) out.push(h('p.small', `Held (${rec.control.hold.kind}) since ${when(rec.control.hold.since)} by ${rec.control.hold.by}: ${rec.control.hold.reason}`))
+    if (execError) out.push(h('div.banner.warn', `Execution facts of this host could not be read: ${execError}`))
+    else if (execView) out.push(h('p.small.muted', `Executor: ${execView.executor.state}${execView.executor.detail ? ` — ${execView.executor.detail}` : ''}`))
+    const frozen = !!(resp && !resp.record) || !!rec.cancelled
+    const instruction = h('textarea', { rows: 2, placeholder: 'what the executor should do now (after looking at the working tree)', 'aria-label': 'Resume instruction', value: drafts.get('resume') ?? '', dataset: { focusKey: 'resume' } })
+    instruction.addEventListener('input', () => drafts.set('resume', instruction.value))
+    out.push(h('div.row.tight',
+      h('button', {
+        disabled: frozen || !!rec.control.hold || !!rec.control.stop || sit === 'completed', title: 'Stop execution; the run stays resumable',
+        onclick: () => { const reason = prompt('Stop this run? It stays resumable. Reason:'); if (reason?.trim()) void submit({ op: 'run.stop', reason }, 'Stop recorded.') },
+      }, 'Stop'),
+      rec.control.hold ? h('button.primary', {
+        disabled: frozen, onclick: () => {
+          if (!instruction.value.trim()) { opNotice = { kind: 'error', text: 'A resume needs your instruction.' }; renderBanners(); return }
+          void submit({ op: 'run.resume', reason: instruction.value }, 'Resumed: the executor is queued.', ['resume'])
+        },
+      }, 'Resume') : null))
+    if (rec.control.hold) out.push(instruction)
+    if (execView?.jobs.some(j => j.state === 'queued' || j.state === 'claimed')) out.push(h('p.small', 'Queued: ', ...execView.jobs.filter(j => j.state === 'queued' || j.state === 'claimed').map(j => `${j.kind} (${j.state}) — ${j.reason}`)))
+    if (execView?.attempts.length) {
+      out.push(h('h4', `Attempts (${execView.attempts.length})`), h('ul.attempts', ...execView.attempts.slice().reverse().map(a => h('li.small',
+        h('code', a.id), ` ${a.state === 'ended' ? `${a.outcome}${a.exit_code !== null ? ` (exit ${a.exit_code})` : a.signal ? ` (${a.signal})` : ''}` : a.state}`,
+        h('span.muted', ` · ${when(a.began)}${a.ended ? ` → ${when(a.ended)}` : ''}${a.backend ? ` · ${a.backend}` : ''}${a.stop_requested ? ' · stop requested' : ''}`)))))
+    }
+    if (execView?.checkpoints.length) {
+      out.push(h('h4', 'Publication'))
+      for (const c of execView.checkpoints.slice().reverse().slice(0, 6)) {
+        out.push(h('div.checkpoint.small',
+          h(`span.chip.${c.state === 'published' || c.state === 'nothing' ? 'ok' : c.state === 'pending' ? 'muted' : 'warn'}`, c.state === 'nothing' ? 'nothing to publish' : c.state), ` ${c.kind}`,
+          ...c.steps.map(st => h('div.muted', `${st.repo === '.' ? 'root' : st.repo}: ${st.commit ? `${st.commit.slice(0, 7)} ${st.pushed ? `pushed to ${st.branch}` : 'not pushed'}` : 'no commit'}${st.excluded.length ? `; left out (already changed before): ${st.excluded.join(', ')}` : ''}${st.conflicts.length ? `; needs you: ${st.conflicts.join(', ')} changed before the run and again by it` : ''}${st.error ? `; ${st.error}` : ''}`)),
+          c.error ? h('div.error', c.error) : null,
+          c.state === 'failed' || c.state === 'attention' ? h('button', { onclick: async () => { try { await api.retryCheckpoint(wsId, workflow, run, c.id); opNotice = { kind: 'ok', text: 'Publication retried.' } } catch (e) { opNotice = { kind: 'error', text: `Retry failed: ${(e as Error).message}` } } await load({}) } }, 'Retry publication') : null))
+      }
+    }
+    return out
   }
 
   function decisionForm(rec: RunRecord): (Node | null)[] {
@@ -395,13 +457,22 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
   })
   // Relative times ("5 min ago") age while nothing is recorded.
   const clock = setInterval(() => { if (shown?.record) renderSummary(shown) }, 30_000)
+  // This host's execution facts (process, queue, publication) change without
+  // a run.json change; they are re-read every 3 s.
+  const execTimer = rev ? undefined : setInterval(async () => {
+    if (disposed || !shown?.record) return
+    try {
+      const v = await api.runExec(wsId, workflow, run)
+      if (JSON.stringify(v) !== JSON.stringify(execView)) { execView = v; execError = ''; renderSide() }
+    } catch (e) { if (!execError) { execError = (e as Error).message; renderSide() } }
+  }, 3000)
 
   renderCrumbs()
   render()
   void load({}).then(() => canvas.fit())
   void loadProjectName()
   return {
-    dispose: () => { disposed = true; stream?.close(); clearInterval(clock) },
+    dispose: () => { disposed = true; stream?.close(); clearInterval(clock); clearInterval(execTimer) },
     isDirty: () => [...drafts.values()].some(v => v.trim() !== ''),
   }
 }

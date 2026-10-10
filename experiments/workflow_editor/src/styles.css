@@ -379,3 +379,6 @@ ol.history code { font-size: 12px; background: #eef0f3; border-radius: 4px; padd
 .add-shared .shared-row { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
 .add-shared .shared-row.picked { background: #eef3fb; }
 .top-actions { display: flex; gap: 10px; align-items: center; margin-left: auto; }
+.chip.sit-executing { border-color: #6aa0e0; color: #1f5ea8; }
+.chip.sit-stopping, .chip.sit-stopped, .chip.sit-interrupted, .chip.sit-unknown { border-color: #e0b05a; color: #8a5a00; background: #fff7e6; }
+.chip.sit-awaiting-person { border-color: #c9a227; color: #6b5300; }

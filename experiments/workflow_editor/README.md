@@ -68,6 +68,18 @@ those stay with `wfe` on this host. The operation room links "agdev dashboard
   `gitea/gitea:latest`; skipped without Docker; `WFE_TEST_GITEA=<setting>`
   points them at another test instance).
 
+### Execution by autolab
+
+`agautolab.wfexec` (in `pj-agdev/agautolab`) is the executor: one slot, the
+agent launched in the project's workspace in its own process group with
+`WFE_ATTEMPT`, its guide `agautolab/agent/guides/wfrun/guide.md`, its role
+`wfrun` in `agents.toml`. It reaches this host's execution management only
+through `wfe exec` (claim, started, finished, stops, heartbeat, reconcile);
+the rules are in `shared/run.ts` and `server/exec.ts` (docs/runs.md,
+"Execution by autolab"). `test/exec.test.ts` and `checks/exec.ts` exercise
+them synthetically; `agautolab/tests/test_wfexec.py` runs the loop with a
+stub agent.
+
 ## Fixture
 
 ```sh
