@@ -191,6 +191,9 @@ function artifactPath(ws: Workspace, ref: RunRef, p: string): string {
   return p
 }
 
+// One line of a longer text, marked when something was left out.
+const first = (t: string, n: number) => { const l = t.split('\n')[0]; return l.length > n || t.includes('\n') ? `${l.slice(0, n)}…` : l }
+
 const ago = (at: string | null | undefined) => {
   if (!at) return '—'
   const s = Math.round((Date.now() - Date.parse(at)) / 1000)
@@ -204,7 +207,7 @@ function entryLine(e: HistoryEntry): string {
   const moves = Object.entries(e.change.nodes ?? {}).map(([n, [a, b]]) => `${n} ${a}→${b}`)
   if (e.change.execution) moves.push(`run ${e.change.execution[0] ?? '—'}→${e.change.execution[1]}`)
   const detail = (d.reason ?? d.outcome ?? d.text ?? d.evidence ?? d.external ?? '') as string
-  return `  ${String(e.seq).padStart(3)} ${e.at}  ${e.op.padEnd(17)} ${e.by} (${e.via})${subject ? `  ${subject}` : ''}${moves.length ? `  [${moves.join(', ')}]` : ''}${detail ? `\n${' '.repeat(30)}${detail.split('\n')[0].slice(0, 140)}` : ''}`
+  return `  ${String(e.seq).padStart(3)} ${e.at}  ${e.op.padEnd(17)} ${e.by} (${e.via})${subject ? `  ${subject}` : ''}${moves.length ? `  [${moves.join(', ')}]` : ''}${detail ? `\n${' '.repeat(30)}${first(detail, 140)}` : ''}`
 }
 
 export function describeRun(r: RunResponse, opts: { history?: boolean; url?: string | null } = {}): string {
@@ -241,26 +244,26 @@ export function describeRun(r: RunResponse, opts: { history?: boolean; url?: str
     if (n.state === 'pending') what = ex.ready.includes(id) ? 'READY to start' : ex.blocked.includes(id) ? 'blocked: a predecessor failed or was cancelled' : 'waits for predecessors'
     else if (n.state === 'running') what = `reported started ${n.started}; last update ${ago(n.updated)}`
     else if (n.state === 'waiting' && n.wait) what = `waits: ${n.wait.reason}; next move: ${holderOf(rec, id)}${'external' in n.wait.on ? `; awaiting ${n.wait.on.external}` : ''}`
-    else if (n.state === 'completed') what = `outcome: ${n.outcome?.text.split('\n')[0].slice(0, 120)}${n.outcome?.child ? ` (child ${runKey(n.outcome.child)} ${n.outcome.child.execution} at seq ${n.outcome.child.seq})` : ''}`
+    else if (n.state === 'completed') what = `outcome: ${first(n.outcome?.text ?? '', 120)}${n.outcome?.child ? ` (child ${runKey(n.outcome.child)} ${n.outcome.child.execution} at seq ${n.outcome.child.seq})` : ''}`
     else if (n.state === 'failed') what = `failure: ${n.failure?.reason}`
     else if (n.state === 'cancelled') what = `cancelled: ${n.cancellation?.reason}`
     const last = n.notes.at(-1)
-    lines.push(`  ${id.padEnd(20)} ${n.state.padEnd(9)} ${what}${last && n.state !== 'completed' ? `\n${' '.repeat(33)}note: ${last.text.split('\n')[0].slice(0, 120)}` : ''}`)
+    lines.push(`  ${id.padEnd(20)} ${n.state.padEnd(9)} ${what}${last && n.state !== 'completed' ? `\n${' '.repeat(33)}note: ${first(last.text, 120)}` : ''}`)
   }
   if (ex.ready.length) lines.push(`Ready: ${ex.ready.join(', ')}`)
   const qs = Object.values(rec.questions)
   if (qs.length) {
     lines.push('Questions:')
     for (const q of qs) {
-      lines.push(`  ${q.id} ${questionState(q).padEnd(9)} to ${q.to}${q.node ? ` (node ${q.node})` : ''}, asked by ${q.askedBy}: ${q.text.split('\n')[0]}`)
-      q.answers.forEach((a, k) => lines.push(`     answer ${k}${q.takenUp?.answer === k ? ' (taken up)' : ''} from ${a.from}${a.by !== a.from ? `, recorded by ${a.by}` : ''} via ${a.via}: ${a.text.split('\n')[0]}`))
+      lines.push(`  ${q.id} ${questionState(q).padEnd(9)} to ${q.to}${q.node ? ` (node ${q.node})` : ''}, asked by ${q.askedBy}: ${first(q.text, 400)}`)
+      q.answers.forEach((a, k) => lines.push(`     answer ${k}${q.takenUp?.answer === k ? ' (taken up)' : ''} from ${a.from}${a.by !== a.from ? `, recorded by ${a.by}` : ''} via ${a.via}: ${first(a.text, 400)}`))
       if (q.withdrawn) lines.push(`     withdrawn by ${q.withdrawn.by}: ${q.withdrawn.reason}`)
     }
   }
   if (r.children.length) lines.push('Children:', ...r.children.map(c => `  ${c.ref} (node ${c.node}): ${c.problem ?? c.execution}`))
   if (r.artifacts.length) lines.push('Artifacts:', ...r.artifacts.map(a => `  ${a.path}${a.exists ? '' : ' (missing)'}`))
   if (rec.decisions.length) lines.push('Decisions:', ...rec.decisions.map(d => `  ${d.decision} by ${d.by} at ${d.at}; evidence: ${d.evidence}${d.note ? `; ${d.note}` : ''}`))
-  if (r.files.length) lines.push(`Files in ${r.dir}/: ${r.files.map(f => f.name).join(', ')}`)
+  if (r.files.length) lines.push(`Files in ${r.dir}/: ${r.files.map(f => f.name).join(', ')}; the bundle in definition/`)
   const hist = opts.history ? rec.history : rec.history.slice(-5)
   lines.push(opts.history ? 'History:' : `History (last ${hist.length} of ${rec.history.length}; --history for all):`, ...hist.map(entryLine))
   return lines.join('\n')
@@ -349,7 +352,10 @@ export async function runCommand(c: RunCli): Promise<number> {
       c.out(human, { ok: results.every(x => x.ok), runs: results })
       return results.every(x => x.ok) ? 0 : 1
     }
-    case 'start': return op({ op: 'node.start', node: node(), reason: c.opt('reason') }, () => `Recorded: ${args[1]} started (or resumed).`)
+    case 'start': return op({ op: 'node.start', node: node(), reason: c.opt('reason') }, rec => {
+      const from = rec.history.at(-1)!.change.nodes?.[args[1]]?.[0]
+      return from === 'pending' ? `Recorded: ${args[1]} started.` : from === 'waiting' ? `Recorded: ${args[1]} resumed (it was waiting).` : `Recorded: ${args[1]} restarted after its failure.`
+    })
     case 'progress': return op({ op: 'node.progress', node: node(), text: need(c, 'note', 'the progress note') }, () => `Recorded a note on ${args[1]}.`)
     case 'wait': return op({ op: 'node.wait', node: node(), reason: need(c, 'reason', 'why the node waits'), holder: need(c, 'holder', 'who or what holds the next move'), external: need(c, 'external', 'a reference to the awaited result') }, () => `Recorded: ${args[1]} waits.`)
     case 'complete': {

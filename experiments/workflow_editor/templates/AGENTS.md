@@ -64,9 +64,19 @@ What you have:
   them, with them as author; saving them does not make you the author. A
   request you write yourself — rewording their input, or delegating — is
   `request.md`, recorded as yours, with what entrusted you.
+  `--braindump -` reads the words from standard input, so they need no
+  temporary file. `--executor` is the name you go by with the person;
+  `--backend` is what serves you (model, harness) when you know it.
+  (p3/pre1 rehearsal: where to put the person's chat text and what to name
+  the executor were unclear.)
 - `wfe run create` copies the workflow and every workflow it delegates to
   into `definition/`. The run follows that copy for its whole life, whatever
-  happens to the workflow files later; a changed definition is a new run.
+  happens to the workflow files later; a changed definition is a new run. The
+  person may edit the workflow files while a run is under way; `wfe run show`
+  and the run view then say the current definition changed or was deleted.
+  Whether that change calls for a new run is the person's decision, and they
+  learn of your noticing it from you. (p3/pre1 rehearsal: a mid-run rename was
+  noticed and silently set aside.)
 - `run.json` is the record the person's browser shows. `wfe run` writes it,
   one entry per command, and refuses what the graph does not allow: a node
   starts only when every predecessor has completed, and a failed or cancelled
@@ -77,7 +87,15 @@ What you have:
   child run, and who holds the next move; `progress` — a note on work under
   way; `complete` — the outcome, with the reports or files it produced;
   `fail` — a problem prevents continuing. The person reads them as they
-  happen, so a record made when the thing happens is what they see.
+  happen, so a record made when the thing happens is what they see. Records
+  are never edited: a correction goes into a report or a later note.
+- A delegate node waits on its child run. Taking up the child's result is
+  `start` on the parent node (it resumes), then `complete`. The child's
+  `request.md` is generated from the node description unless you write it
+  (`delegate --request`); what the parent run already settled, such as an
+  agreed scope, reaches the child only through a request you write.
+  (p3/pre1 rehearsal: the generated request lacked the agreed scope, and the
+  resume step was found only in the contract.)
 - Plans and reports are yours: what you write in them and which reports you
   make. The tools never parse them.
 - The person can answer a question in the browser or here. An answer recorded
@@ -95,6 +113,9 @@ What you have:
   gives for a run — commands, repositories, anything else — belong in its
   `plan.md`, and you hold yourself to them.
 - Run files are saved, not committed. A devdocs commit keeps the definition
-  and the stage the run had reached; commit at meaningful points (and the
-  project's `devdocs` gitlink when the project is published).
+  and the stage the run had reached; commit at meaningful points. The
+  project root records which devdocs (and other submodule) commits belong
+  together only when its gitlinks are committed too; until then `git status`
+  in the project shows them as modified. (p3/pre1 rehearsal: "published" was
+  unclear for a local project.)
 - Waiting is not failing: a question can wait for hours, and nothing expires.

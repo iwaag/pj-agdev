@@ -303,7 +303,8 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
     if (rel.length) side.append(section('Related runs', ...rel))
 
     const files = r!.files
-    const recorded = r!.artifacts
+    // Recorded artifacts outside the run folder; the folder's own files are listed above.
+    const recorded = r!.artifacts.filter(a => !(a.path.startsWith(`${r!.dir}/`) && !a.path.slice(r!.dir.length + 1).includes('/')))
     side.append(section('Reports and files',
       h('p.small.muted', `${r!.dir}/ — open these in VS Code to edit; here they are read-only.`),
       h('ul.files', ...files.map(f => h('li', fileButton(f.name), h('span.muted.small', ` ${f.size} B${f.modified ? ` · ${ago(f.modified)}` : ''}`)))),

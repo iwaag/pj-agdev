@@ -444,6 +444,10 @@ function inputOf(o: CreateRunOptions['input']): { input: RunInput; files: Record
 export async function createRun(ws: Workspace, o: CreateRunOptions): Promise<CreatedRun> {
   if (!o.executor.name?.trim()) throw new RequestError(400, 'the executor is required (--executor <name>): who performs the run')
   const { input, files } = inputOf(o.input)
+  // A named run that exists is refused first, whatever the definition's state.
+  if (o.name && ID_PATTERN.test(o.workflow) && await stat(await inside(ws.root, runDir({ workflow: o.workflow, run: o.name }))).then(() => true, () => false)) {
+    throw new RequestError(409, `run ${o.workflow}/${o.name} already exists (${runDir({ workflow: o.workflow, run: o.name })}); nothing was changed. Choose another --name or omit it for the next number.`)
+  }
   const src = await sourceBundle(ws, o.workflow)
   const ref = validRef({ workflow: src.root, run: o.name ?? await nextRunId(ws, src.root) })
   if (o.predecessor) validRunRef(o.predecessor, 'predecessor')
