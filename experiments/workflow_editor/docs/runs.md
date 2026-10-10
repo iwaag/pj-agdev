@@ -218,7 +218,7 @@ thing at a time; asking from an already waiting node is refused.
 
 | Record | Effect on the node |
 | --- | --- |
-| `answer` (who answered, text) | none — the node keeps waiting. Several answers may be recorded; each names its question |
+| `answer` (text; `from` who gave it, `by` who recorded it) | none — the node keeps waiting. Several answers may be recorded; each names its question. An agent relaying the person's reply from the IDE records `from` = the person, `by` = itself |
 | `take-up` (who took it up, which answer) | the node waiting on that question resumes `running` |
 | `withdraw` (reason) | the question is closed without an answer; a node waiting on it resumes `running` |
 

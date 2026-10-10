@@ -13,10 +13,12 @@ import { addNewRepository, createProject } from '../server/create.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, workspaceAt, type Registration } from '../server/registry.ts'
 import { RequestError, Workspace } from '../server/workspace.ts'
 import { setupArea } from './setup.ts'
+import { runCommand, runIndex } from './run.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const EXPERIMENT = resolve(here, '..')
 export const CONTRACT = join(EXPERIMENT, 'docs', 'contract.md')
+export const RUN_CONTRACT = join(EXPERIMENT, 'docs', 'runs.md')
 const DEFAULT_REGISTRY = resolve(EXPERIMENT, '..', '..', '.local', 'workflow-editor', 'registry.json')
 
 class UsageError extends Error {}
@@ -25,7 +27,7 @@ class Refused extends Error { detail?: unknown; constructor(m: string, detail?: 
 // ---- arguments ---------------------------------------------------------------
 
 interface Parsed { positional: string[]; opts: Map<string, string[]>; flags: Set<string> }
-const FLAGS = new Set(['json', 'help', 'resume', 'h', 'new'])
+const FLAGS = new Set(['json', 'help', 'resume', 'h', 'new', 'history'])
 function parse(argv: string[]): Parsed {
   const p: Parsed = { positional: [], opts: new Map(), flags: new Set() }
   for (let i = 0; i < argv.length; i++) {
@@ -226,6 +228,11 @@ Workflows (by file name or id)
   approve <wf> <kind>       record an intent or definition approval by a named approver
   arrange <workflow>        auto-arrange the layout
 
+Runs (docs/runs.md; wfe run help)
+  run create <workflow> …   create a run: the input, a fixed copy of the definition, run.json
+  run list | show | check   runs, one run in full, record checks
+  run start | complete | …  record node starts, waits, questions, answers, outcomes, delegation
+
 Editor
   serve                     start the editor (UI and API) for this registry
   setup <area>              create or refresh an authoring area and its AGENTS.md
@@ -234,6 +241,7 @@ Options: --workspace <id> (default: the workspace containing the current directo
          --json (structured output), --registry <file>, --area <dir>
 Registry: ${registryFile(p)}
 File contract (project.yaml, workflow YAML, validation, approvals): ${CONTRACT}
+Run contract (run folders, run.json, states, questions, delegation): ${RUN_CONTRACT}
 No command needs the editor service. Definition files may also be edited directly;
 an open editor view follows the change. Exit codes: 0 ok, 1 refused or errors, 2 usage.`
 }
@@ -401,7 +409,22 @@ async function cmdServe(p: Parsed): Promise<number> {
   return new Promise<number>(r => child.on('exit', c => r(c ?? 0)))
 }
 
+async function cmdRun(p: Parsed): Promise<number> {
+  return runCommand({
+    positional: p.positional,
+    opt: k => opt(p, k),
+    opts: k => p.opts.get(k) ?? [],
+    flag: k => p.flags.has(k),
+    workspace: () => workspace(p),
+    out,
+    usage: m => new UsageError(m),
+    refused: (m, detail) => new Refused(m, detail),
+    serviceUrl: async () => { const s = await serviceState(p); return s.running && s.sameRegistry ? s.url : null },
+  })
+}
+
 const COMMANDS: Record<string, (p: Parsed) => Promise<number>> = {
+  run: cmdRun,
   create: cmdCreate, register: cmdRegister, list: cmdList, status: cmdStatus, validate: cmdValidate,
   approve: cmdApprove, arrange: cmdArrange, 'add-repo': cmdAddRepo, workflow: cmdWorkflow, serve: cmdServe, setup: cmdSetup,
 }
@@ -413,18 +436,19 @@ export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = p.positional
   if (!cmd || cmd === 'help' || (!cmd && p.flags.has('help'))) {
     const topic = cmd === 'help' ? rest[0] : undefined
-    if (topic && HELP[topic]) console.log(HELP[topic])
+    if (topic === 'run') console.log(runIndex())
+    else if (topic && HELP[topic]) console.log(HELP[topic])
     else if (topic) { console.error(`wfe: no command "${topic}"\n`); console.log(index(p)); return 2 }
     else console.log(index(p))
     return 0
   }
   if (!COMMANDS[cmd]) { console.error(`wfe: no command "${cmd}" (see: wfe help)`); return 2 }
-  if (p.flags.has('help')) { console.log(HELP[cmd]); return 0 }
+  if (p.flags.has('help') && cmd !== 'run') { console.log(HELP[cmd]); return 0 }
   p.positional = rest
   try {
     return await COMMANDS[cmd](p)
   } catch (e) {
-    if (e instanceof UsageError) { console.error(`wfe ${cmd}: ${e.message}\n\n${HELP[cmd]}`); return 2 }
+    if (e instanceof UsageError) { console.error(`wfe ${cmd}: ${e.message}\n\n${cmd === 'run' ? 'See: wfe run help <subcommand>' : HELP[cmd]}`); return 2 }
     if (e instanceof Refused || e instanceof RegistryError) {
       const detail = (e as Refused).detail
       if (json) console.log(JSON.stringify({ ok: false, error: e.message, detail }, null, 2))

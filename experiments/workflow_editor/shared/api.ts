@@ -3,6 +3,7 @@
 import type { ApprovalState } from './canonical.ts'
 import type { ApprovalKind, Issue, Project, Workflow } from './model.ts'
 import type { RepositoryInfo } from './validate.ts'
+import type { ExecutionState, RunRecord, RunRef } from './run.ts'
 
 export interface FileProblem {
   kind: 'malformed' | 'unsupported' | 'shape' | 'missing' | 'unreadable'
@@ -126,7 +127,72 @@ export interface ChangeEvent {
   workspace: string
   // workflows: a file appeared or disappeared; git: HEAD, index, dirty or
   // submodule checkout state changed; registry: the workspace list changed.
-  kind: 'project' | 'workflow' | 'workflows' | 'repositories' | 'git' | 'registry'
+  // run: a run's record or its folder's files changed; runs: a run appeared or disappeared.
+  kind: 'project' | 'workflow' | 'workflows' | 'repositories' | 'git' | 'registry' | 'run' | 'runs'
   file?: string
+  run?: string // `<workflow>/<run>` for kind run
   rev: string | null
 }
+
+// ---- runs (docs/runs.md) ------------------------------------------------------
+
+// A run as listed: its record when it reads cleanly, or why it does not.
+export interface RunSummary {
+  ref: string // `<workflow>/<run>`
+  workflow: string
+  run: string
+  dir: string // project-relative
+  problem?: FileProblem & { code?: string }
+  created?: string
+  updated?: string
+  seq?: number
+  execution?: ExecutionState
+  counts?: Record<string, number>
+  waiting?: { node: string; holder: string }[]
+  ready?: string[]
+  failed?: string[]
+  input?: 'braindump' | 'request'
+  executor?: string
+  parent?: string
+  decision?: 'accepted' | 'rejected'
+}
+
+export interface RunFile { name: string; size: number; modified: string }
+
+// What a bundled workflow is compared with: the current source in devdocs/workflows.
+export interface SourceComparison {
+  workflow: string
+  status: 'same' | 'changed' | 'deleted' | 'unreadable'
+  source?: string // where the bundle was copied from
+  file?: string // where the workflow id is now
+  renamed?: boolean // the id now lives in another file of devdocs/workflows
+  detail?: string
+}
+
+export interface RelatedRun {
+  ref: string
+  node?: string // the parent node, for a child
+  execution?: ExecutionState
+  seq?: number
+  problem?: string // missing, unreadable, inconsistent …
+  linksBack?: boolean // the parent lists this run as a child of that node
+}
+
+export interface RunResponse {
+  workspace: string
+  ref: string
+  dir: string
+  rev?: string // a devdocs commit, when the run was read from history
+  revInfo?: { commit: string; subject: string; date: string }
+  record?: RunRecord
+  problem?: FileProblem & { code?: string }
+  bundle: Record<string, { file: string; workflow?: Workflow; problem?: string }>
+  sources: SourceComparison[]
+  files: RunFile[]
+  parent?: RelatedRun
+  children: RelatedRun[]
+  predecessor?: RelatedRun
+  artifacts: { path: string; exists: boolean }[]
+}
+
+export interface RunOpResponse { ok: true; seq: number; record: RunRecord; created?: RunRef }

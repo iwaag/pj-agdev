@@ -119,8 +119,10 @@ is allowed.
 An edge means that its target waits for its source to complete. Several
 outgoing edges are parallel branches; a node with several incoming edges waits
 for all of them. A delegate waits for its target workflow to complete; work
-beside a delegate is another branch. These are definition semantics only —
-p1 has no execution engine. Graphs must be acyclic.
+beside a delegate is another branch. Graphs must be acyclic. Runs (p3/pre1)
+record execution against a fixed copy of a definition and check these rules
+when nodes start and complete; nothing schedules or performs nodes. See
+[runs.md](runs.md).
 
 ## Validation
 

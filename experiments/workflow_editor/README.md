@@ -1,8 +1,9 @@
-# Workflow and project editor (experiment, `workflow_editor` p1, p2/pre1)
+# Workflow and project editor (experiment, `workflow_editor` p1, p2/pre1, p3/pre1)
 
 A standalone MVP that edits Git-backed project and workflow definitions from a
 browser UI while the same YAML files stay editable in any text editor or agent
-IDE. The file contract is in [docs/contract.md](docs/contract.md).
+IDE. The file contract is in [docs/contract.md](docs/contract.md); workflow
+runs (execution records) are in [docs/runs.md](docs/runs.md).
 
 **Writers take turns.** UI edits and external edits are assumed not to overlap.
 
@@ -10,9 +11,9 @@ IDE. The file contract is in [docs/contract.md](docs/contract.md).
 
 | Path | Purpose |
 | --- | --- |
-| `shared/` | Models, validation, canonicalization and digests (service and browser) |
-| `server/` | Local service: YAML round-trip, Git inspection, file persistence, watching, project creation and registration |
-| `cli/wfe.ts` | `wfe`, the command-line surface over the same modules (`wfe help`) |
+| `shared/` | Models, validation, canonicalization and digests; `run.ts`, the run reducer (service, CLI and browser) |
+| `server/` | Local service: YAML round-trip, Git inspection, file persistence, watching, project creation and registration; `runs.ts`, run folders and operations |
+| `cli/wfe.ts`, `cli/run.ts` | `wfe`, the command-line surface over the same modules (`wfe help`, `wfe run help`) |
 | `src/` | Browser UI (TypeScript, Vite, DOM cards and SVG edges) |
 | `examples/` | Synthetic project and workflow files; `invalid/` for validation tests |
 | `scripts/seed.ts` | Builds the local fixture repositories and workspaces |
@@ -122,11 +123,27 @@ node cli/wfe.ts help          # from the checkout (or: npm run wfe -- help)
 | `create`, `register`, `list`, `status` | projects, workspaces, Git state |
 | `add-repo` | `git submodule add`, as the project view does |
 | `workflow new`, `validate`, `approve`, `arrange` | workflows: template, validation, approvals, auto-arrange |
+| `run create`, `list`, `show`, `check`, `start`, `complete`, `ask`, `answer`, `delegate`, … | workflow runs (docs/runs.md) |
 | `serve` | build the UI and start the service for this registry |
 
 `--registry` / `WFE_REGISTRY`, `--area` / `WFE_AREA` and `--port` /
 `WFE_PORT` select the registry, area and service port, with the same defaults
 as the service.
+
+## Runs
+
+A run is one execution of a workflow, recorded in
+`devdocs/<workflow-id>/runs/<run-id>/`: the person's `braindump.md` (or an
+agent's `request.md`), the executor's `plan.md` and reports, a fixed byte copy
+of the workflow and its transitive delegates in `definition/`, and
+`run.json`, whose current state must equal the replay of its history by
+`shared/run.ts`. `wfe run create` makes one; `wfe run start/complete/wait/
+ask/answer/take-up/delegate/…` append one history entry each; `wfe run show`
+and the browser's run view (`#/ws/<ws>/run/<workflow>/<run>`) show it.
+Nothing executes nodes; the executor records what it does, and the tools
+enforce readiness (a join waits for every predecessor; failures never satisfy
+a dependency). Files are saved, never committed. See
+[docs/runs.md](docs/runs.md).
 
 ## Checks
 

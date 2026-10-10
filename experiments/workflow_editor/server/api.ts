@@ -7,6 +7,8 @@ import { APPROVAL_KINDS, type ApprovalKind, type Project, type Workflow } from '
 import { addNewRepository, createProject } from './create.ts'
 import { BoundaryError, inside } from './files.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, type Registry } from './registry.ts'
+import { delegate, listRuns, readRunFile, runOp, runResponse } from './runs.ts'
+import { OPS, type OpInput, type RunRef } from '../shared/run.ts'
 import type { Watcher } from './watch.ts'
 import { RequestError, Workspace } from './workspace.ts'
 
@@ -204,6 +206,31 @@ export function createHandler(config: ServiceConfig) {
           config.watcher?.noteOwnWrite(ws, 'project.yaml', saved.rev)
           return send(res, 200, { ok: true, ...saved })
         }
+      }
+      // Runs (docs/runs.md): GET runs, GET runs/<wf>/<run>[?rev=], GET runs/<wf>/<run>/file?path=,
+      // POST runs/<wf>/<run>/ops {op, …, by, expectSeq}.
+      if (b === 'runs') {
+        if (!file && method === 'GET') return send(res, 200, await listRuns(ws))
+        const ref: RunRef = { workflow: parts[4] ?? '', run: parts[5] ?? '' }
+        const sub = parts[6]
+        if (!ref.workflow || !ref.run || parts.length > 7) throw new RequestError(404, 'not found')
+        if (!sub && method === 'GET') return send(res, 200, await runResponse(ws, ref, { rev: url.searchParams.get('rev') || undefined }))
+        if (sub === 'file' && method === 'GET') return send(res, 200, await readRunFile(ws, ref, url.searchParams.get('path') ?? ''))
+        if (sub === 'ops' && method === 'POST') {
+          const input = await body(req) as Record<string, unknown>
+          if (!(OPS as readonly string[]).includes(input.op as string) || input.op === 'run.create') throw new RequestError(400, `op must be one of ${OPS.filter(o => o !== 'run.create').join(', ')}`)
+          const by = typeof input.by === 'string' ? input.by : ''
+          if (!by.trim()) throw new RequestError(400, 'by is required: the name of who records this')
+          const expectSeq = typeof input.expectSeq === 'number' ? input.expectSeq : undefined
+          const { by: _b, expectSeq: _e, ...op } = input
+          if (op.op === 'node.delegate') {
+            const r = await delegate(ws, ref, String(op.node ?? ''), { name: typeof op.name === 'string' ? op.name : undefined, request: typeof op.request === 'string' ? op.request : undefined, by, via: 'browser', expectSeq })
+            return send(res, 200, { ok: true, seq: r.parent.seq, record: r.parent, created: r.child.ref })
+          }
+          const r = await runOp(ws, ref, op as unknown as OpInput, { by, via: 'browser', expectSeq })
+          return send(res, 200, { ok: true, seq: r.record.seq, record: r.record })
+        }
+        throw new RequestError(404, `no route for ${method} ${url.pathname}`)
       }
       if (b === 'submodules' && !file && method === 'POST') {
         const input = await body(req) as Record<string, unknown>
