@@ -48,6 +48,11 @@ const opt = (p: Parsed, k: string) => p.opts.get(k)?.at(-1)
 
 // ---- context -----------------------------------------------------------------
 
+const devdocsMode = (p: Parsed) => {
+  const m = opt(p, 'devdocs') ?? 'directory'
+  if (m !== 'directory' && m !== 'submodule') throw new UsageError('--devdocs is directory or submodule')
+  return m
+}
 const registryFile = (p: Parsed) => resolve(opt(p, 'registry') ?? process.env.WFE_REGISTRY ?? DEFAULT_REGISTRY)
 const areaDir = (p: Parsed) => resolve(opt(p, 'area') ?? process.env.WFE_AREA ?? dirname(registryFile(p)))
 const port = (p: Parsed) => Number(opt(p, 'port') ?? process.env.WFE_PORT ?? 8095)
@@ -109,11 +114,13 @@ function workflowLine(w: WorkflowSummary) {
 // ---- help --------------------------------------------------------------------
 
 const HELP: Record<string, string> = {
-  create: `wfe create <dir> --name <name> [--id <id>] [--intent <text>] [--goal <text>]... [--devdocs-source <path|url>] [--resume]
+  create: `wfe create <dir> --name <name> [--id <id>] [--intent <text>] [--goal <text>]... [--devdocs directory|submodule] [--devdocs-source <path|url>] [--resume]
 
 Creates a new project and registers it as a workspace.
-  Writes  <dir>/ as a new Git repository with project.yaml (ag.project.v1),
-          .gitignore (.local/), an empty .local/, and devdocs/ as a submodule.
+  Writes  <dir>/ as a new Git repository with project.yaml (ag.project.v2),
+          .gitignore (.local/), an empty .local/, and devdocs/: a directory of
+          the root repository (--devdocs directory, the default) or a
+          submodule (--devdocs submodule). The mode is fixed for the project.
   Source  devdocs comes from a new local repository <area>/sources/<id>-devdocs.git
           (or --sources <dir>), or from --devdocs-source. A local source is
           recorded as a URL relative to <dir>, so the area can move as a whole.
@@ -260,7 +267,7 @@ async function cmdCreate(p: Parsed): Promise<number> {
   const r = await createProject({
     dir, id, name, intent: opt(p, 'intent') ?? '', goals: p.opts.get('goal') ?? [],
     sourcesDir: resolve(opt(p, 'sources') ?? join(areaDir(p), 'sources')),
-    devdocsSource: opt(p, 'devdocs-source'), registryFile: registryFile(p), resume: p.flags.has('resume'),
+    devdocs: devdocsMode(p), devdocsSource: opt(p, 'devdocs-source'), registryFile: registryFile(p), resume: p.flags.has('resume'),
   })
   const lines = [r.message, ...r.steps.map(s => `  ${s.status.padEnd(6)} ${s.name}: ${s.detail}`)]
   if (r.commits.length) lines.push('Commits:', ...r.commits.map(c => `  ${short(c.commit)} ${c.message} (${c.repository})`))
@@ -302,7 +309,7 @@ async function cmdStatus(p: Parsed): Promise<number> {
     'Repositories:', ...r.repositories.map(repoLine),
     `Workflows (devdocs/workflows):${r.workflowsDir.exists ? '' : ` ${r.workflowsDir.reason}`}`,
     ...(r.workflows.length ? r.workflows.map(w => workflowLine(w) + (svc.running && svc.sameRegistry ? `\n${' '.repeat(27)}${svc.url}/#/ws/${encodeURIComponent(ws.reg.id)}/wf/${encodeURIComponent(w.file)}` : '')) : ['  (none)']),
-    `Runs (devdocs/<workflow>/runs/; wfe run show <run>):`,
+    `Runs (devdocs/runs/<workflow>/<run>/; wfe run show <run>):`,
     ...(runs.length ? runs.map(s => `  ${s.ref.padEnd(30)} ${s.problem ? `cannot be used: ${s.problem.message}` : `${s.execution}${s.waiting?.length ? `; waiting: ${s.waiting.map(w => `${w.node} (next move: ${w.holder})`).join(', ')}` : ''}${s.ready?.length ? `; ready: ${s.ready.join(', ')}` : ''}`}${svc.running && svc.sameRegistry ? `\n${' '.repeat(33)}${svc.url}/#/ws/${encodeURIComponent(ws.reg.id)}/run/${s.workflow}/${s.run}` : ''}`) : ['  (none)']),
     svc.running ? `Editor: running at ${svc.url}/${svc.sameRegistry ? `#/ws/${encodeURIComponent(ws.reg.id)}` : ` — but it serves ${svc.registry ? `another registry (${svc.registry})` : 'another registry or an older version'}; start this one with: wfe serve --port <free port>`}`
       : `Editor: not running at ${svc.url} (start it with: wfe serve)`,

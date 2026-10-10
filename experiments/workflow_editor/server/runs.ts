@@ -10,12 +10,12 @@ import type { FileProblem, RelatedRun, RunFile, RunResponse, RunSummary, SourceC
 import { approvalStates, semanticDigest } from '../shared/canonical.ts'
 import { ID_PATTERN, normalizeRepoPath, type Workflow } from '../shared/model.ts'
 import {
-  checkRecord, operate, RUN_ID, RunError, runKey, validRunRef,
+  checkRecord, delegateNodes, operate, RUN_ID, RunError, runKey, validRunRef,
   type BundleEntry, type DefinitionRef, type EntrustRef, type Executor, type OpInput, type RepoContext, type RunGraph,
   type RunInput, type RunRecord, type RunRef,
 } from '../shared/run.ts'
 import { atomicWrite, inside, readTextOrNull } from './files.ts'
-import { git } from './git.ts'
+import { blobSizeAt, listAt, resolveRev, RevError, showAt, type DevdocsInfo, type DevdocsRev } from './devdocs.ts'
 import { RequestError, WORKFLOWS_DIR, type Workspace } from './workspace.ts'
 import { parseWorkflow } from './yamlDoc.ts'
 
@@ -25,7 +25,11 @@ const MAX_RUNS = 500
 const MAX_FILES = 200
 const MAX_READ = 1024 * 1024
 
-export const runDir = (r: RunRef) => `devdocs/${r.workflow}/runs/${r.run}`
+// devdocs/runs/<workflow-id>/<run-id>/ (p4). The p3 layout
+// (devdocs/<workflow-id>/runs/<run-id>/) is neither read nor converted.
+export const RUNS_DIR = 'devdocs/runs'
+export const runDir = (r: RunRef) => `${RUNS_DIR}/${r.workflow}/${r.run}`
+const devdocsRel = (projectRel: string) => projectRel.slice('devdocs/'.length)
 const sha256 = (text: string | Buffer) => createHash('sha256').update(text).digest('hex')
 const sigOf = async (path: string) => { const s = await stat(path).catch(() => null); return s ? `${s.size}:${s.mtimeMs}:${s.ino}` : null }
 
@@ -65,19 +69,11 @@ function fsSource(dir: string): Source {
   }
 }
 
-function gitSource(devdocs: string, rev: string, rel: string): Source {
+// Files of one run as committed in the repository that owns devdocs.
+function gitSource(info: DevdocsInfo, rev: DevdocsRev, runRel: string): Source {
   return {
-    async text(f) {
-      const r = await git(devdocs, ['show', `${rev}:${rel}/${f}`])
-      return r.code === 0 ? r.stdout : null
-    },
-    async list() {
-      const r = await git(devdocs, ['ls-tree', '-l', rev, '--', `${rel}/`])
-      return r.stdout.split('\n').filter(l => /^\d+ blob /.test(l)).map(l => {
-        const [meta, path] = l.split('\t')
-        return { name: path.split('/').pop()!, size: Number(meta.trim().split(/\s+/)[3]), modified: '' }
-      })
-    },
+    text: f => showAt(info, rev, `${runRel}/${f}`),
+    async list() { return (await listAt(info, rev, runRel)).map(f => ({ ...f, modified: '' })) },
   }
 }
 
@@ -117,7 +113,7 @@ interface Reading { text: string | null; record?: RunRecord; problem?: FileProbl
 // Parses and checks one run. Cached on the stat of run.json and the bundle.
 const cache = new Map<string, { key: string; reading: Reading }>()
 
-async function readFrom(src: Source, expect: RunRef, cacheKey?: string): Promise<Reading> {
+async function readFrom(src: Source, expect: RunRef & { project?: string }, cacheKey?: string): Promise<Reading> {
   if (cacheKey) {
     const hit = cache.get(cacheKey.split('\0')[0])
     if (hit && hit.key === cacheKey) return { ...hit.reading, record: hit.reading.record && structuredClone(hit.reading.record) }
@@ -132,6 +128,9 @@ async function readFrom(src: Source, expect: RunRef, cacheKey?: string): Promise
     if (bundle.problem || !bundle.graph) return { text, problem: { kind: 'shape', message: bundle.problem ?? 'no graph', code: 'bundle' }, bundle }
     const checked = checkRecord(raw, bundle.graph)
     if (!checked.ok) return { text, problem: { kind: 'shape', message: checked.message, code: checked.code }, bundle }
+    if (expect.project !== undefined && checked.record.project !== expect.project) {
+      return { text, problem: { kind: 'shape', message: `${RUN_FILE} belongs to project "${checked.record.project}", not "${expect.project}"`, code: 'location' }, bundle }
+    }
     if (checked.record.workflow !== expect.workflow || checked.record.run !== expect.run) {
       return { text, problem: { kind: 'shape', message: `${RUN_FILE} names ${checked.record.workflow}/${checked.record.run}, but it is stored as ${runKey(expect)}`, code: 'location' }, bundle }
     }
@@ -154,8 +153,14 @@ async function bundleSigs(dir: string): Promise<string> {
 export async function readRun(ws: Workspace, ref: RunRef): Promise<Reading & { dir: string }> {
   const rel = runDir(ref)
   const dir = await inside(ws.root, rel)
-  const key = `${dir}\0${await sigOf(join(dir, RUN_FILE))}\0${await bundleSigs(dir)}`
-  return { ...(await readFrom(fsSource(dir), ref, key)), dir }
+  const project = await projectId(ws)
+  const key = `${dir}\0${project}\0${await sigOf(join(dir, RUN_FILE))}\0${await bundleSigs(dir)}`
+  return { ...(await readFrom(fsSource(dir), { ...ref, project }, key)), dir }
+}
+
+// The project a run must belong to: project.yaml's id (undefined when unreadable).
+async function projectId(ws: Workspace): Promise<string | undefined> {
+  return (await ws.readProject().catch(() => ({ project: undefined }))).project?.id || undefined
 }
 
 // Throws RequestError when the run cannot be operated on.
@@ -172,11 +177,11 @@ async function usableRun(ws: Workspace, ref: RunRef): Promise<{ record: RunRecor
 // ---- listing ---------------------------------------------------------------------
 
 export async function runRefs(ws: Workspace, workflow?: string): Promise<RunRef[]> {
-  const devdocs = await inside(ws.root, 'devdocs')
-  const workflows = workflow ? [workflow] : (await readdir(devdocs, { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && ID_PATTERN.test(d.name)).map(d => d.name).sort()
+  const runs = await inside(ws.root, RUNS_DIR)
+  const workflows = workflow ? [workflow] : (await readdir(runs, { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && ID_PATTERN.test(d.name)).map(d => d.name).sort()
   const out: RunRef[] = []
   for (const wf of workflows) {
-    const names = (await readdir(join(devdocs, wf, 'runs'), { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && RUN_ID.test(d.name)).map(d => d.name).sort()
+    const names = (await readdir(join(runs, wf), { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && RUN_ID.test(d.name)).map(d => d.name).sort()
     for (const run of names) { out.push({ workflow: wf, run }); if (out.length >= MAX_RUNS) return out }
   }
   return out
@@ -189,7 +194,7 @@ export function summaryOf(ref: RunRef, reading: Pick<Reading, 'record' | 'proble
   return {
     ...base, created: r.created, updated: r.updated, seq: r.seq, execution: r.execution.state, counts: r.execution.counts,
     waiting: r.execution.waiting.map(w => ({ node: w.node, holder: holderText(r, w.node) })), ready: r.execution.ready, failed: r.execution.failed,
-    input: r.input.kind, executor: r.executor.name, parent: r.parent ? `${runKey(r.parent)} (node ${r.parent.node})` : undefined,
+    input: r.input.kind, executor: r.executor.name,
     decision: r.decisions.at(-1)?.decision,
   }
 }
@@ -211,8 +216,7 @@ export async function listRuns(ws: Workspace, workflow?: string): Promise<RunSum
 
 // "<workflow>/<run>", or a run id that is unique in the project.
 export async function resolveRef(ws: Workspace, text: string): Promise<RunRef> {
-  const parts = text.replace(/^devdocs\//, '').replace(/\/$/, '').split('/')
-  if (parts.length === 3 && parts[1] === 'runs') return validRef({ workflow: parts[0], run: parts[2] })
+  const parts = text.replace(/^(devdocs\/)?runs\//, '').replace(/\/$/, '').split('/')
   if (parts.length === 2) return validRef({ workflow: parts[0], run: parts[1] })
   if (parts.length === 1) {
     const hits = (await runRefs(ws)).filter(r => r.run === parts[0])
@@ -263,28 +267,18 @@ export async function runResponse(ws: Workspace, ref: RunRef, opts: { rev?: stri
   let reading: Reading
   let revInfo: RunResponse['revInfo']
   if (opts.rev) {
-    const devdocs = await inside(ws.root, 'devdocs')
-    const info = await git(devdocs, ['log', '-1', '--format=%H%x00%s%x00%cI', opts.rev, '--'])
-    if (info.code !== 0 || !info.stdout.trim()) throw new RequestError(404, `"${opts.rev}" is not a commit of devdocs`)
-    const [commit, subject, date] = info.stdout.trim().split('\0')
-    revInfo = { commit, subject, date }
-    const src = gitSource(devdocs, commit, `${ref.workflow}/runs/${ref.run}`)
-    reading = { ...(await readFrom(src, ref)), files: await src.list() }
+    const { info, rev } = await historyRev(ws, opts.rev)
+    revInfo = rev
+    const src = gitSource(info, rev, devdocsRel(rel))
+    reading = { ...(await readFrom(src, { ...ref, project: await projectId(ws) })), files: await src.list() }
   } else {
     const r = await readRun(ws, ref)
     reading = { ...r, files: await fsSource(r.dir).list() }
   }
   const record = reading.record
-  const children: RelatedRun[] = []
   const artifacts: RunResponse['artifacts'] = []
-  let parent: RelatedRun | undefined, predecessor: RelatedRun | undefined
+  let predecessor: RelatedRun | undefined
   if (record && !opts.rev) {
-    for (const [node, n] of Object.entries(record.nodes)) for (const c of n.children) children.push({ ...(await related(ws, c)), node })
-    if (record.parent) {
-      const p = await readRun(ws, record.parent)
-      const links = !!p.record?.nodes[record.parent.node]?.children.some(c => c.workflow === ref.workflow && c.run === ref.run)
-      parent = { ref: runKey(record.parent), node: record.parent.node, execution: p.record?.execution.state, seq: p.record?.seq, linksBack: links, problem: p.record ? undefined : p.problem?.code === 'missing' ? 'missing' : p.problem?.message }
-    }
     if (record.predecessor) predecessor = await related(ws, record.predecessor)
     const seen = new Set<string>()
     for (const a of record.artifacts) {
@@ -299,7 +293,18 @@ export async function runResponse(ws: Workspace, ref: RunRef, opts: { rev?: stri
     record, problem: reading.problem,
     bundle: Object.fromEntries(Object.entries(reading.bundle.entries).map(([id, e]) => [id, { file: e.file, workflow: e.workflow, problem: e.problem }])),
     sources: opts.rev ? [] : await compareSources(ws, reading.bundle, record?.definition),
-    files: reading.files ?? [], parent, children, predecessor, artifacts,
+    files: reading.files ?? [], predecessor, artifacts,
+  }
+}
+
+// A history reference (server/devdocs.ts resolveRev) in this workspace.
+export async function historyRev(ws: Workspace, ref: string): Promise<{ info: DevdocsInfo; rev: DevdocsRev }> {
+  const info = await ws.devdocs()
+  try {
+    return { info, rev: await resolveRev(ws.root, info, ref) }
+  } catch (e) {
+    if (e instanceof RevError) throw new RequestError(404, e.message)
+    throw e
   }
 }
 
@@ -315,17 +320,14 @@ export async function readRunFile(ws: Workspace, ref: RunRef, path: string, opts
   if (opts.rev) {
     // Only devdocs content belongs to this commit. Never fall back to a
     // working-tree artifact, including files in another repository.
-    if (!target.startsWith('devdocs/')) throw new RequestError(404, `${target} is outside the devdocs commit; open the current run to read it`)
-    const devdocs = await inside(ws.root, 'devdocs')
-    const object = `${(r as RunResponse).rev}:${target.slice('devdocs/'.length)}`
-    const type = await git(devdocs, ['cat-file', '-t', object])
-    if (type.code !== 0 || type.stdout.trim() !== 'blob') throw new RequestError(404, `${target} does not exist as a file in this commit`)
-    const size = await git(devdocs, ['cat-file', '-s', object])
-    if (size.code !== 0) throw new RequestError(404, `${target} could not be read from this commit`)
-    if (Number(size.stdout.trim()) > MAX_READ) throw new RequestError(413, `${target} is larger than ${MAX_READ} bytes; open it in Git`)
-    const content = await git(devdocs, ['show', object])
-    if (content.code !== 0) throw new RequestError(404, `${target} could not be read from this commit`)
-    return { path: target, text: content.stdout }
+    if (!target.startsWith('devdocs/')) throw new RequestError(404, `${target} is outside devdocs; a history view reads devdocs only. Open the current run to read it`)
+    const { info, rev } = await historyRev(ws, opts.rev)
+    const size = await blobSizeAt(info, rev, devdocsRel(target))
+    if (size === null) throw new RequestError(404, `${target} does not exist as a file in this commit`)
+    if (size > MAX_READ) throw new RequestError(413, `${target} is larger than ${MAX_READ} bytes; open it in Git`)
+    const content = await showAt(info, rev, devdocsRel(target))
+    if (content === null) throw new RequestError(404, `${target} could not be read from this commit`)
+    return { path: target, text: content }
   }
   const abs = await inside(ws.root, target)
   const s = await stat(abs).catch(() => null)
@@ -368,30 +370,22 @@ function validEntrust(e: EntrustRef): EntrustRef {
   throw new RequestError(400, 'entrustedBy must be a run, a project file or a note')
 }
 
-// Validates the source workflow and its transitive delegates and returns their
-// saved bytes, keyed by workflow id.
+// Validates the source workflow and returns its saved bytes. A workflow with
+// a delegate node is refused here, before anything is written (preflight);
+// the reducer refuses it again for any other entrance.
 async function sourceBundle(ws: Workspace, workflow: string): Promise<{ root: string; files: Record<string, { source: string; text: string; workflow: Workflow }>; warnings: string[] }> {
   const { list } = await ws.workflowSummaries()
   const find = (name: string) => list.find(s => s.id === name) ?? list.find(s => s.file === name || s.file === `${name}.yaml` || s.file === `${name}.yml`)
-  const first = find(workflow)
-  if (!first?.id) throw new RequestError(404, `no workflow "${workflow}" in ${WORKFLOWS_DIR} (by id or file name)${first?.problem ? `: ${first.problem.message}` : ''}`)
-  const files: Record<string, { source: string; text: string; workflow: Workflow }> = {}
-  const warnings: string[] = []
-  const queue = [first.id]
-  while (queue.length) {
-    const id = queue.shift()!
-    if (files[id]) continue
-    const s = list.find(x => x.id === id)
-    if (!s) throw new RequestError(409, `workflow "${id}" (a delegate target) does not exist in ${WORKFLOWS_DIR}`)
-    const r = await ws.workflowResponse(s.file)
-    if (!r.workflow || r.text === null) throw new RequestError(409, `${s.file} cannot be read: ${r.problem?.message}`)
-    const errors = r.issues.filter(i => i.severity === 'error')
-    if (errors.length) throw new RequestError(409, `${s.file} has validation errors; a run needs a valid definition (wfe validate ${id})`, errors)
-    for (const i of r.issues) warnings.push(`${id}: ${i.code}: ${i.message}`)
-    files[id] = { source: `${WORKFLOWS_DIR}/${s.file}`, text: r.text, workflow: r.workflow }
-    for (const n of Object.values(r.workflow.nodes)) if (n.type === 'delegate' && n.workflow) queue.push(n.workflow)
-  }
-  return { root: first.id, files, warnings }
+  const s = find(workflow)
+  if (!s?.id) throw new RequestError(404, `no workflow "${workflow}" in ${WORKFLOWS_DIR} (by id or file name)${s?.problem ? `: ${s.problem.message}` : ''}`)
+  const r = await ws.workflowResponse(s.file)
+  if (!r.workflow || r.text === null) throw new RequestError(409, `${s.file} cannot be read: ${r.problem?.message}`)
+  const delegates = delegateNodes(graphOf(r.workflow))
+  if (delegates.length) throw new RequestError(422, `${s.id} has delegate node${delegates.length === 1 ? '' : 's'} ${delegates.join(', ')}; delegate execution is not supported, so no run of it is created. Nothing was written.`, { code: 'delegate-unsupported', nodes: delegates })
+  const errors = r.issues.filter(i => i.severity === 'error')
+  if (errors.length) throw new RequestError(409, `${s.file} has validation errors; a run needs a valid definition (wfe validate ${s.id})`, errors)
+  const warnings = r.issues.map(i => `${s.id}: ${i.code}: ${i.message}`)
+  return { root: s.id, files: { [s.id]: { source: `${WORKFLOWS_DIR}/${s.file}`, text: r.text, workflow: r.workflow } }, warnings }
 }
 
 async function definitionRef(root: string, files: Record<string, { source: string; text: string; workflow: Workflow }>, warnings: string[]): Promise<DefinitionRef> {
@@ -420,7 +414,7 @@ async function repoContext(ws: Workspace, files: Record<string, { workflow: Work
 // is refused and left as it is. run.json is written last.
 async function writeRun(ws: Workspace, ref: RunRef, files: Record<string, string>, record: RunRecord): Promise<CreatedRun> {
   const rel = runDir(ref)
-  const runs = await inside(ws.root, `devdocs/${ref.workflow}/runs`)
+  const runs = await inside(ws.root, `${RUNS_DIR}/${ref.workflow}`)
   await mkdir(runs, { recursive: true })
   const dir = await inside(ws.root, rel)
   try {
@@ -463,27 +457,31 @@ export async function createRun(ws: Workspace, o: CreateRunOptions): Promise<Cre
   if (o.name && ID_PATTERN.test(o.workflow) && await stat(await inside(ws.root, runDir({ workflow: o.workflow, run: o.name }))).then(() => true, () => false)) {
     throw new RequestError(409, `run ${o.workflow}/${o.name} already exists (${runDir({ workflow: o.workflow, run: o.name })}); nothing was changed. Choose another --name or omit it for the next number.`)
   }
+  const project = await projectId(ws)
+  if (!project) throw new RequestError(409, 'project.yaml cannot be read, so the run cannot name its project; fix project.yaml first (wfe status)')
+  const info = await ws.devdocs()
+  if (info.problem) throw new RequestError(409, `${info.problem.message}; nothing was created. ${info.problem.fix ?? ''}`.trim())
   const src = await sourceBundle(ws, o.workflow)
   const ref = validRef({ workflow: src.root, run: o.name ?? await nextRunId(ws, src.root) })
   if (o.predecessor) validRunRef(o.predecessor, 'predecessor')
   const definition = await definitionRef(src.root, src.files, src.warnings)
   const context = await repoContext(ws, src.files)
   const graph = graphOf(src.files[src.root].workflow)
-  const record = createRecord(ref, input, o, definition, context, graph, null)
+  const record = createRecord(project, ref, input, o, definition, context, graph)
   for (const [id, f] of Object.entries(src.files)) files[`${DEFINITION_DIR}/${id}.yaml`] = f.text
   if (o.plan !== undefined) files['plan.md'] = o.plan
   return writeRun(ws, ref, files, record)
 }
 
-function createRecord(ref: RunRef, input: RunInput, o: Pick<CreateRunOptions, 'executor' | 'predecessor' | 'by' | 'via' | 'now'>, definition: DefinitionRef, context: { repositories: RepoContext[] }, graph: RunGraph, parent: (RunRef & { node: string }) | null): RunRecord {
+function createRecord(project: string, ref: RunRef, input: RunInput, o: Pick<CreateRunOptions, 'executor' | 'predecessor' | 'by' | 'via' | 'now'>, definition: DefinitionRef, context: { repositories: RepoContext[] }, graph: RunGraph): RunRecord {
   const executor: Executor = { name: o.executor.name.trim(), backend: o.executor.backend?.trim() || null }
   try {
     return operate(null, {
-      op: 'run.create', workflow: ref.workflow, run: ref.run, input, executor, predecessor: o.predecessor ?? null, parent,
+      op: 'run.create', project, workflow: ref.workflow, run: ref.run, input, executor, predecessor: o.predecessor ?? null,
       definition, context, nodes: Object.keys(graph.nodes).sort(),
     }, { at: (o.now ?? new Date()).toISOString(), by: o.by, via: o.via, graph })
   } catch (e) {
-    if (e instanceof RunError) throw new RequestError(400, e.message)
+    if (e instanceof RunError) throw new RequestError(e.code === 'delegate-unsupported' ? 422 : 400, e.message, { code: e.code })
     throw e
   }
 }
@@ -509,14 +507,6 @@ export async function runOp(ws: Workspace, ref: RunRef, input: OpInput, ctx: OpC
   const { record, graph, dir } = await usableRun(ws, ref)
   const op = structuredClone(input) as OpInput
   if (op.op === 'question.ask' && !op.question) op.question = nextQuestionId(record)
-  if (op.op === 'node.complete' && graph.nodes[op.node]?.type === 'delegate') {
-    const last = record.nodes[op.node]?.children.at(-1)
-    if (last) {
-      const child = await readRun(ws, last)
-      if (!child.record) throw new RequestError(409, `child run ${runKey(last)} is ${child.problem?.code === 'missing' ? 'missing' : `unreadable (${child.problem?.message})`}; "${op.node}" cannot complete`)
-      op.child = { ...last, execution: child.record.execution.state, seq: child.record.seq }
-    }
-  }
   if (op.op === 'artifact.attach' || (op.op === 'node.complete' && op.artifacts)) {
     for (const p of op.op === 'artifact.attach' ? [op.path] : op.artifacts ?? []) {
       const n = normalizeRepoPath(p)
@@ -534,52 +524,6 @@ export async function runOp(ws: Workspace, ref: RunRef, input: OpInput, ctx: OpC
   return { record: next, ref }
 }
 
-// Creates a child run for a running delegate node from the parent's bundle,
-// then records the delegation in the parent. The child is written first.
-export async function delegate(ws: Workspace, ref: RunRef, node: string, o: { name?: string; request?: string; by?: string; via: string; expectSeq?: number; now?: Date }): Promise<{ parent: RunRecord; child: CreatedRun }> {
-  const { record, graph, bundle } = await usableRun(ws, ref)
-  const def = graph.nodes[node]
-  if (!def) throw new RequestError(422, `node "${node}" is not in this run's definition`)
-  if (def.type !== 'delegate' || !def.workflow) throw new RequestError(422, `node "${node}" is a ${def.type} node; only delegate nodes delegate`)
-  const by = o.by?.trim() || record.executor.name
-  const childId = validRef({ workflow: def.workflow, run: o.name ?? await nextRunId(ws, def.workflow) })
-  const at = (o.now ?? new Date()).toISOString()
-  // Check the parent operation first, so a refused delegation creates nothing.
-  try {
-    operate(record, { op: 'node.delegate', node, child: childId }, { at, by, via: o.via, graph, expectSeq: o.expectSeq })
-  } catch (e) {
-    if (e instanceof RunError) throw new RequestError(e.code === 'outdated' ? 409 : 422, e.message, { code: e.code })
-    throw e
-  }
-  // The child's bundle: its root and transitive delegates, from the parent's bundle.
-  const files: Record<string, { source: string; text: string; workflow: Workflow }> = {}
-  const queue = [def.workflow]
-  while (queue.length) {
-    const id = queue.shift()!
-    if (files[id]) continue
-    const e = bundle.entries[id]
-    if (!e?.workflow || e.text === undefined) throw new RequestError(409, `the parent's bundle has no usable "${id}"`)
-    files[id] = { source: `${runDir(ref)}/${e.file}`, text: e.text, workflow: e.workflow }
-    for (const n of Object.values(e.workflow.nodes)) if (n.type === 'delegate' && n.workflow) queue.push(n.workflow)
-  }
-  const definition: DefinitionRef = { ...(await definitionRef(def.workflow, files, [])), warnings: record.definition.warnings.filter(w => Object.keys(files).some(id => w.startsWith(`${id}: `))) }
-  const text = o.request ?? [
-    `# Request: ${def.workflow}`, '',
-    `Delegated by ${by} from run ${runKey(ref)}, node "${node}".`, '',
-    'The delegate node describes the work as:', '',
-    ...(bundle.entries[ref.workflow]?.workflow?.nodes[node]?.description.trim() || '(no description)').split('\n').map(l => `> ${l}`), '',
-    '(Written by `wfe run delegate` from the node description; no person authored this text.)', '',
-  ].join('\n')
-  const input: RunInput = { kind: 'request', file: 'request.md', requester: by, entrustedBy: { kind: 'run', ...ref, node } }
-  const parentRef = { ...ref, node }
-  const childRecord = createRecord(childId, input, { executor: record.executor, by, via: o.via, now: o.now }, definition, await repoContext(ws, files), graphOf(files[def.workflow].workflow), parentRef)
-  const fileTexts: Record<string, string> = { 'request.md': text }
-  for (const [id, f] of Object.entries(files)) fileTexts[`${DEFINITION_DIR}/${id}.yaml`] = f.text
-  const child = await writeRun(ws, childId, fileTexts, childRecord)
-  const r = await runOp(ws, ref, { op: 'node.delegate', node, child: childId }, { by, via: o.via, expectSeq: o.expectSeq, now: o.now })
-  return { parent: r.record, child }
-}
-
 // ---- checking --------------------------------------------------------------------
 
 export interface RunCheck { ref: string; ok: boolean; problem?: string; code?: string; warnings: string[] }
@@ -589,8 +533,6 @@ export async function checkRun(ws: Workspace, ref: RunRef): Promise<RunCheck> {
   const r = await runResponse(ws, ref)
   const warnings: string[] = []
   if (r.record) {
-    if (r.parent && !r.parent.linksBack) warnings.push(`the parent ${r.parent.ref} does not list this run as a child of node ${r.parent.node}${r.parent.problem ? ` (${r.parent.problem})` : ''}`)
-    for (const c of r.children) if (c.problem) warnings.push(`child ${c.ref} (node ${c.node}): ${c.problem}`)
     for (const a of r.artifacts) if (!a.exists) warnings.push(`artifact ${a.path} does not exist`)
     const input = r.files.some(f => f.name === r.record!.input.file)
     if (!input) warnings.push(`the input file ${r.record.input.file} is missing`)

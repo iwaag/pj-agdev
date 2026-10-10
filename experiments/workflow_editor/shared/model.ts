@@ -3,12 +3,16 @@
 // See docs/contract.md for the file contract.
 
 export const WORKFLOW_SCHEMA = 'ag.workflow.v1'
-export const PROJECT_SCHEMA = 'ag.project.v1'
+export const PROJECT_SCHEMA = 'ag.project.v2'
 export const NODE_TYPES = ['study', 'do', 'delegate', 'talk'] as const
 export type NodeType = typeof NODE_TYPES[number]
 export const ACCESS_LEVELS = ['readonly', 'editable'] as const
 export type Access = typeof ACCESS_LEVELS[number]
 export const APPROVAL_KINDS = ['intent', 'definition'] as const
+// Where devdocs lives (p4): a directory of the project root repository
+// (the default for new projects) or a repository of its own, as a submodule.
+export const DEVDOCS_MODES = ['directory', 'submodule'] as const
+export type DevdocsMode = typeof DEVDOCS_MODES[number]
 export type ApprovalKind = typeof APPROVAL_KINDS[number]
 
 // Stable identifiers: workflow IDs, node IDs and repository binding keys.
@@ -44,6 +48,9 @@ export interface Project {
   schema: string
   id: string
   name: string
+  // devdocs storage mode as declared; plain text so that a wrong value is
+  // representable and reported by validation.
+  devdocs: string
   intent: string
   goals: string[]
 }
@@ -174,7 +181,7 @@ export function workflowFromData(raw: unknown): { workflow: Workflow; issues: Sh
 
 export function projectFromData(raw: unknown): { project: Project; issues: ShapeIssue[] } {
   const issues: ShapeIssue[] = []
-  const p: Project = { schema: '', id: '', name: '', intent: '', goals: [] }
+  const p: Project = { schema: '', id: '', name: '', devdocs: '', intent: '', goals: [] }
   if (!isRecord(raw)) {
     issues.push({ path: '$', message: raw === null || raw === undefined ? 'empty document' : 'top level must be a mapping' })
     return { project: p, issues }
@@ -182,6 +189,7 @@ export function projectFromData(raw: unknown): { project: Project; issues: Shape
   p.schema = text(raw, 'schema', '$', issues)
   p.id = text(raw, 'id', '$', issues)
   p.name = text(raw, 'name', '$', issues)
+  p.devdocs = text(raw, 'devdocs', '$', issues)
   p.intent = text(raw, 'intent', '$', issues)
   p.goals = stringList(raw, 'goals', '$', issues)
   return { project: p, issues }

@@ -37,7 +37,7 @@ after(async () => { await rm(root, { recursive: true, force: true }) })
 const exists = (p: string) => stat(p).then(() => true, () => false)
 const opts = (id: string, extra: Partial<Parameters<typeof createProject>[0]> = {}) => ({
   dir: join(area, `pj-${id}`), id, name: `Project ${id}`, intent: 'Why it exists.\nSecond line.', goals: ['First goal.', 'Second goal.'],
-  sourcesDir: join(area, 'sources'), registryFile: registry, ...extra,
+  sourcesDir: join(area, 'sources'), registryFile: registry, devdocs: 'submodule' as const, ...extra,
 })
 
 test('a missing registry is empty; a malformed one is an error naming the file', async () => {
@@ -133,7 +133,7 @@ test('register: records the Git root, is idempotent, keeps other entries, and di
   const r = await registerWorkspace(registry, join(bare, 'sub'))
   assert.equal(r.status, 'registered')
   assert.equal(r.registration!.path, await gitOk(bare, ['rev-parse', '--show-toplevel']).then(s => s.trim()))
-  assert.deepEqual(r.diagnostics.map(d => d.code).sort(), ['devdocs-missing', 'gitignore-local'])
+  assert.deepEqual(r.diagnostics.map(d => d.code).sort(), ['devdocs-missing', 'devdocs-mode-undeclared', 'gitignore-local', 'project-schema'], 'an old-format project.yaml is reported, not read as current')
   assert.ok(r.diagnostics.every(d => d.fix))
   const again = await registerWorkspace(registry, bare)
   assert.equal(again.status, 'already-registered')
@@ -240,7 +240,7 @@ test('cli: help index names only real commands, each with its own help', async (
 })
 
 test('cli: create, status and the workspace of the current directory', async () => {
-  const r = await wfe(['create', 'pj-epsilon', '--name', 'Epsilon', '--intent', 'CLI made.', '--goal', 'One.'])
+  const r = await wfe(['create', 'pj-epsilon', '--devdocs', 'submodule', '--name', 'Epsilon', '--intent', 'CLI made.', '--goal', 'One.'])
   assert.equal(r.code, 0, r.stderr + r.stdout)
   assert.match(r.stdout, /Created epsilon/)
   const dir = join(area, 'pj-epsilon')
@@ -339,7 +339,7 @@ test('setup: a fresh area gets its guide, launcher and empty registry, and no pr
     assert.ok(/Writes|Reads only|reads only/.test(h.stdout), `wfe run ${c} --help says what it reads or writes`)
   }
   const start = await readFile(join(fresh, 'START.md'), 'utf8')
-  assert.ok(!start.includes('{{') && start.includes('Execute workflow <workflow id>') && start.includes('devdocs/<workflow id>/runs/<run id>/'), 'START.md has the execution entry point')
+  assert.ok(!start.includes('{{') && start.includes('Execute workflow <workflow id>') && start.includes('devdocs/runs/<workflow id>/<run id>/'), 'START.md has the execution entry point')
   assert.ok(r.stdout.includes('Execute workflow <workflow id> of project <project id>') && r.stdout.includes('run help'), 'setup prints the execution prompt and the run tool')
 })
 

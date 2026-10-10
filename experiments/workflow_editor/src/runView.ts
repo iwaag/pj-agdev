@@ -191,9 +191,7 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
       banners.append(h('div.banner.error', h('strong', missing ? `${ref} has no readable run.json` : `run.json cannot be used (${resp.problem?.code ?? resp.problem?.kind})`), ` — ${resp.problem?.message}. `,
         shown ? `Showing the last valid reading (seq ${shown.record!.seq}) read-only; nothing is recorded until the files are fixed. wfe run check names the difference.` : 'Nothing is shown until the files are fixed.'))
     }
-    if (rev && resp?.revInfo) banners.append(h('div.banner.warn', `As committed in devdocs ${resp.revInfo.commit.slice(0, 10)} (${when(resp.revInfo.date)}): “${resp.revInfo.subject}”. Read-only. `, h('a.button', { href: runHash(wsId, ref) }, 'Open the current run')))
-    const p = shown?.parent
-    if (p && p.linksBack === false) banners.append(h('div.banner.warn', `The parent run ${p.ref} does not list this run as a child of node ${p.node}${p.problem ? ` (${p.problem})` : ''}.`))
+    if (rev && resp?.revInfo) banners.append(h('div.banner.warn', `As committed in the ${resp.revInfo.owner === 'root' ? 'project root' : 'devdocs repository'} at ${resp.revInfo.commit.slice(0, 10)}${resp.revInfo.root ? ` (the devdocs gitlink of root commit ${resp.revInfo.root.slice(0, 10)})` : ''} (${when(resp.revInfo.date)}): “${resp.revInfo.subject}”. Read-only. `, h('a.button', { href: runHash(wsId, ref) }, 'Open the current run')))
     if (opNotice) banners.append(h(`div.banner.${opNotice.kind}`, opNotice.text, h('button.icon-btn', { onclick: () => { opNotice = null; renderBanners() } }, '×')))
   }
 
@@ -222,15 +220,12 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
     if (n.wait) {
       const on = n.wait.on
       box.append(h('div.wait-box', h('strong', 'Waiting: '), n.wait.reason, h('br'), 'Next move: ', h('strong', holderOf(rec, id)),
-        'external' in on ? h('div.small', `Awaiting: ${on.external}`) : null,
-        'child' in on ? h('div.small', 'Child run: ', h('a', { href: runHash(wsId, runKey(on.child)) }, runKey(on.child))) : null))
+        'external' in on ? h('div.small', `Awaiting: ${on.external}`) : null))
     }
     if (n.outcome) box.append(h('div.outcome', h('strong', 'Outcome: '), n.outcome.text,
-      n.outcome.child ? h('div.small', `Child ${runKey(n.outcome.child)} was ${n.outcome.child.execution} at seq ${n.outcome.child.seq}`) : null,
       ...n.outcome.artifacts.map(a => h('div.small', fileButton(a)))))
     if (n.failure) box.append(h('div.banner.error', `Failed (${n.failure.by}, ${when(n.failure.at)}): ${n.failure.reason}`))
     if (n.cancellation) box.append(h('div.banner.warn', `Cancelled (${n.cancellation.by}, ${when(n.cancellation.at)}): ${n.cancellation.reason}`))
-    if (n.children.length) box.append(h('div.small', 'Child runs: ', ...n.children.map((c, i) => [i ? ', ' : '', h('a', { href: runHash(wsId, runKey(c)) }, runKey(c))])))
     if (n.notes.length) box.append(h('h4', 'Notes'), h('ul.notes', ...n.notes.map(x => h('li', h('span.muted.small', `${when(x.at)} · ${x.by}: `), x.text))))
     const qs = Object.values(rec.questions).filter(q => q.node === id)
     if (qs.length) box.append(h('h4', 'Questions of this node'), ...qs.map(q => questionCard(rec, q)))
@@ -295,8 +290,6 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
       qs.length ? h('div.questions', ...qs.slice().reverse().map(q => questionCard(rec, q))) : h('p.muted.small', 'No questions recorded.')))
 
     const rel: (Node | null)[] = []
-    if (r!.parent) rel.push(h('div', 'Parent: ', h('a', { href: runHash(wsId, r!.parent.ref) }, r!.parent.ref), ` node ${r!.parent.node}`, r!.parent.execution ? chip(r!.parent.execution) : h('span.chip.error', r!.parent.problem ?? 'unreadable')))
-    for (const c of r!.children) rel.push(h('div', `Child (node ${c.node}): `, h('a', { href: runHash(wsId, c.ref) }, c.ref), ' ', c.execution ? chip(c.execution) : h('span.chip.error', c.problem ?? 'unreadable')))
     if (r!.predecessor) rel.push(h('div', 'Predecessor: ', h('a', { href: runHash(wsId, r!.predecessor.ref) }, r!.predecessor.ref)))
     const input = rec.input
     if (input.kind === 'request' && input.entrustedBy) rel.push(h('div.small', 'Entrusted by: ', input.entrustedBy.kind === 'run' ? h('a', { href: runHash(wsId, runKey(input.entrustedBy)) }, `${runKey(input.entrustedBy)}${input.entrustedBy.node ? ` node ${input.entrustedBy.node}` : ''}`) : input.entrustedBy.kind === 'file' ? input.entrustedBy.path : input.entrustedBy.text))
@@ -388,8 +381,7 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
   const related = () => {
     const keys = new Set([ref])
     const rec = shown?.record
-    if (rec?.parent) keys.add(runKey(rec.parent))
-    for (const n of Object.values(rec?.nodes ?? {})) for (const c of n.children) keys.add(runKey(c))
+    if (rec?.predecessor) keys.add(runKey(rec.predecessor))
     return keys
   }
   const stream = rev ? null : live(api.eventsUrl(wsId), {

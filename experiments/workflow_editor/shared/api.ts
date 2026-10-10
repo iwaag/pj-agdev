@@ -3,7 +3,7 @@
 import type { ApprovalState } from './canonical.ts'
 import type { ApprovalKind, Issue, Project, Workflow } from './model.ts'
 import type { RepositoryInfo } from './validate.ts'
-import type { ExecutionState, RunRecord, RunRef } from './run.ts'
+import type { ExecutionState, RunRecord } from './run.ts'
 
 export interface FileProblem {
   kind: 'malformed' | 'unsupported' | 'shape' | 'missing' | 'unreadable'
@@ -153,7 +153,6 @@ export interface RunSummary {
   failed?: string[]
   input?: 'braindump' | 'request'
   executor?: string
-  parent?: string
   decision?: 'accepted' | 'rejected'
 }
 
@@ -171,28 +170,29 @@ export interface SourceComparison {
 
 export interface RelatedRun {
   ref: string
-  node?: string // the parent node, for a child
   execution?: ExecutionState
   seq?: number
   problem?: string // missing, unreadable, inconsistent …
-  linksBack?: boolean // the parent lists this run as a child of that node
 }
+
+// A commit of the repository that owns devdocs (server/devdocs.ts):
+// `root` in directory mode, `devdocs` in submodule mode. `root` names the
+// project root commit whose gitlink was followed, when one was.
+export interface HistoryRev { owner: 'root' | 'devdocs'; commit: string; subject: string; date: string; root?: string }
 
 export interface RunResponse {
   workspace: string
   ref: string
   dir: string
-  rev?: string // a devdocs commit, when the run was read from history
-  revInfo?: { commit: string; subject: string; date: string }
+  rev?: string // the owning repository's commit, when the run was read from history
+  revInfo?: HistoryRev
   record?: RunRecord
   problem?: FileProblem & { code?: string }
   bundle: Record<string, { file: string; workflow?: Workflow; problem?: string }>
   sources: SourceComparison[]
   files: RunFile[]
-  parent?: RelatedRun
-  children: RelatedRun[]
   predecessor?: RelatedRun
   artifacts: { path: string; exists: boolean }[]
 }
 
-export interface RunOpResponse { ok: true; seq: number; record: RunRecord; created?: RunRef }
+export interface RunOpResponse { ok: true; seq: number; record: RunRecord }

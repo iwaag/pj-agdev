@@ -96,7 +96,7 @@ export async function setupArea(area: string, opts: { port: number }): Promise<S
     `  ${FIRST_PROMPT}`,
     'Prompt (executing a workflow; add the braindump after it):',
     `  ${RUN_PROMPT}`,
-    `Runs:     ${url}#/ws/<project id> → Runs; folders devdocs/<workflow id>/runs/<run id>/; ${launcher} run help`,
+    `Runs:     ${url}#/ws/<project id> → Runs; folders devdocs/runs/<workflow id>/<run id>/; ${launcher} run help`,
     '',
     'No project or run was created. START.md in the area repeats these steps.',
   ].join('\n')

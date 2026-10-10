@@ -2,7 +2,7 @@
 // well-formed and that its references resolve; it never judges whether the
 // graph fulfils the intent. Errors block approval; drafts may still be saved.
 import {
-  ACCESS_LEVELS, ID_PATTERN, NODE_TYPES, PROJECT_SCHEMA, WORKFLOW_SCHEMA, normalizeRepoPath,
+  ACCESS_LEVELS, DEVDOCS_MODES, ID_PATTERN, NODE_TYPES, PROJECT_SCHEMA, WORKFLOW_SCHEMA, normalizeRepoPath,
   type Issue, type Project, type Workflow,
 } from './model.ts'
 
@@ -10,7 +10,7 @@ import {
 // service from .gitmodules, Git state and the workflow directory.
 export interface RepositoryInfo {
   path: string
-  kind: 'root' | 'submodule'
+  kind: 'root' | 'submodule' | 'directory' // directory: devdocs kept in the root repository
   initialized: boolean
 }
 export interface WorkflowRef {
@@ -71,7 +71,7 @@ export function validateWorkflow(w: Workflow, ctx: ValidationContext = {}): Issu
     if (path === null) { issues.push(err('binding-path-invalid', `Binding "${key}" path "${b.path}" must be project-relative without "..".`, { binding: key })); continue }
     if (!ctx.repositories || path === '.') continue
     const repo = byPath.get(path)
-    if (!repo) issues.push(err('repository-missing', `Binding "${key}" refers to "${path}", which is not a submodule in .gitmodules.`, { binding: key }))
+    if (!repo) issues.push(err('repository-missing', `Binding "${key}" refers to "${path}", which is neither devdocs nor a submodule in .gitmodules.`, { binding: key }))
     else if (!repo.initialized) issues.push(warn('repository-uninitialized', `Binding "${key}": submodule "${path}" is not initialized in this workspace.`, { binding: key }))
   }
 
@@ -87,6 +87,7 @@ export function validateWorkflow(w: Workflow, ctx: ValidationContext = {}): Issu
     }
     if (new Set(n.repositories).size !== n.repositories.length) issues.push(warn('node-binding-duplicate', `Node "${id}" lists a repository binding twice.`, { node: id }))
     if (n.type === 'delegate') {
+      issues.push(warn('delegate-not-executable', `Delegate node "${id}" is definition and display only: runs of a workflow with a delegate node are refused.`, { node: id }))
       if (!n.workflow) issues.push(err('delegate-target-missing', `Delegate node "${id}" has no target workflow.`, { node: id }))
       else if (n.workflow === w.id) issues.push(err('delegate-self', `Delegate node "${id}" targets its own workflow.`, { node: id }))
       else if (ctx.workflows && !ctx.workflows.some(r => r.id === n.workflow)) issues.push(err('delegate-target-unknown', `Delegate node "${id}" targets workflow "${n.workflow}", which does not exist in this project.`, { node: id }))
@@ -127,7 +128,8 @@ export function validateWorkflow(w: Workflow, ctx: ValidationContext = {}): Issu
 
 export function validateProject(p: Project): Issue[] {
   const issues: Issue[] = []
-  if (p.schema !== PROJECT_SCHEMA) issues.push(err('schema', `Expected schema ${PROJECT_SCHEMA}.`, { field: 'schema' }))
+  if (p.schema !== PROJECT_SCHEMA) issues.push(err('schema', p.schema ? `Unsupported schema "${p.schema}"; expected ${PROJECT_SCHEMA}. Older formats are not read; register the project again under the current contract.` : `Missing schema; expected ${PROJECT_SCHEMA}.`, { field: 'schema' }))
+  if (!(DEVDOCS_MODES as readonly string[]).includes(p.devdocs)) issues.push(err('devdocs-mode', p.devdocs ? `devdocs "${p.devdocs}" is not a storage mode; expected directory or submodule.` : 'devdocs (the storage mode: directory or submodule) is not declared.', { field: 'devdocs' }))
   if (!p.id) issues.push(err('id-missing', 'Project id is missing.', { field: 'id' }))
   else if (!ID_PATTERN.test(p.id)) issues.push(err('id-invalid', `Project id must match ${ID_PATTERN.source}.`, { field: 'id' }))
   if (!p.name.trim()) issues.push(warn('name-missing', 'Project name is empty.', { field: 'name' }))

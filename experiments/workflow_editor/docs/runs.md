@@ -1,4 +1,4 @@
-# Workflow run contract (`ag.workflow-run.v1`, p3/pre1)
+# Workflow run contract (`ag.workflow-run.v2`, p3/pre1, p4)
 
 A **run** is one execution of a workflow: the input it was given, the fixed
 definition it follows, and a record of what the executor reported. It lives in
@@ -19,15 +19,19 @@ based on an outdated view; it is not a lock.
 ## Where things live
 
 ```text
-devdocs/<workflow-id>/runs/<run-id>/
+devdocs/runs/<workflow-id>/<run-id>/
   braindump.md          the person's own input (or request.md, see Input)
   plan.md               the executor's plan (optional, free form)
   run.json              the record: current state and its history
   definition/
-    <workflow-id>.yaml              the run's workflow, copied byte for byte
-    <delegated-workflow-id>.yaml    every workflow it delegates to, transitively
+    <workflow-id>.yaml  the run's workflow, copied byte for byte
   report*.md, …         whatever the executor reports; names are its choice
 ```
+
+The p3 layout (`devdocs/<workflow-id>/runs/<run-id>/`) and
+`ag.workflow-run.v1` records are not read or converted. A project that still
+has p3 run folders gets a `runs-old-layout` diagnostic; a v1 `run.json` in the
+new layout is shown as an unsupported schema, never as an empty listing.
 
 | Information | Authority |
 | --- | --- |
@@ -42,15 +46,18 @@ Every path in these files is project-relative POSIX or run-relative. Machine
 paths, credentials and local process details stay out; local execution
 settings belong under ignored `.local/` paths.
 
-Saving a file never commits. Commit devdocs at meaningful milestones; when the
-project is published, commit its updated `devdocs` gitlink in the project root
-as well. A browser view follows saved files before any commit.
+Saving a file never commits. The saved files are the current work record
+before any publication. A browser view follows saved files before any commit.
 
-In a history view (`/at/<commit>`), report and input files are read from that
-same devdocs commit. Missing historical files never fall back to the working
-tree. Artifacts outside devdocs cannot be read from a devdocs commit; use the
-current run to read them. The file HTTP endpoint accepts `rev` like the run
-endpoint.
+A history view (`/at/<ref>`, `wfe run show --rev <ref>`, `?rev=` on the HTTP
+run and file endpoints) reads the run from a commit of the repository that
+owns devdocs, resolved by `server/devdocs.ts` ([contract.md](contract.md),
+*devdocs storage modes*): `<commit>` of that repository, or `root:<commit>`,
+a project root commit whose devdocs gitlink is followed in submodule mode.
+The view names the owning repository, the commit and, when followed, the root
+commit. Report and input files come from that same commit. Missing historical
+files never fall back to the working tree. Artifacts outside devdocs cannot
+be read from a devdocs commit; use the current run to read them.
 
 ### Identifiers
 
@@ -59,6 +66,7 @@ endpoint.
 | Workflow id, node id | `^[a-z0-9][a-z0-9_.-]{0,63}$` | from the definition contract |
 | Run id (= directory name) | `^run-[a-z0-9][a-z0-9_.-]{0,59}$` | `run-001`, `run-002`, … by default (next number after the highest `run-NNN`), or `run-<name>` |
 | Run reference | `<workflow-id>/<run-id>` | unique in a project; two invocations of one workflow have two run ids |
+| Run identity | project id + workflow id + run id | `run.json` names its `project`; a record naming another project is a `location` problem. Machine paths are never identifiers |
 | Question id | `^q[0-9]{1,6}$` | `q1`, `q2`, … in order of asking, per run |
 | History sequence | integer, 1, 2, 3, … | strictly increasing, no gaps |
 
@@ -81,9 +89,10 @@ is written.
 `braindump.md` holds the person's own words. An agent that saves them is
 recorded as `recordedBy`; that does not make them an agent's request. An agent
 that writes its own request — rewording a person's input, or delegating — uses
-`request.md` and records the reference to what entrusted it: a parent run and
-node (`{kind: "run", workflow, run, node}`), a project file (`{kind: "file",
+`request.md` and records the reference to what entrusted it: a run and node
+(`{kind: "run", workflow, run, node}`), a project file (`{kind: "file",
 path}`), or a free reference such as a conversation (`{kind: "note", text}`).
+An entrance for requests from external agents is not part of p4.
 When a derived request was built from a person's input, `--original <file>`
 keeps that input beside it as `original-input.md`. No tool writes a human
 author it was not given.
@@ -92,8 +101,15 @@ author it was not given.
 
 At creation the workflow is read from `devdocs/workflows/`, validated with the
 editor's rules (errors refuse the run; warnings are kept as facts), and copied
-byte for byte to `definition/<id>.yaml` together with every workflow it
-delegates to, transitively. The bundle keeps layout, approvals and comments.
+byte for byte to `definition/<id>.yaml`. The copy keeps layout, approvals and
+comments.
+
+**Delegate nodes are not executed (p4).** A workflow with a delegate node is
+refused before anything is written (preflight, `delegate-unsupported`), and
+the reducer refuses a `run.create` whose graph has one, so no entrance — CLI,
+HTTP or another — can start or delegate such work. Delegate nodes are never
+skipped or marked complete. Cross-project targets and parent/child run
+contracts are designed later, separately.
 
 `run.json` records, per bundled workflow: the bundle file, the source file it
 was copied from, `sha256` of the copied bytes, the semantic definition digest
@@ -107,11 +123,6 @@ workflow do not change the run's graph. The run view shows the snapshot and
 compares it with the current source (same definition, changed, renamed,
 deleted). A run on a changed definition is a new run (`--predecessor
 <run-ref>` records the link).
-
-A **delegated (child) run** gets its bundle from the parent's bundle — the
-delegate target and its own transitive delegates — never from the current
-source files. So a child created after the source was edited or deleted still
-runs the parent's captured version, and the child's bundle is self-contained.
 
 Definition approval stays a statement about a definition. Its state is
 recorded and shown; it is not a gate, not permission to execute and not
@@ -127,13 +138,13 @@ repository contents, and a commit hash does not include uncommitted files.
 ```json
 {
   "schema": "ag.workflow-run.v1",
+  "project": "rts-vs-bot",
   "workflow": "build-game",
   "run": "run-001",
   "created": "2026-10-10T12:00:00.000Z",
   "input": { "kind": "braindump", "file": "braindump.md", "author": "A. Person", "recordedBy": "Omni Agent" },
   "executor": { "name": "Omni Agent", "backend": "claude-code / claude-opus-5-5" },
   "predecessor": null,
-  "parent": null,
   "definition": {
     "root": "build-game",
     "workflows": {
@@ -148,8 +159,8 @@ repository contents, and a commit hash does not include uncommitted files.
   "context": { "repositories": [ { "path": ".", "head": "1ad073e…", "branch": "main", "dirty": 0 } ] },
   "nodes": {
     "survey": { "state": "completed", "updated": "…", "started": "…", "ended": "…",
-                "outcome": { "text": "…", "artifacts": ["devdocs/build-game/runs/run-001/report1.md"] },
-                "notes": [], "wait": null, "children": [] }
+                "outcome": { "text": "…", "artifacts": ["devdocs/runs/build-game/run-001/report1.md"] },
+                "notes": [], "wait": null }
   },
   "questions": {},
   "artifacts": [],
@@ -185,7 +196,7 @@ are declarations, as approvers are.
 | --- | --- | --- |
 | `pending` | Work has not started | creation |
 | `running` | The executor recorded that work started (reported progress, not process health) | `start` when ready; `start` again (resume) from `waiting` or `failed`; `take-up` |
-| `waiting` | Work awaits an identified answer, child run or external result | `ask`, `delegate`, `wait` |
+| `waiting` | Work awaits an identified answer or external result | `ask`, `wait` |
 | `completed` | The executor recorded completion with an outcome | `complete` from `running` |
 | `failed` | A recorded problem prevents continuation | `fail` from `running` or `waiting` |
 | `cancelled` | Work was explicitly discontinued (final) | `cancel` from `pending`, `running`, `waiting` or `failed`; run cancellation |
@@ -197,10 +208,7 @@ are declarations, as approvers are.
   one is **blocked** (derived, shown, not stored as a state).
 - Resuming a `failed` node (`start`) needs a reason and is recorded as such;
   nothing retries by itself.
-- `complete` needs an outcome text and may name artifacts. A delegate node
-  completes only when its latest child run's execution is `completed`; the
-  operation reads the child and records its state and sequence as evidence.
-  A missing, failed or cancelled child is refused with that fact.
+- `complete` needs an outcome text and may name artifacts.
 - `progress` adds a note to a `running` or `waiting` node without changing
   its state. It updates the node's `updated` time.
 
@@ -209,10 +217,10 @@ by itself, and no timer changes a state.
 
 ### Waiting
 
-A waiting node records `wait: {reason, holder, on}` where `on` is one of
-`{question: "q1"}`, `{child: {workflow, run}}` or `{external: "<reference>"}`,
-and `holder` names who or what holds the next move: the person a question is
-addressed to, the child run, or the named external party. The view derives the
+A waiting node records `wait: {reason, holder, on}` where `on` is
+`{question: "q1"}` or `{external: "<reference>"}`, and `holder` names who or
+what holds the next move: the person a question is addressed to or the named
+external party. The view derives the
 current holder: once a question has an answer that is not yet taken up, the
 holder is the executor.
 
@@ -231,21 +239,6 @@ thing at a time; asking from an already waiting node is refused.
 An answer to another question leaves a node waiting. Recording an answer is
 not taking it up, taking it up is not completing the node, and none of these
 is accepting a result.
-
-### Delegated runs
-
-`delegate <run> <node>` (on a `running` delegate node) creates the child run
-`devdocs/<target>/runs/<child-run>/` with a `request.md`, `entrustedBy:
-{kind: "run", workflow, run, node}`, `parent: {workflow, run, node}` and the
-bundle from the parent; then the parent node waits on the child and lists it
-in `children`. The child is written first: if the parent update then fails,
-the child names a parent that does not list it, and both views show that.
-Children of one node keep their history; a new delegation needs the node
-`running` again.
-
-The parent node's completion requires the child's recorded `completed`
-execution (see Node states). Taking up a child's result is `start` (resume)
-on the parent node, then `complete`.
 
 ### Execution summary (`execution`)
 
@@ -290,13 +283,13 @@ HTTP routes call them; neither needs the other running.
 | --- | --- | --- | --- |
 | Create a run (snapshot, input) | `create <workflow> --braindump <file>` / `--request <file> --entrusted-by …` | — | — (input comes through the IDE; see below) |
 | List runs | `list [<workflow>]` | `GET runs` | project view → Runs |
-| Inspect a run, its definition, ready nodes, history | `show <run> [--history] [--rev <commit>]`, `check` | `GET runs/<wf>/<run>` | run view |
+| Inspect a run, its definition, ready nodes, history | `show <run> [--history] [--rev [root:]<commit>]`, `check` | `GET runs/<wf>/<run>[?rev=]` | run view |
+| What the definition declares for a path | `access <run> [<path>]…` | — | — |
 | Start / resume, progress note | `start`, `progress` | `POST runs/<wf>/<run>/ops` | — |
 | Wait, complete, fail | `wait`, `complete`, `fail` | same | — |
 | Cancel a node or the run | `cancel [<node>]` | same | run view → Cancel run |
 | Ask, take up, withdraw | `ask`, `take-up`, `withdraw` | same | — |
 | Answer | `answer <run> <q>` | same | run view → question → Answer |
-| Delegate (child run) | `delegate <run> <node>` | same | — (links to both directions) |
 | Attach an artifact | `attach <run> <path>` | same | — (reports listed and readable) |
 | Decide on the result | `decide <run> --decision …` | same | run view → Accept / Reject |
 
@@ -309,8 +302,7 @@ words given in the IDE, where the conversation with the executor happens.
 Submitting an answer in the browser stores it; it does not launch or wake the
 IDE agent. The person continues the conversation in VS Code.
 
-`test/runs.test.ts` ("operation parity") runs every operation, including
-delegation, once through the CLI module and once over HTTP, and requires the
+`test/runs.test.ts` ("operation parity") runs every operation once through the CLI module and once over HTTP, and requires the
 same record apart from route and times.
 
 `--expect-seq <n>` (browser: always sent) refuses an operation when the
@@ -319,12 +311,14 @@ is not applied silently.
 
 ## Access
 
-Repository bindings (`readonly` / `editable`) in the run's bundled
-definition are declarations the executor checks itself before changing a
-repository a node uses; nothing enforces them at the OS level. Writing the run
-folder (`run.json`, plans, reports) is the reporting capability every run has.
-It does not grant write access to a repository bound `readonly`, and devdocs
-being `readonly` in a workflow does not forbid recording that workflow's run.
+Repository bindings (`readonly` / `editable`) in the run's fixed definition
+are path scopes ([contract.md](contract.md)): the most specific binding
+containing a path governs it. They are declarations the executor checks
+itself before changing something (`wfe run access <run> <path>`); nothing
+enforces them at the OS level. Writing the run's own folder (`run.json`,
+plans, reports) is the reporting capability every run has, even with
+`root: readonly` or devdocs `readonly`. It does not grant write access to
+source code, other runs or workflow definitions.
 The definition has no allowed-command schema: restrictions supplied for one
 run (commands, repositories, anything else) are written into its `plan.md`
 and self-checked the same way.
@@ -338,7 +332,7 @@ projects, the runs and any generated file whose stamp was removed.
 
 ## Observation
 
-The service watches `devdocs/*/runs/*/run.json` with the definition poll
+The service watches `devdocs/runs/*/*/run.json` with the definition poll
 (default 1 s, stat-based; a file is re-read only when its size, modification
 time or inode changed) and lists each run folder's top-level files by stat,
 without reading report bodies. It sends `run` change events with the run
@@ -350,8 +344,8 @@ executor's health. Workflow progress and process health are separate.
 
 ## Future integration boundary
 
-Run, node and question ids, parent/child references, holders and evidence
-references are stable so that later adapters can link them to conversations,
+Project, run, node and question ids, holders and evidence references are
+stable so that later adapters can link them to conversations,
 messages (Zulip) and individual agent execution records (Observer,
 `devpolicy/agent_records.md`). devdocs keeps durable input, plans,
 definitions and results. Authority and synchronization are specified when

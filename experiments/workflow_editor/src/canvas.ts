@@ -145,6 +145,7 @@ export class Canvas {
     if (this.mode === 'compact') {
       if (node.type === 'delegate') {
         card.append(h(`div.delegate-target${target ? '' : '.missing'}`, '→ ', target ? (target.name || target.id) : node.workflow ? `${node.workflow} (missing)` : 'no target'))
+        card.append(h('div.unsupported.small', { title: 'Delegate nodes are definition and display only; a run of this workflow is refused' }, 'execution not supported'))
       }
       card.append(h('div.node-desc', node.description || '—'))
     } else if (node.type === 'delegate') {

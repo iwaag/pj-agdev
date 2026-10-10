@@ -26,7 +26,11 @@ What you have:
   (`pj-<id>/`). This directory is not a project. `sources/` holds the local
   repositories that projects use as submodules.
 - The definition files are the authority. `project.yaml` at a project root
-  holds the id, name, intent and goals. `.gitmodules` lists the project's
+  holds the id, name, devdocs storage mode, intent and goals. devdocs is a
+  folder of the project root repository (`devdocs: directory`, the default
+  for new projects) or a repository of its own (`devdocs: submodule`); the
+  mode is fixed at creation and `wfe status` reports a declaration that
+  disagrees with Git. `.gitmodules` lists the project's
   repositories. `devdocs/workflows/*.yaml` holds its workflows. The format,
   validation and approvals are described in `{{CONTRACT}}`.
 - For an existing project, its `project.yaml`, `.gitmodules` and workflow
@@ -57,7 +61,7 @@ What you have:
 ## Runs
 
 - A run is one execution of one workflow. Its folder is
-  `devdocs/<workflow-id>/runs/<run-id>/` in the project. It holds the input,
+  `devdocs/runs/<workflow-id>/<run-id>/` in the project. It holds the input,
   your `plan.md` and reports, `definition/` and `run.json`. The run contract
   is `{{RUN_CONTRACT}}`.
 - The person's own words are the run's `braindump.md`, kept as they gave
@@ -69,8 +73,8 @@ What you have:
   `--backend` is what serves you (model, harness) when you know it.
   (p3/pre1 rehearsal: where to put the person's chat text and what to name
   the executor were unclear.)
-- `wfe run create` copies the workflow and every workflow it delegates to
-  into `definition/`. The run follows that copy for its whole life, whatever
+- `wfe run create` copies the workflow into `definition/`. A workflow with a
+  delegate node is refused: delegate nodes are definition and display only. The run follows that copy for its whole life, whatever
   happens to the workflow files later; a changed definition is a new run. The
   person may edit the workflow files while a run is under way; `wfe run show`
   and the run view then say the current definition changed or was deleted.
@@ -82,20 +86,13 @@ What you have:
   starts only when every predecessor has completed, and a failed or cancelled
   node satisfies nothing. Nothing performs nodes or changes their states for
   you; independent branches can be done one after another.
-- The records mean: `start` — you began work on the node; `ask`, `wait`,
-  `delegate` — the node awaits a question's answer, an external result or a
-  child run, and who holds the next move; `progress` — a note on work under
+- The records mean: `start` — you began work on the node; `ask`, `wait` —
+  the node awaits a question's answer or an external result, and who holds
+  the next move; `progress` — a note on work under
   way; `complete` — the outcome, with the reports or files it produced;
   `fail` — a problem prevents continuing. The person reads them as they
   happen, so a record made when the thing happens is what they see. Records
   are never edited: a correction goes into a report or a later note.
-- A delegate node waits on its child run. Taking up the child's result is
-  `start` on the parent node (it resumes), then `complete`. The child's
-  `request.md` is generated from the node description unless you write it
-  (`delegate --request`); what the parent run already settled, such as an
-  agreed scope, reaches the child only through a request you write.
-  (p3/pre1 rehearsal: the generated request lacked the agreed scope, and the
-  resume step was found only in the contract.)
 - Plans and reports are yours: what you write in them and which reports you
   make. The tools never parse them.
 - The person can answer a question in the browser or here. An answer recorded
@@ -105,17 +102,21 @@ What you have:
   (`take-up`) and completing the node are three different records.
 - Accepting or rejecting the result is the person's decision (in the browser,
   or `wfe run decide` with their name).
-- Repository bindings in the run's definition say which repositories a node
-  may change (`editable`) and which it only reads (`readonly`). They are
-  declarations you check yourself before changing a repository. Writing the
-  run folder in devdocs is reporting and belongs to every run; it gives no
-  write access to a repository bound `readonly`. Restrictions the person
+- Repository bindings in the run's definition are path scopes: the most
+  specific binding containing a path says whether it may be changed
+  (`editable`) or only read (`readonly`). They are declarations you check
+  yourself; `wfe run access <run> <path>` answers for a path. Writing the
+  run's own folder is reporting and belongs to every run, even under a
+  readonly root; it gives no write access to source code, other runs or
+  workflow definitions. Restrictions the person
   gives for a run — commands, repositories, anything else — belong in its
   `plan.md`, and you hold yourself to them.
-- Run files are saved, not committed. A devdocs commit keeps the definition
-  and the stage the run had reached; commit at meaningful points. The
-  project root records which devdocs (and other submodule) commits belong
-  together only when its gitlinks are committed too; until then `git status`
+- Run files are saved, not committed. A commit of the repository that owns
+  devdocs (the project root, or the devdocs repository in submodule mode)
+  keeps the definition and the stage the run had reached; commit at
+  meaningful points. `wfe run show --rev <commit>` reads a run as committed.
+  The project root records which submodule commits belong together only
+  when its gitlinks are committed too; until then `git status`
   in the project shows them as modified. (p3/pre1 rehearsal: "published" was
   unclear for a local project.)
 - Waiting is not failing: a question can wait for hours, and nothing expires.

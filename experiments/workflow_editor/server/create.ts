@@ -13,7 +13,7 @@ import { mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AddSubmoduleResponse, CreateProjectResult, CreateStep } from '../shared/api.ts'
-import { ID_PATTERN, normalizeRepoPath, PROJECT_SCHEMA } from '../shared/model.ts'
+import { DEVDOCS_MODES, ID_PATTERN, normalizeRepoPath, PROJECT_SCHEMA, type DevdocsMode } from '../shared/model.ts'
 import { readTextOrNull } from './files.ts'
 import { git, gitOk, LOCAL_TRANSPORT } from './git.ts'
 import { registerWorkspace } from './registry.ts'
@@ -26,8 +26,9 @@ export interface CreateProjectOptions {
   name: string
   intent: string
   goals: string[]
-  sourcesDir: string // where a new devdocs source repository is created
-  devdocsSource?: string // an existing devdocs repository (path or URL) instead
+  devdocs?: DevdocsMode // storage mode; default directory
+  sourcesDir: string // where a new devdocs source repository is created (submodule mode)
+  devdocsSource?: string // an existing devdocs repository (path or URL) instead (submodule mode)
   registryFile: string
   workspaceId?: string
   resume?: boolean
@@ -122,6 +123,9 @@ export async function createProject(o: CreateProjectOptions): Promise<CreateProj
   if (!ID_PATTERN.test(o.id)) return result(false, `project id "${o.id}" must match ${ID_PATTERN.source}`)
   if (!o.name.trim()) return result(false, 'a project name is required')
   if (!isAbsolute(o.dir)) return result(false, 'the destination must be an absolute path')
+  const mode: DevdocsMode = o.devdocs ?? 'directory'
+  if (!(DEVDOCS_MODES as readonly string[]).includes(mode)) return result(false, `devdocs mode "${mode}" must be directory or submodule`)
+  if (mode === 'directory' && o.devdocsSource) return result(false, 'a devdocs source repository applies to the submodule mode only')
   const who = await gitIdentity(env)
   if (!who.name || !who.email) {
     return result(false, `Git has no ${!who.name ? 'user.name' : 'user.email'} configured. Set it (git config --global user.name "…" / user.email "…") and run this again; nothing was created.`)
@@ -140,13 +144,15 @@ export async function createProject(o: CreateProjectOptions): Promise<CreateProj
 
   try {
     await mkdir(join(dir, '.local'), { recursive: true })
-    await writeFile(marker, `${JSON.stringify({ id: o.id, devdocsSource: o.devdocsSource ?? null, startedAt: new Date().toISOString() }, null, 2)}\n`)
+    await writeFile(marker, `${JSON.stringify({ id: o.id, devdocs: mode, devdocsSource: o.devdocsSource ?? null, startedAt: new Date().toISOString() }, null, 2)}\n`)
     step('destination', resuming ? 'kept' : 'done', resuming ? `continuing in ${dir}` : `created ${dir}`)
     stop('destination')
 
-    // ---- devdocs source ----
-    let url: string
-    if (o.devdocsSource) {
+    // ---- devdocs source (submodule mode) ----
+    let url = ''
+    if (mode === 'directory') {
+      // nothing: devdocs is a directory of the root repository
+    } else if (o.devdocsSource) {
       const src = o.devdocsSource.trim()
       url = isUrl(src) ? src : await relativeUrl(dir, resolve(dir, src))
       step('devdocs source', 'kept', `using the existing repository ${src}`)
@@ -174,12 +180,13 @@ export async function createProject(o: CreateProjectOptions): Promise<CreateProj
     const projectFile = join(dir, 'project.yaml')
     const current = await readTextOrNull(projectFile)
     if (current === null) {
-      await writeFile(projectFile, newProjectText({ schema: PROJECT_SCHEMA, id: o.id, name: o.name.trim(), intent: o.intent, goals: o.goals.filter(g => g.trim()) }))
+      await writeFile(projectFile, newProjectText({ schema: PROJECT_SCHEMA, id: o.id, name: o.name.trim(), devdocs: mode, intent: o.intent, goals: o.goals.filter(g => g.trim()) }))
       step('project.yaml', 'done', 'written')
     } else {
       const parsed = parseProject(current)
       if (!parsed.ok) throw new Error(`project.yaml exists and cannot be read (${parsed.problem.message}); fix it by hand, then resume`)
       if (parsed.model.id !== o.id) throw new Error(`project.yaml exists with id "${parsed.model.id}", not "${o.id}"; nothing was replaced`)
+      if (parsed.model.devdocs !== mode) throw new Error(`project.yaml exists with devdocs "${parsed.model.devdocs}", not "${mode}"; nothing was replaced`)
       step('project.yaml', 'kept', 'already present; not rewritten')
     }
     const ignoreFile = join(dir, '.gitignore')
@@ -189,23 +196,30 @@ export async function createProject(o: CreateProjectOptions): Promise<CreateProj
     else step('.gitignore', 'kept', 'already ignores .local/')
     stop('files')
 
-    // ---- devdocs submodule ----
+    // ---- devdocs ----
     const ws = new Workspace({ id: o.id, label: o.name, host: 'this machine', path: dir })
-    if ((await ws.submodulePaths()).some(s => s.path === 'devdocs')) {
+    if (mode === 'directory') {
+      if ((await ws.submodulePaths()).some(s => s.path === 'devdocs')) throw new Error('.gitmodules lists devdocs as a submodule, but the project is declared with devdocs as a directory; fix it by hand, then resume')
+      const readme = join(dir, 'devdocs', 'README.md')
+      await mkdir(join(dir, 'devdocs', 'workflows'), { recursive: true })
+      if (!(await exists(readme))) await writeFile(readme, `# ${o.name.trim()} — devdocs\n\nRequests, plans, reports, workflow definitions (workflows/) and runs (runs/) of ${o.id}.\n`)
+      if (!(await exists(join(dir, 'devdocs', 'workflows', '.gitkeep')))) await writeFile(join(dir, 'devdocs', 'workflows', '.gitkeep'), '')
+      step('devdocs directory', 'done', 'devdocs/README.md and devdocs/workflows/ in the project root')
+    } else if ((await ws.submodulePaths()).some(s => s.path === 'devdocs')) {
       step('devdocs submodule', 'kept', 'already in .gitmodules')
     } else {
       if (await exists(join(dir, 'devdocs'))) throw new Error('devdocs/ exists but is not a submodule; move it aside by hand (nothing was deleted), then resume')
       await run(dir, ['submodule', 'add', '--', url, 'devdocs'])
       step('devdocs submodule', 'done', `git submodule add ${url} devdocs`)
     }
-    if (!(await exists(join(dir, 'devdocs', 'workflows')))) {
+    if (mode === 'submodule' && !(await exists(join(dir, 'devdocs', 'workflows')))) {
       await mkdir(join(dir, 'devdocs', 'workflows'), { recursive: true })
       step('devdocs/workflows', 'done', 'created (empty; the devdocs source had no workflows/)')
     }
     stop('devdocs submodule')
 
     // ---- initial commit ----
-    await run(dir, ['add', '--', 'project.yaml', '.gitignore', '.gitmodules', 'devdocs'])
+    await run(dir, ['add', '--', 'project.yaml', '.gitignore', ...(mode === 'submodule' ? ['.gitmodules'] : []), 'devdocs'])
     const staged = await git(dir, ['diff', '--cached', '--quiet'], { env })
     if (staged.code === 1) {
       const message = `Create project ${o.id}`

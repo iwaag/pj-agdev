@@ -1,12 +1,13 @@
-// p3/pre1 step 3: the run UI against its own data and service. Builds a
-// temporary project with a branching/joining workflow and a delegate, starts
+// The run UI against its own data and service (p3/pre1 step 3, moved to the
+// p4 contract). Builds a temporary directory-mode project with a
+// branching/joining workflow and a delegate-holding workflow, starts
 // a private service (production build, port 8196 by default, with the bench
 // counters), records run operations through the same module the CLI uses,
 // and drives the browser. It never touches another registry or workspace.
 //
 //   npm run build && node checks/runs.ts [--port 8196] [--repeat 20] [--out <file.json>] [--keep]
 //
-// Screenshots and the JSON record go to pj-agdev/.local/workflow-editor-p3pre1/.
+// Screenshots and the JSON record go to pj-agdev/.local/workflow-editor-p4/.
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -16,7 +17,7 @@ import type { Page } from 'playwright-core'
 import type { OpInput, RunRecord, RunRef } from '../shared/run.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const OUT_DIR = resolve(here, '..', '..', '..', '.local', 'workflow-editor-p3pre1')
+const OUT_DIR = resolve(here, '..', '..', '..', '.local', 'workflow-editor-p4')
 process.env.WFE_FIXTURE = OUT_DIR // lib.ts puts screenshots beneath it
 const args = process.argv.slice(2)
 const option = (n: string, d: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d }
@@ -33,16 +34,16 @@ const { PrivateService } = await import('./bench/service.ts')
 const { createProject } = await import('../server/create.ts')
 const { gitOk } = await import('../server/git.ts')
 const { loadRegistry } = await import('../server/registry.ts')
-const { createRun, delegate, runOp } = await import('../server/runs.ts')
+const { createRun, runOp } = await import('../server/runs.ts')
 const { Workspace } = await import('../server/workspace.ts')
 
 // ---- data ----------------------------------------------------------------------------
 
 const wf = (id: string, nodes: string, edges: string) => `schema: ag.workflow.v1\nid: ${id}\nname: ${id}\nintent: |\n  Check workflow ${id}.\nrepositories:\n  docs: {path: devdocs, access: editable}\nnodes:\n${nodes}edges:\n${edges}\n`
 const node = (id: string, type: string, extra = '') => `  ${id}:\n    type: ${type}\n    name: ${id}\n    description: ${id} step as captured\n    repositories: [docs]\n${extra}`
-const SHIP = wf('ship', [node('survey', 'study'), node('build', 'do'), node('ask', 'talk'), node('handoff', 'delegate', '    workflow: sub\n'), node('join', 'do')].join(''),
+const SHIP = wf('ship', [node('survey', 'study'), node('build', 'do'), node('ask', 'talk'), node('handoff', 'do'), node('join', 'do')].join(''),
   '  - {from: survey, to: build}\n  - {from: survey, to: ask}\n  - {from: survey, to: handoff}\n  - {from: build, to: join}\n  - {from: ask, to: join}\n  - {from: handoff, to: join}')
-const SUB = wf('sub', node('prepare', 'do'), '  []')
+const SUB = wf('sub', [node('prepare', 'do'), node('pass', 'delegate', '    workflow: ship\n')].join(''), '  - {from: prepare, to: pass}')
 
 const registry = join(root, 'registry.json')
 const dir = join(root, 'pj-chk')
@@ -51,7 +52,8 @@ if (!created.ok) throw new Error(created.message)
 await writeFile(join(dir, 'devdocs', 'workflows', 'ship.yaml'), SHIP)
 await writeFile(join(dir, 'devdocs', 'workflows', 'sub.yaml'), SUB)
 const ws = new Workspace((await loadRegistry(registry)).workspaces[0])
-const runJson = (r: RunRef) => join(dir, 'devdocs', r.workflow, 'runs', r.run, 'run.json')
+const runDirOf = (r: RunRef) => join(dir, 'devdocs', 'runs', r.workflow, r.run)
+const runJson = (r: RunRef) => join(runDirOf(r), 'run.json')
 const record = async (r: RunRef) => JSON.parse(await readFile(runJson(r), 'utf8')) as RunRecord
 const op = async (r: RunRef, input: OpInput, by?: string, now?: Date) => (await runOp(ws, r, input, { via: 'cli', by, now })).record
 const executor = { name: 'Omni Agent', backend: 'check-harness' }
@@ -65,7 +67,7 @@ await op(R1, { op: 'node.start', node: 'build' })
 await op(R1, { op: 'node.start', node: 'ask' })
 await op(R1, { op: 'question.ask', question: '', node: 'ask', text: 'Small or large map?', to: 'Check Person' })
 await op(R1, { op: 'node.start', node: 'handoff' })
-await delegate(ws, R1, 'handoff', { via: 'cli' })
+await op(R1, { op: 'node.wait', node: 'handoff', reason: 'release review', holder: 'Release board', external: 'review #7' })
 // A run whose last record is five hours old.
 const fiveHours = new Date(Date.now() - 5 * 3600 * 1000)
 const R3 = (await createRun(ws, { workflow: 'ship', name: 'run-old', input: { ...input, text: 'Old run.' }, executor, by: 'Omni Agent', via: 'cli', now: fiveHours })).ref
@@ -98,9 +100,8 @@ try {
   await page.goto(`${BASE}/#/ws/chk`)
   await page.waitForSelector('.run-row[data-run="ship/run-001"]')
   const row = await page.locator('.run-row[data-run="ship/run-001"]').innerText()
-  check(/In progress/.test(row) && /ask — next move: Check Person/.test(row) && /handoff — next move: run sub\/run-001/.test(row), 'project view: run row shows state and who holds each wait')
-  check(/child of ship\/run-001/.test(await page.locator('.run-row[data-run="sub/run-001"]').innerText()), 'project view: the child run names its parent')
-  await shot(page, 'p3-runs-project', false)
+  check(/In progress/.test(row) && /ask — next move: Check Person/.test(row) && /handoff — next move: Release board/.test(row), 'project view: run row shows state and who holds each wait')
+  await shot(page, 'p4-runs-project', false)
 
   // 2. The run view on the fixed graph.
   console.log('run view')
@@ -108,12 +109,12 @@ try {
   await page.waitForSelector('.node[data-id="join"] .run-status')
   const labels = Object.fromEntries(await Promise.all(['survey', 'build', 'ask', 'handoff', 'join'].map(async id => [id, await cardText(id)])))
   result.labels = labels
-  check(labels.survey === 'Completed' && labels.build === 'Running (reported)' && labels.ask === 'Waiting · Check Person' && labels.handoff === 'Waiting · run sub/run-001' && labels.join === 'Pending',
+  check(labels.survey === 'Completed' && labels.build === 'Running (reported)' && labels.ask === 'Waiting · Check Person' && labels.handoff === 'Waiting · Release board' && labels.join === 'Pending',
     `node labels as text: ${JSON.stringify(labels)}`)
   const now = await page.locator('.run-now').innerText()
-  check(/Active\s*build/.test(now) && /Waiting\s*ask → next move: Check Person, handoff → next move: run sub\/run-001/.test(now), 'summary: every active and waiting branch is listed')
+  check(/Active\s*build/.test(now) && /Waiting\s*ask → next move: Check Person, handoff → next move: Release board/.test(now), 'summary: every active and waiting branch is listed')
   check(/the words of Check Person, recorded by Omni Agent/.test(await page.locator('.run-facts').innerText()), 'summary: braindump authorship')
-  await shot(page, 'p3-run-view', false)
+  await shot(page, 'p4-run-view', false)
 
   // 3. Ordinary progress saves: latency, with the service's work counted.
   console.log('latency')
@@ -167,7 +168,7 @@ try {
   await waitFor(async () => /to take up/.test(await cardText('ask')))
   check(await cardText('ask') === 'Answered · Omni Agent to take up' && /ask → next move: Omni Agent \(answer recorded, not yet taken up\)/.test(await page.locator('.run-now').innerText()), `card and summary say who holds the next move: "${await cardText('ask')}"`)
   check(/does not notify it|does not start or wake/.test(await page.locator('.run-side').innerText()), 'the view says recording does not wake the IDE agent')
-  await shot(page, 'p3-run-answered', false)
+  await shot(page, 'p4-run-answered', false)
 
   // 7. An answer typed against an outdated view is refused, not applied.
   console.log('stale view')
@@ -190,30 +191,28 @@ try {
   console.log('take-up, completion, failure')
   await op(R1, { op: 'question.take-up', question: 'q1' })
   const atCommit = (await op(R1, { op: 'node.complete', node: 'ask', outcome: 'Small map agreed.' })).seq
-  await writeFile(join(dir, 'devdocs', R1.workflow, 'runs', R1.run, 'report-history.md'), 'Report captured at this commit.')
-  await gitOk(join(dir, 'devdocs'), ['add', '-A'])
-  await gitOk(join(dir, 'devdocs'), ['commit', '-q', '-m', 'check: ask completed'])
-  const commit = (await gitOk(join(dir, 'devdocs'), ['rev-parse', 'HEAD'])).trim()
-  await writeFile(join(dir, 'devdocs', R1.workflow, 'runs', R1.run, 'report-history.md'), 'Current report changed after the commit.')
+  await writeFile(join(runDirOf(R1), 'report-history.md'), 'Report captured at this commit.')
+  await gitOk(dir, ['add', '-A', 'devdocs'])
+  await gitOk(dir, ['commit', '-q', '-m', 'check: ask completed'])
+  const commit = (await gitOk(dir, ['rev-parse', 'HEAD'])).trim()
+  await writeFile(join(runDirOf(R1), 'report-history.md'), 'Current report changed after the commit.')
   await waitSeq(atCommit)
   check(await cardText('ask') === 'Completed' && await cardText('join') === 'Pending', 'take-up then completion shown; the join still waits for build and handoff')
   const failed = (await op(R1, { op: 'node.fail', node: 'build', reason: 'The engine does not compile.' })).seq
   await waitSeq(failed)
   check(await cardText('build') === 'Failed' && await cardText('join') === 'Blocked', `failure is not success and blocks the join: build "${await cardText('build')}", join "${await cardText('join')}"`)
   check(/Failed\s*build/.test(await page.locator('.run-now').innerText()) && /Waiting\s*handoff/.test(await page.locator('.run-now').innerText()), 'a failed branch and a waiting branch are both visible')
-  await shot(page, 'p3-run-failed-branch', false)
+  await shot(page, 'p4-run-failed-branch', false)
 
-  // 9. Parent ⇄ child navigation; the child is a request with the parent's provenance.
-  console.log('delegation')
-  await page.locator('.run-side a', { hasText: 'sub/run-001' }).first().click()
-  await page.waitForFunction(() => document.querySelector('.run-ref')?.textContent === 'sub/run-001')
+  // 9. A workflow with a delegate node: definition and display only.
+  console.log('delegate unsupported')
+  await page.goto(`${BASE}/#/ws/chk/wf/sub.yaml`)
+  await page.waitForSelector('.node[data-id="pass"]')
+  check(/execution not supported/.test(await page.locator('.node[data-id="pass"]').innerText()), 'the delegate card says execution is not supported')
+  check(await createRun(ws, { workflow: 'sub', input, executor, by: 'Omni Agent', via: 'cli' }).then(() => false, (e: Error) => /delegate/.test(e.message)), 'a run of it is refused')
+  await shot(page, 'p4-delegate-unsupported', false)
+  await page.goto(hash(R1))
   await page.waitForSelector('.run-summary[data-seq]')
-  const childFacts = await page.locator('.run-facts').innerText()
-  check(/request\.md — by Omni Agent/.test(childFacts), 'child: input is a request by the agent, not a braindump')
-  check(/Parent:\s*ship\/run-001 node handoff/.test(await page.locator('.run-side').innerText()), 'child: parent link with node')
-  await page.locator('.run-side a', { hasText: 'ship/run-001' }).first().click()
-  await page.waitForFunction(() => document.querySelector('.run-ref')?.textContent === 'ship/run-001')
-  check(true, 'child → parent navigation')
 
   // 10. Editing the source definition does not change the run's graph.
   console.log('source edit')
@@ -221,7 +220,7 @@ try {
   await writeFile(join(dir, 'devdocs', 'workflows', 'ship.yaml'), SHIP.replace('survey step as captured', 'survey step EDITED LATER'))
   const srcChanged = await waitFor(async () => /changed since this snapshot/.test(await page.locator('.run-title').innerText()))
   check(srcChanged !== null && await page.locator('.node[data-id="survey"] .node-desc').innerText() === 'survey step as captured', 'source edit: run view keeps the snapshot and says the current definition changed')
-  await shot(page, 'p3-run-source-changed', false)
+  await shot(page, 'p4-run-source-changed', false)
 
   // 11. A malformed record keeps the last valid view and blocks operations; repair recovers.
   console.log('malformed')
@@ -230,7 +229,7 @@ try {
   const bad = await waitFor(async () => /run\.json cannot be used/.test(await page.locator('.banners').innerText()))
   check(bad !== null && await page.locator('.node[data-id="join"]').count() === 1, `malformed run.json: error shown in ${Math.round(bad ?? -1)} ms, last valid graph kept`)
   check(await page.getByRole('button', { name: 'Reject result' }).isDisabled(), 'no operations on an unusable record')
-  await shot(page, 'p3-run-malformed', false)
+  await shot(page, 'p4-run-malformed', false)
   await writeFile(runJson(R1), good)
   const ok = await waitFor(async () => !/cannot be used/.test(await page.locator('.banners').innerText()))
   check(ok !== null, `repaired run.json: recovered in ${Math.round(ok ?? -1)} ms`)
@@ -239,7 +238,7 @@ try {
   // 12. A report saved into the run folder appears; its text is readable.
   console.log('report file')
   const t0 = performance.now()
-  await writeFile(join(dir, 'devdocs', 'ship', 'runs', R1.run, 'report1.md'), '# Report 1\n\nSurvey findings.\n')
+  await writeFile(join(runDirOf(R1), 'report1.md'), '# Report 1\n\nSurvey findings.\n')
   await page.waitForSelector('.run-side .file-link:text("report1.md")', { timeout: 6000 })
   result.reportVisibleMs = Math.round(performance.now() - t0)
   await page.locator('.run-side .file-link', { hasText: 'report1.md' }).first().click()
@@ -282,12 +281,12 @@ try {
   console.log('history view')
   await page.goto(`${hash(R1, `/at/${commit}`)}`)
   await page.waitForSelector('.run-summary[data-seq]')
-  check(await seqShown(page) === atCommit && /As committed in devdocs/.test(await page.locator('.banners').innerText()) && await cardText('build') === 'Running (reported)' && await cardText('ask') === 'Completed',
+  check(await seqShown(page) === atCommit && /As committed in the project root/.test(await page.locator('.banners').innerText()) && await cardText('build') === 'Running (reported)' && await cardText('ask') === 'Completed',
     `history view at ${commit.slice(0, 7)}: seq ${atCommit}, build running, ask completed`)
   await page.locator('.run-side .file-link', { hasText: 'report-history.md' }).first().click()
   await page.waitForSelector('.file-view pre')
   check(await page.locator('.file-view pre').innerText() === 'Report captured at this commit.', 'history report uses the displayed commit, not the current file')
-  await shot(page, 'p3-run-at-commit', false)
+  await shot(page, 'p4-run-at-commit', false)
   await page.goto(hash(R1))
   await page.waitForSelector('.run-summary[data-seq]')
   await page.locator('.run-side .file-link', { hasText: 'report-history.md' }).first().click()

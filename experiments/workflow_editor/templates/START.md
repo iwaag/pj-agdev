@@ -38,7 +38,7 @@ Workflows). Then, in VS Code:
 
 - The run appears in the project view under **Runs**, at
   `{{URL}}#/ws/<project id>/run/<workflow id>/<run id>`; its folder is
-  `pj-<project>/devdocs/<workflow id>/runs/<run id>/`.
+  `pj-<project>/devdocs/runs/<workflow id>/<run id>/`.
 - The run view shows what finished, what is active, what waits for whom,
   questions, reports and history, live. "Running" is what the agent
   recorded, not proof that it is still working; the VS Code conversation is.

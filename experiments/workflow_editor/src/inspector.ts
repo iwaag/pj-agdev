@@ -70,6 +70,7 @@ function nodePanel(ctx: InspectorContext, id: string, actions: InspectorActions)
       disabled: ro, 'aria-label': 'Delegate target',
       onchange: (e: Event) => { const v = (e.target as HTMLSelectElement).value; if (v) n.workflow = v; else delete n.workflow; actions.changed(true) },
     }, options)))
+    if (n.type === 'delegate') out.push(h('p.banner.warn.small', 'Delegate execution is not supported: this node is definition and display only, and runs of a workflow with a delegate node are refused by the browser, the API and the CLI alike.'))
   }
   // Repository bindings of this node
   const bindings = Object.entries(w.repositories)

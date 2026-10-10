@@ -5,7 +5,7 @@
 import { canonicalJson } from './canonical.ts'
 import { ID_PATTERN, normalizeRepoPath, type Edge } from './model.ts'
 
-export const RUN_SCHEMA = 'ag.workflow-run.v1'
+export const RUN_SCHEMA = 'ag.workflow-run.v2'
 export const RUN_ID = /^run-[a-z0-9][a-z0-9_.-]{0,59}$/
 export const QUESTION_ID = /^q[0-9]{1,6}$/
 export const NODE_STATES = ['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled'] as const
@@ -21,6 +21,8 @@ const fail = (code: string, message: string): never => { throw new RunError(code
 
 // ---- record shape -------------------------------------------------------------
 
+// A run is identified by Project, Workflow and Run together. Inside one
+// project's records the project is implicit; `run.json` names it.
 export interface RunRef { workflow: string; run: string }
 export type EntrustRef =
   | { kind: 'run'; workflow: string; run: string; node?: string }
@@ -48,21 +50,19 @@ export interface BundleEntry {
 export interface DefinitionRef { root: string; workflows: Record<string, BundleEntry>; warnings: string[] }
 export interface RepoContext { path: string; head: string | null; branch: string | null; dirty: number | null }
 
-export type WaitOn = { question: string } | { child: RunRef } | { external: string }
+export type WaitOn = { question: string } | { external: string }
 export interface Wait { reason: string; holder: string; on: WaitOn }
 export interface Note { at: string; by: string; text: string }
-export interface ChildEvidence extends RunRef { execution: ExecutionState; seq: number }
 export interface NodeRecord {
   state: NodeState
   updated: string | null
   started: string | null
   ended: string | null
   wait: Wait | null
-  outcome: { text: string; artifacts: string[]; child: ChildEvidence | null } | null
+  outcome: { text: string; artifacts: string[] } | null
   failure: { reason: string; at: string; by: string } | null
   cancellation: { reason: string; at: string; by: string } | null
   notes: Note[]
-  children: RunRef[]
 }
 // `from` gave the answer; `by` recorded it (the same unless someone relays it).
 export interface Answer { text: string; from: string; by: string; at: string; via: string }
@@ -91,13 +91,13 @@ export interface Execution {
 
 export interface RunState {
   schema: string
+  project: string
   workflow: string
   run: string
   created: string
   input: RunInput
   executor: Executor
   predecessor: RunRef | null
-  parent: (RunRef & { node: string }) | null
   definition: DefinitionRef
   context: { repositories: RepoContext[] }
   nodes: Record<string, NodeRecord>
@@ -115,14 +115,13 @@ export interface RunState {
 // ---- operations (history entries) ---------------------------------------------
 
 export type OpInput =
-  | { op: 'run.create'; workflow: string; run: string; input: RunInput; executor: Executor; predecessor: RunRef | null; parent: (RunRef & { node: string }) | null; definition: DefinitionRef; context: { repositories: RepoContext[] }; nodes: string[] }
+  | { op: 'run.create'; project: string; workflow: string; run: string; input: RunInput; executor: Executor; predecessor: RunRef | null; definition: DefinitionRef; context: { repositories: RepoContext[] }; nodes: string[] }
   | { op: 'node.start'; node: string; reason?: string }
   | { op: 'node.progress'; node: string; text: string }
   | { op: 'node.wait'; node: string; reason: string; holder: string; external: string }
-  | { op: 'node.complete'; node: string; outcome: string; artifacts?: string[]; child?: ChildEvidence }
+  | { op: 'node.complete'; node: string; outcome: string; artifacts?: string[] }
   | { op: 'node.fail'; node: string; reason: string }
   | { op: 'node.cancel'; node: string; reason: string }
-  | { op: 'node.delegate'; node: string; child: RunRef }
   | { op: 'question.ask'; question: string; node?: string; text: string; to: string }
   | { op: 'question.answer'; question: string; text: string; from?: string }
   | { op: 'question.take-up'; question: string; answer?: number }
@@ -131,7 +130,7 @@ export type OpInput =
   | { op: 'run.cancel'; reason: string }
   | { op: 'run.decide'; decision: 'accepted' | 'rejected'; evidence: string; note?: string }
 
-export const OPS = ['run.create', 'node.start', 'node.progress', 'node.wait', 'node.complete', 'node.fail', 'node.cancel', 'node.delegate',
+export const OPS = ['run.create', 'node.start', 'node.progress', 'node.wait', 'node.complete', 'node.fail', 'node.cancel',
   'question.ask', 'question.answer', 'question.take-up', 'question.withdraw', 'artifact.attach', 'run.cancel', 'run.decide'] as const
 
 // What one entry changed, kept in the entry for readers of the raw history.
@@ -145,6 +144,10 @@ export interface RunRecord extends RunState { history: HistoryEntry[] }
 
 // The graph the run follows: the root workflow of its bundle.
 export interface RunGraph { nodes: Record<string, { type: string; workflow?: string }>; edges: Edge[] }
+
+// Delegate nodes are definition and display only (p4): a workflow that has
+// one is refused at run creation, by every entrance, through this reducer.
+export const delegateNodes = (graph: RunGraph) => Object.entries(graph.nodes).filter(([, n]) => n.type === 'delegate').map(([id]) => id).sort()
 
 // ---- readiness and summary ------------------------------------------------------
 
@@ -229,7 +232,7 @@ export function validArtifactPath(p: unknown): string {
 }
 
 function emptyNode(): NodeRecord {
-  return { state: 'pending', updated: null, started: null, ended: null, wait: null, outcome: null, failure: null, cancellation: null, notes: [], children: [] }
+  return { state: 'pending', updated: null, started: null, ended: null, wait: null, outcome: null, failure: null, cancellation: null, notes: [] }
 }
 
 const TERMINAL: ExecutionState[] = ['completed', 'stopped', 'cancelled']
@@ -242,14 +245,17 @@ export function apply(prev: RunState | null, e: HistoryEntry | (OpInput & { seq:
   if (Number.isNaN(Date.parse(at))) fail('shape', `history ${e.seq}: "at" is not a timestamp`)
   if (e.op === 'run.create') {
     if (prev) fail('order', 'run.create may only be the first entry')
+    if (typeof e.project !== 'string' || !ID_PATTERN.test(e.project)) fail('shape', `project id "${String(e.project)}" is invalid`)
     if (!ID_PATTERN.test(e.workflow)) fail('shape', `workflow id "${e.workflow}" is invalid`)
     if (!RUN_ID.test(e.run)) fail('run-id', `run id "${e.run}" must match ${RUN_ID.source}`)
     const ids = [...(e.nodes ?? [])].sort()
     if (canonicalJson(ids) !== canonicalJson(Object.keys(graph.nodes).sort())) fail('graph', 'the nodes in run.create differ from the bundled definition')
+    const delegates = delegateNodes(graph)
+    if (delegates.length) fail('delegate-unsupported', `the workflow has delegate node${delegates.length === 1 ? '' : 's'} ${delegates.join(', ')}; delegate execution is not supported, so no run of it is created`)
     const nodes = Object.fromEntries(ids.map(id => [id, emptyNode()]))
     const state: RunState = {
-      schema: RUN_SCHEMA, workflow: e.workflow, run: e.run, created: at,
-      input: e.input, executor: e.executor, predecessor: e.predecessor ?? null, parent: e.parent ?? null,
+      schema: RUN_SCHEMA, project: e.project, workflow: e.workflow, run: e.run, created: at,
+      input: e.input, executor: e.executor, predecessor: e.predecessor ?? null,
       definition: e.definition, context: e.context,
       nodes, questions: {}, artifacts: [], decisions: [], cancelled: null,
       execution: summarize({ nodes, cancelled: null }, graph), started: null, ended: null, updated: at, seq: e.seq,
@@ -316,33 +322,12 @@ export function apply(prev: RunState | null, e: HistoryEntry | (OpInput & { seq:
       move(e.node, 'waiting')
       break
     }
-    case 'node.delegate': {
-      live()
-      const n = node(e.node)
-      const def = graph.nodes[e.node]
-      if (def.type !== 'delegate') fail('not-delegate', `node "${e.node}" is a ${def.type} node; only delegate nodes delegate`)
-      if (n.state !== 'running') fail('state', `node "${e.node}" is ${n.state}; start it before delegating`)
-      const child = validRunRef(e.child, 'child')
-      if (child.workflow !== def.workflow) fail('child-workflow', `node "${e.node}" delegates to "${def.workflow}", not "${child.workflow}"`)
-      n.children.push(child)
-      n.wait = { reason: `delegated to ${child.workflow}/${child.run}`, holder: `run ${child.workflow}/${child.run}`, on: { child } }
-      move(e.node, 'waiting')
-      break
-    }
     case 'node.complete': {
       live()
       const n = node(e.node)
       if (n.state !== 'running') fail('state', `node "${e.node}" is ${n.state}; only a running node completes${n.state === 'waiting' ? ' (resume it with start first)' : ''}`)
       const artifacts = (e.artifacts ?? []).map(validArtifactPath)
-      let child: ChildEvidence | null = null
-      if (graph.nodes[e.node].type === 'delegate') {
-        const last = n.children.at(-1)
-        if (!last) fail('child-missing', `delegate node "${e.node}" has no child run; delegate first`)
-        if (!e.child || canonicalJson(validRunRef(e.child, 'child')) !== canonicalJson(last)) fail('child-evidence', `completing "${e.node}" needs the state of its child run ${last!.workflow}/${last!.run}`)
-        if (e.child!.execution !== 'completed') fail('child-not-completed', `child run ${last!.workflow}/${last!.run} is ${e.child!.execution}, not completed`)
-        child = { ...last!, execution: e.child!.execution, seq: e.child!.seq }
-      }
-      n.outcome = { text: text(e.outcome, 'the outcome'), artifacts, child }
+      n.outcome = { text: text(e.outcome, 'the outcome'), artifacts }
       n.ended = at
       for (const path of artifacts) s.artifacts.push({ path, node: e.node, title: '', by, at })
       move(e.node, 'completed')

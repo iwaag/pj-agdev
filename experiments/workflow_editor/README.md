@@ -1,4 +1,4 @@
-# Workflow and project editor (experiment, `workflow_editor` p1, p2/pre1, p3/pre1)
+# Workflow and project editor (experiment, `workflow_editor` p1, p2/pre1, p3/pre1, p4)
 
 A standalone MVP that edits Git-backed project and workflow definitions from a
 browser UI while the same YAML files stay editable in any text editor or agent
@@ -123,7 +123,7 @@ node cli/wfe.ts help          # from the checkout (or: npm run wfe -- help)
 | `create`, `register`, `list`, `status` | projects, workspaces, Git state |
 | `add-repo` | `git submodule add`, as the project view does |
 | `workflow new`, `validate`, `approve`, `arrange` | workflows: template, validation, approvals, auto-arrange |
-| `run create`, `list`, `show`, `check`, `start`, `complete`, `ask`, `answer`, `delegate`, … | workflow runs (docs/runs.md) |
+| `run create`, `list`, `show`, `check`, `access`, `start`, `complete`, `ask`, `answer`, … | workflow runs (docs/runs.md) |
 | `serve` | build the UI and start the service for this registry |
 
 `--registry` / `WFE_REGISTRY`, `--area` / `WFE_AREA` and `--port` /
@@ -133,17 +133,18 @@ as the service.
 ## Runs
 
 A run is one execution of a workflow, recorded in
-`devdocs/<workflow-id>/runs/<run-id>/`: the person's `braindump.md` (or an
+`devdocs/runs/<workflow-id>/<run-id>/` (p4): the person's `braindump.md` (or an
 agent's `request.md`), the executor's `plan.md` and reports, a fixed byte copy
-of the workflow and its transitive delegates in `definition/`, and
+of the workflow in `definition/`, and
 `run.json`, whose current state must equal the replay of its history by
 `shared/run.ts`. `wfe run create` makes one; `wfe run start/complete/wait/
-ask/answer/take-up/delegate/…` append one history entry each; `wfe run show`
+ask/answer/take-up/…` append one history entry each; `wfe run show`
 and the browser show it: the project view lists runs, and the run view
-(`#/ws/<ws>/run/<workflow>/<run>`, or `…/at/<devdocs commit>` for history)
+(`#/ws/<ws>/run/<workflow>/<run>`, or `…/at/[root:]<commit>` for history)
 draws the run's fixed graph with each node's state as text and color, what
 waits for whom, questions (the person can record an answer there), related
-runs, reports and history.
+runs, reports and history. Workflows with delegate nodes can be edited and
+shown, but no run of them is created (p4).
 Nothing executes nodes; the executor records what it does, and the tools
 enforce readiness (a join waits for every predecessor; failures never satisfy
 a dependency). Files are saved, never committed. See

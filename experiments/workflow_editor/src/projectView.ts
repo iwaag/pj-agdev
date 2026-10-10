@@ -109,7 +109,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
     }
     if (!draft) {
       card.append(h('p.muted', 'No project.yaml yet.'), h('button', {
-        onclick: () => { draft = { schema: PROJECT_SCHEMA, id: '', name: '', intent: '', goals: [] }; saved = { ...draft, id: '-' }; render() },
+        onclick: () => { draft = { schema: PROJECT_SCHEMA, id: '', name: '', devdocs: data?.repositories.some(r => r.path === 'devdocs' && r.kind === 'submodule') ? 'submodule' : 'directory', intent: '', goals: [] }; saved = { ...draft, id: '-' }; render() },
       }, 'Create project.yaml'))
       return card
     }
@@ -122,6 +122,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
     card.append(
       h('label.field', h('span', 'Id'), h('input', { value: d.id, disabled: !!saved?.id && saved.id !== '-', title: 'Stable identifier; edit the file to change it', oninput: (e: Event) => { d.id = (e.target as HTMLInputElement).value; touch() } })),
       h('label.field', h('span', 'Name'), h('input', { value: d.name, disabled: readonly, oninput: (e: Event) => { d.name = (e.target as HTMLInputElement).value; touch() } })),
+      h('label.field', h('span', 'devdocs'), h('input', { value: d.devdocs ? `${d.devdocs} — ${d.devdocs === 'submodule' ? 'a repository of its own' : 'a folder of the project root repository'}` : '(not declared)', disabled: true, title: 'The devdocs storage mode is fixed at creation; it is not converted' })),
       h('label.field', h('span', 'Intent'), h('textarea', { rows: 4, value: d.intent, disabled: readonly, oninput: (e: Event) => { d.intent = (e.target as HTMLTextAreaElement).value; touch() } })),
     )
     const goals = h('ol.goals')
@@ -299,7 +300,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
 
   function renderRuns() {
     runsCard.replaceChildren(h('div.card-head', h('h2', 'Runs')),
-      h('p.muted.small', 'devdocs/<workflow>/runs/ — executions recorded by their executor (wfe run). Each follows its own fixed copy of the workflow.'))
+      h('p.muted.small', 'devdocs/runs/<workflow>/<run>/ — executions recorded by their executor (wfe run). Each follows its own fixed copy of the workflow.'))
     if (runsError) runsCard.append(h('div.banner.error', runsError))
     if (!runs) { runsCard.append(h('p.muted.small', 'Loading…')); return }
     if (!runs.length) { runsCard.append(h('p.muted.small', 'No runs yet. An IDE agent creates one with wfe run create.')); return }
@@ -309,7 +310,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
       runsCard.append(h('div.run-row', { dataset: { run: r.ref } },
         h('div.wf-main',
           h('strong', r.ref),
-          h('span.muted.small', r.problem ? r.dir : `${r.input === 'request' ? 'request' : 'braindump'} · ${r.executor} · updated ${ago(r.updated)}${r.parent ? ` · child of ${r.parent}` : ''}`),
+          h('span.muted.small', r.problem ? r.dir : `${r.input === 'request' ? 'request' : 'braindump'} · ${r.executor} · updated ${ago(r.updated)}`),
           h('div.chips',
             r.problem ? h('span.chip.error', `cannot be used — ${r.problem.code ?? r.problem.kind}: ${r.problem.message}`) : h(`span.state-chip.state-${state}`, STATE_LABEL[state] ?? state),
             ...Object.entries(r.counts ?? {}).filter(([, n]) => n).map(([k, n]) => h('span.chip', `${n} ${k}`)),

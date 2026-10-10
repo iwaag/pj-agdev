@@ -15,6 +15,7 @@ import type {
 import { atomicWrite, createExclusive, inside, readTextOrNull, textHash } from './files.ts'
 import { git, LOCAL_TRANSPORT } from './git.ts'
 import type { Registration } from './registry.ts'
+import { devdocsInfo, type DevdocsInfo } from './devdocs.ts'
 import { newProjectText, newWorkflowText, parseProject, parseWorkflow, renderProject, renderWorkflow } from './yamlDoc.ts'
 
 export const WORKFLOWS_DIR = 'devdocs/workflows'
@@ -76,8 +77,25 @@ export class Workspace {
       branch: rootBranch.code === 0 ? rootBranch.stdout.trim() : null,
       dirty: rootDirty.code === 0 ? rootDirty.stdout.split('\n').filter(Boolean).length : 0,
     }]
-    const inspected = await Promise.all((await this.submodulePaths()).map(sm => this.inspectSubmodule(sm)))
+    const subs = await this.submodulePaths()
+    const inspected = await Promise.all(subs.map(sm => this.inspectSubmodule(sm)))
+    // Directory mode: devdocs is a resource of the project, kept in the root
+    // repository; it is not an independent repository.
+    if (!subs.some(sm => normalizeRepoPath(sm.path) === 'devdocs')) {
+      const dir = join(this.root, 'devdocs')
+      if (await isDir(dir)) {
+        const dirty = await git(this.root, ['status', '--porcelain=v1', '--', 'devdocs'])
+        out.push({ path: 'devdocs', name: 'devdocs', kind: 'directory', category: 'devdocs', initialized: true, dirty: dirty.code === 0 ? dirty.stdout.split('\n').filter(Boolean).length : 0 })
+      }
+    }
     return [...out, ...inspected]
+  }
+
+  // The devdocs storage mode as declared and as Git shows it, and the
+  // repository that owns devdocs (server/devdocs.ts).
+  async devdocs(): Promise<DevdocsInfo> {
+    const read = await this.readProject().catch(() => ({ project: undefined }))
+    return devdocsInfo(this.root, read.project?.devdocs, (await this.submodulePaths()).map(s => s.path))
   }
 
   private async inspectSubmodule(sm: { path: string; url?: string }): Promise<RepositoryStatus> {
@@ -130,24 +148,33 @@ export class Workspace {
       } else {
         projectId = parsed.model.id || undefined
         projectName = parsed.model.name || undefined
-        for (const i of validateProject(parsed.model)) out.push({ severity: 'warning', code: `project-${i.code}`, message: `project.yaml: ${i.message}`, fix: 'Edit project.yaml or the project view.' })
+        // The storage mode is diagnosed below with what Git shows.
+        for (const i of validateProject(parsed.model).filter(i => i.code !== 'devdocs-mode')) out.push({ severity: 'warning', code: `project-${i.code}`, message: `project.yaml: ${i.message}`, fix: 'Edit project.yaml or the project view.' })
       }
     }
     const ignore = await readTextOrNull(join(root, '.gitignore')).catch(() => null)
     if (!ignore || !ignore.split('\n').some(l => /^\/?\.local\/?\s*$/.test(l))) {
       out.push({ severity: 'warning', code: 'gitignore-local', message: '.gitignore does not ignore .local/', fix: 'Add the line ".local/" to .gitignore.' })
     }
-    const subs = await this.submodulePaths()
-    if (!subs.some(s => s.path.replace(/\/$/, '') === 'devdocs')) {
-      out.push({ severity: 'error', code: 'devdocs-missing', message: 'devdocs is not a submodule of this project', fix: 'wfe add-repo devdocs <location of a devdocs repository> (or "Add submodule" in the project view).' })
+    const info = await this.devdocs()
+    if (info.problem) out.push(info.problem)
+    if (info.observed === 'missing' && info.declared !== 'submodule') {
+      out.push({ severity: 'error', code: 'devdocs-missing', message: 'devdocs/ does not exist', fix: 'Create the directory devdocs/workflows/ in the project root.' })
     } else {
       const dir = await this.workflowsDir()
       if (!dir.exists && dir.reason === 'devdocs submodule is not initialized') {
         out.push({ severity: 'error', code: 'devdocs-uninitialized', message: 'devdocs is not checked out in this workspace', fix: 'git submodule update --init devdocs' })
-      } else if (!dir.exists) {
+      } else if (!dir.exists && info.observed !== 'missing') {
         out.push({ severity: 'warning', code: 'workflows-missing', message: 'devdocs/workflows/ does not exist yet', fix: 'Create the directory devdocs/workflows/.' })
       }
     }
+    // The p3 layout kept runs at devdocs/<workflow>/runs/. It is not read or
+    // converted; its presence is said, so runs do not seem to have vanished.
+    const devdocsDir = join(root, 'devdocs')
+    const old = (await readdir(devdocsDir, { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && d.name !== 'runs' && d.name !== 'workflows' && ID_PATTERN.test(d.name))
+    const legacy: string[] = []
+    for (const d of old) if (await isDir(join(devdocsDir, d.name, 'runs'))) legacy.push(`devdocs/${d.name}/runs/`)
+    if (legacy.length) out.push({ severity: 'warning', code: 'runs-old-layout', message: `${legacy.join(', ')} use${legacy.length === 1 ? 's' : ''} the old run layout, which is not supported; those runs are not listed`, fix: 'Runs live in devdocs/runs/<workflow>/<run>/. Old runs are not converted; keep them as history or remove them by hand.' })
     return { projectId, projectName, diagnostics: out }
   }
 
@@ -195,8 +222,9 @@ export class Workspace {
     const path = await inside(this.root, WORKFLOWS_DIR)
     if (await isDir(path)) return { path, exists: true }
     const devdocs = await inside(this.root, 'devdocs')
+    const submodule = (await this.submodulePaths()).some(s => normalizeRepoPath(s.path) === 'devdocs')
     const reason = !(await isDir(devdocs)) ? 'devdocs is missing'
-      : !(await stat(join(devdocs, '.git')).then(() => true, () => false)) ? 'devdocs submodule is not initialized'
+      : submodule && !(await stat(join(devdocs, '.git')).then(() => true, () => false)) ? 'devdocs submodule is not initialized'
         : `${WORKFLOWS_DIR} does not exist yet`
     return { path, exists: false, reason }
   }

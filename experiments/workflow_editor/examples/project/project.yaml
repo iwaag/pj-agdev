@@ -1,8 +1,9 @@
-# Project definition (ag.project.v1).
+# Project definition (ag.project.v2).
 # Repositories are not listed here: .gitmodules and Git are their authority.
-schema: ag.project.v1
+schema: ag.project.v2
 id: demo
 name: Demo Delivery Project
+devdocs: submodule
 intent: |
   Deliver a small service from research to release while keeping what was
   learned in shared study and wedo repositories.

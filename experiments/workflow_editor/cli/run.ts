@@ -4,9 +4,11 @@
 import { readFileSync } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { RunResponse } from '../shared/api.ts'
+import { accessAt } from '../shared/access.ts'
+import { normalizeRepoPath } from '../shared/model.ts'
 import { holderOf, questionState, runKey, type EntrustRef, type HistoryEntry, type OpInput, type RunRecord, type RunRef } from '../shared/run.ts'
 import {
-  checkRun, createRun, delegate, listRuns, resolveRef, runDir, runOp, runResponse, type CreateRunOptions,
+  checkRun, createRun, listRuns, resolveRef, runDir, runOp, runResponse, type CreateRunOptions,
 } from '../server/runs.ts'
 import { RequestError, type Workspace } from '../server/workspace.ts'
 
@@ -31,13 +33,14 @@ export const RUN_HELP: Record<string, string> = {
   create: `wfe run create <workflow> --braindump <file|-> --author <person> --executor <name> [options]
 wfe run create <workflow> --request <file|-> --requester <agent> --entrusted-by <ref> --executor <name> [options]
 
-Creates devdocs/<workflow>/runs/<run>/ with the input, the fixed definition
-bundle and run.json (docs/runs.md).
-  Reads   devdocs/workflows/: the workflow (id or file name) and every workflow
-          it delegates to, transitively; each must validate without errors.
+Creates devdocs/runs/<workflow>/<run>/ with the input, the fixed definition
+and run.json (docs/runs.md).
+  Reads   devdocs/workflows/: the workflow (id or file name); it must validate
+          without errors. A workflow with a delegate node is refused before
+          anything is written: delegate execution is not supported.
   Writes  braindump.md (the person's words, author --author) or request.md
-          (an agent's request, --requester, --entrusted-by), definition/*.yaml
-          (byte copies), plan.md (--plan <file>), and run.json last.
+          (an agent's request, --requester, --entrusted-by), definition/<id>.yaml
+          (a byte copy), plan.md (--plan <file>), and run.json last.
   --name <run-id>      run-<something>; default the next run-NNN. An existing
                        run is refused and left as it is.
   --executor <name>    who performs the run (identity); --backend <text> what
@@ -54,28 +57,31 @@ Exit 0 created; 1 refused (an invalid definition, an existing run …).`,
 Lists the runs of the project (or of one workflow): execution state, node
 counts, ready nodes, what waits for whom, last update. Runs whose record cannot
 be read are listed with the reason. Reads only.`,
-  show: `wfe run show <run> [--history] [--rev <devdocs commit>]
+  show: `wfe run show <run> [--history] [--rev <commit> | --rev root:<commit>]
 
 Shows one run: input and executor, the fixed definition and how its current
 source compares (same, changed, renamed, deleted), every node's state with
 ready/blocked nodes and waits (with who holds the next move), questions and
-answers, parent and child runs, artifacts, decisions, the run folder's files
-and the latest history (--history: all of it).
-  --rev <commit>  reads run.json and the bundle as committed in devdocs at
-                  that commit: the fixed workflow and the stage it recorded.
+answers, artifacts, decisions, the run folder's files and the latest history
+(--history: all of it).
+  --rev <commit>  reads run.json and the definition as committed at that
+                  commit of the repository that owns devdocs (the project root
+                  in directory mode, the devdocs repository in submodule mode).
+  --rev root:<commit>  a project root commit; in submodule mode its recorded
+                  devdocs gitlink is followed, and the output names both.
 "running" is what the executor reported, not a check that anything runs.
 Reads only.`,
   check: `wfe run check [<run>]
 
 Checks one run, or every run: run.json parses, its history replays to exactly
-the stored state, the bundle matches its recorded digests, and parent/child
-links agree. Reads only; it never repairs. Exit 0 when all records are usable
+the stored state, the definition copy matches its recorded digest, and the
+record belongs to this project and location. Reads only; it never repairs. Exit 0 when all records are usable
 (warnings allowed); 1 otherwise.`,
   start: `wfe run start <run> <node> [--reason <text>]
 
 Records that work on <node> started. A pending node must be ready (every
-predecessor completed). On a waiting node it records resuming (for example
-taking up a child run's result); on a failed node it needs --reason.
+predecessor completed). On a waiting node it records resuming; on a failed
+node it needs --reason.
 Writes run.json (one history entry).`,
   progress: `wfe run progress <run> <node> --note <text>
 
@@ -84,13 +90,12 @@ Adds a progress note to a running or waiting node; its state stays. Writes run.j
 
 Records that a running node waits for an external result: why, who or what
 holds the next move, and a reference to what is awaited. For a question use
-ask; for a child run use delegate. Writes run.json.`,
+ask. Writes run.json.`,
   complete: `wfe run complete <run> <node> --outcome <text> [--artifact <path>]...
 
 Records the completion of a running node with its outcome and optional
 artifacts (project-relative, relative to the current directory, or a file name
-in the run folder). A delegate node completes only when its latest child run's
-execution is completed; the child's state is read and recorded. Writes run.json.`,
+in the run folder). Writes run.json.`,
   fail: `wfe run fail <run> <node> --reason <text>
 
 Records that a problem prevents the running or waiting node from continuing.
@@ -116,13 +121,15 @@ Records that the executor took up the latest answer (or answer --index, from
 
 Closes a question without an answer; a node waiting on it resumes running.
 Writes run.json.`,
-  delegate: `wfe run delegate <run> <node> [--name <child run id>] [--request <file|->]
+  access: `wfe run access <run> [<path>]...
 
-For a running delegate node: creates the child run of the target workflow
-with its definitions from this run's bundle (not the current files), a
-request.md (--request, or a generated text quoting the node description) and
-the parent reference; then this node waits on the child. Writes the child
-folder, then this run.json.`,
+Says what this run's fixed definition declares for each path (relative to
+the current directory or project-relative): editable, readonly, report (the
+run's own folder devdocs/runs/<workflow>/<run>/, which every run may write
+for its records, even under a readonly root), or undeclared. The most
+specific repository binding that contains a path governs it. Without paths
+it lists the bindings as scopes. These are declarations you check yourself
+before changing something; nothing enforces them at the OS level. Reads only.`,
   attach: `wfe run attach <run> <path> [--node <node>] [--title <text>]
 
 Records an artifact reference (a report, a result file). <path> is
@@ -140,8 +147,8 @@ export function runIndex(): string {
 
   create <workflow> …      create a run: input, fixed definition bundle, run.json
   list [<workflow>]        runs, their state and what waits for whom
-  show <run>               one run in full (--history, --rev <commit>)
-  check [<run>]            check records, bundles and links
+  show <run>               one run in full (--history, --rev [root:]<commit>)
+  check [<run>]            check records and their definition copies
   start <run> <node>       record a start (ready nodes), resume, or restart a failed node
   progress <run> <node>    add a progress note
   wait <run> <node>        wait for an external result
@@ -149,7 +156,7 @@ export function runIndex(): string {
   fail <run> <node>        record a failure
   cancel <run> [<node>]    discontinue a node or the run
   ask / answer / take-up / withdraw    questions
-  delegate <run> <node>    create a child run for a delegate node
+  access <run> [<path>]... what the run's definition declares for a path
   attach <run> <path>      record an artifact
   decide <run>             record acceptance or rejection of the result
 
@@ -191,6 +198,13 @@ function artifactPath(ws: Workspace, ref: RunRef, p: string): string {
   return p
 }
 
+// A path given on the command line as project-relative: relative to the
+// current directory when that is inside the project, otherwise as written.
+function projectPath(ws: Workspace, p: string): string {
+  const rel = relative(ws.root, resolve(p))
+  return !rel.startsWith('..') && !isAbsolute(rel) && (isAbsolute(p) || relative(ws.root, process.cwd()) !== '') ? (rel.split(sep).join('/') || '.') : p
+}
+
 // One line of a longer text, marked when something was left out.
 const first = (t: string, n: number) => { const l = t.split('\n')[0]; return l.length > n || t.includes('\n') ? `${l.slice(0, n)}…` : l }
 
@@ -203,7 +217,7 @@ const ago = (at: string | null | undefined) => {
 
 function entryLine(e: HistoryEntry): string {
   const d = e as unknown as Record<string, unknown>
-  const subject = [d.node && `node ${d.node}`, d.question && `question ${d.question}`, d.child && `child ${runKey(d.child as RunRef)}`, d.path && `${d.path}`].filter(Boolean).join(', ')
+  const subject = [d.node && `node ${d.node}`, d.question && `question ${d.question}`, d.path && `${d.path}`].filter(Boolean).join(', ')
   const moves = Object.entries(e.change.nodes ?? {}).map(([n, [a, b]]) => `${n} ${a}→${b}`)
   if (e.change.execution) moves.push(`run ${e.change.execution[0] ?? '—'}→${e.change.execution[1]}`)
   const detail = (d.reason ?? d.outcome ?? d.text ?? d.evidence ?? d.external ?? '') as string
@@ -213,7 +227,7 @@ function entryLine(e: HistoryEntry): string {
 export function describeRun(r: RunResponse, opts: { history?: boolean; url?: string | null } = {}): string {
   const rec = r.record
   const lines: string[] = []
-  if (r.revInfo) lines.push(`As committed in devdocs ${r.revInfo.commit.slice(0, 10)} (${r.revInfo.date}): ${r.revInfo.subject}`)
+  if (r.revInfo) lines.push(`As committed in the ${r.revInfo.owner === 'root' ? 'project root' : 'devdocs repository'} at ${r.revInfo.commit.slice(0, 10)} (${r.revInfo.date}): ${r.revInfo.subject}${r.revInfo.root ? ` — the devdocs gitlink of root commit ${r.revInfo.root.slice(0, 10)}` : ''}`)
   if (!rec) {
     lines.push(`Run ${r.ref} (${r.dir}) cannot be used: ${r.problem?.code ?? r.problem?.kind}: ${r.problem?.message}`,
       'Nothing was changed. Restore or fix the files by hand; wfe run check shows the difference.')
@@ -228,13 +242,13 @@ export function describeRun(r: RunResponse, opts: { history?: boolean; url?: str
     : `Input: ${i.file}, a request by ${i.requester}${i.onBehalfOf ? ` on behalf of ${i.onBehalfOf}` : ''}; entrusted by ${i.entrustedBy?.kind === 'run' ? `run ${runKey(i.entrustedBy)}${i.entrustedBy.node ? ` node ${i.entrustedBy.node}` : ''}` : i.entrustedBy?.kind === 'file' ? `file ${i.entrustedBy.path}` : `note "${i.entrustedBy?.kind === 'note' ? i.entrustedBy.text : ''}"`}${i.original ? `; original input kept in ${i.original}` : ''}`)
   lines.push(`Executor: ${rec.executor.name} (backend: ${rec.executor.backend ?? 'unknown'})`)
   const defs = Object.entries(rec.definition.workflows)
-  lines.push(`Definition (fixed): ${rec.definition.root}${defs.length > 1 ? ` + delegates ${defs.filter(([id]) => id !== rec.definition.root).map(([id]) => id).join(', ')}` : ''} in ${r.dir}/definition/`)
+  lines.push(`Project: ${rec.project}`)
+  lines.push(`Definition (fixed): ${rec.definition.root} in ${r.dir}/definition/`)
   for (const [id, d] of defs) {
     const s = r.sources.find(x => x.workflow === id)
     const now = !s ? '' : s.status === 'same' ? `current ${s.file}: same${s.renamed ? ' (renamed)' : ''}` : s.status === 'changed' ? `current ${s.file}: changed since the snapshot${s.renamed ? ' (renamed)' : ''}` : s.status === 'deleted' ? 'current source: deleted' : `bundle: ${s.detail}`
     lines.push(`  ${id.padEnd(20)} approvals at creation: intent ${d.approvals.intent}, definition ${d.approvals.definition}${now ? `; ${now}` : ''}`)
   }
-  if (rec.parent) lines.push(`Parent: ${r.parent?.ref ?? runKey(rec.parent)} node ${rec.parent.node}${r.parent ? `${r.parent.execution ? ` (${r.parent.execution})` : ''}${r.parent.problem ? ` — ${r.parent.problem}` : ''}${r.parent.linksBack === false ? ' — the parent does not list this run' : ''}` : ''}`)
   if (rec.predecessor) lines.push(`Predecessor: ${runKey(rec.predecessor)}${r.predecessor?.problem ? ` — ${r.predecessor.problem}` : r.predecessor?.execution ? ` (${r.predecessor.execution})` : ''}`)
   lines.push(`Created ${rec.created}; started ${rec.started ?? '—'}; ended ${rec.ended ?? '—'}; last update ${ago(rec.updated)}; seq ${rec.seq}`)
   if (rec.cancelled) lines.push(`Cancelled by ${rec.cancelled.by}: ${rec.cancelled.reason}`)
@@ -244,7 +258,7 @@ export function describeRun(r: RunResponse, opts: { history?: boolean; url?: str
     if (n.state === 'pending') what = ex.ready.includes(id) ? 'READY to start' : ex.blocked.includes(id) ? 'blocked: a predecessor failed or was cancelled' : 'waits for predecessors'
     else if (n.state === 'running') what = `reported started ${n.started}; last update ${ago(n.updated)}`
     else if (n.state === 'waiting' && n.wait) what = `waits: ${n.wait.reason}; next move: ${holderOf(rec, id)}${'external' in n.wait.on ? `; awaiting ${n.wait.on.external}` : ''}`
-    else if (n.state === 'completed') what = `outcome: ${first(n.outcome?.text ?? '', 120)}${n.outcome?.child ? ` (child ${runKey(n.outcome.child)} ${n.outcome.child.execution} at seq ${n.outcome.child.seq})` : ''}`
+    else if (n.state === 'completed') what = `outcome: ${first(n.outcome?.text ?? '', 120)}`
     else if (n.state === 'failed') what = `failure: ${n.failure?.reason}`
     else if (n.state === 'cancelled') what = `cancelled: ${n.cancellation?.reason}`
     const last = n.notes.at(-1)
@@ -260,10 +274,9 @@ export function describeRun(r: RunResponse, opts: { history?: boolean; url?: str
       if (q.withdrawn) lines.push(`     withdrawn by ${q.withdrawn.by}: ${q.withdrawn.reason}`)
     }
   }
-  if (r.children.length) lines.push('Children:', ...r.children.map(c => `  ${c.ref} (node ${c.node}): ${c.problem ?? c.execution}`))
   if (r.artifacts.length) lines.push('Artifacts:', ...r.artifacts.map(a => `  ${a.path}${a.exists ? '' : ' (missing)'}`))
   if (rec.decisions.length) lines.push('Decisions:', ...rec.decisions.map(d => `  ${d.decision} by ${d.by} at ${d.at}; evidence: ${d.evidence}${d.note ? `; ${d.note}` : ''}`))
-  if (r.files.length) lines.push(`Files in ${r.dir}/: ${r.files.map(f => f.name).join(', ')}; the bundle in definition/`)
+  if (r.files.length) lines.push(`Files in ${r.dir}/: ${r.files.map(f => f.name).join(', ')}; the fixed definition in definition/`)
   const hist = opts.history ? rec.history : rec.history.slice(-5)
   lines.push(opts.history ? 'History:' : `History (last ${hist.length} of ${rec.history.length}; --history for all):`, ...hist.map(entryLine))
   return lines.join('\n')
@@ -384,13 +397,18 @@ export async function runCommand(c: RunCli): Promise<number> {
       if (!args[1]) throw c.usage('<question> is required')
       return op({ op: 'question.withdraw', question: args[1], reason: need(c, 'reason', 'why the question is withdrawn') }, () => `Recorded: ${args[1]} withdrawn.`)
     }
-    case 'delegate': {
+    case 'access': {
       const r = await ref()
-      const res = await wrap(() => delegate(ws, r, node(), { name: c.opt('name'), request: c.opt('request') !== undefined ? readInput(c, c.opt('request')!) : undefined, by, via: 'cli', expectSeq }))
-      const url = await link(runKey(res.child.ref))
-      c.out([`Created child run ${runKey(res.child.ref)} in ${res.child.dir}/ (definitions from ${runKey(r)}'s bundle).`, ...res.child.files.map(f => `  ${f}`),
-        `${args[1]} now waits on it. Ready in the child: ${res.child.record.execution.ready.join(', ') || '(none)'}`, ...(url ? [`Browser: ${url}`] : [])].join('\n'),
-      { ok: true, parent: runKey(r), child: runKey(res.child.ref), files: res.child.files, url })
+      const resp = await wrap(() => runResponse(ws, r))
+      const def = resp.record ? resp.bundle[resp.record.definition.root]?.workflow : undefined
+      if (!resp.record || !def) throw c.refused(`run ${runKey(r)} cannot be used: ${resp.problem?.message ?? 'its definition cannot be read'}`)
+      const dir = runDir(r)
+      const answers = args.slice(1).map(p => accessAt(def.repositories, projectPath(ws, p), dir))
+      const scopes = Object.entries(def.repositories).map(([k, b]) => `  ${k.padEnd(16)} ${(normalizeRepoPath(b.path) ?? b.path).padEnd(28)} ${b.access}`)
+      c.out(answers.length
+        ? answers.map(a => `${a.path}: ${a.access} — ${a.reason}`).join('\n')
+        : [`Scopes of ${runKey(r)} (most specific wins):`, ...scopes, `  ${'(records)'.padEnd(16)} ${dir.padEnd(28)} report — this run's own folder`].join('\n'),
+      { ref: runKey(r), bindings: def.repositories, records: dir, answers })
       return 0
     }
     case 'attach': {

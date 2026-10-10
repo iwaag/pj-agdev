@@ -7,7 +7,7 @@ import { APPROVAL_KINDS, type ApprovalKind, type Project, type Workflow } from '
 import { addNewRepository, createProject } from './create.ts'
 import { BoundaryError, inside } from './files.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, type Registry } from './registry.ts'
-import { delegate, listRuns, readRunFile, runOp, runResponse } from './runs.ts'
+import { listRuns, readRunFile, runOp, runResponse } from './runs.ts'
 import { OPS, type OpInput, type RunRef } from '../shared/run.ts'
 import type { Watcher } from './watch.ts'
 import { RequestError, Workspace } from './workspace.ts'
@@ -223,10 +223,6 @@ export function createHandler(config: ServiceConfig) {
           if (!by.trim()) throw new RequestError(400, 'by is required: the name of who records this')
           const expectSeq = typeof input.expectSeq === 'number' ? input.expectSeq : undefined
           const { by: _b, expectSeq: _e, ...op } = input
-          if (op.op === 'node.delegate') {
-            const r = await delegate(ws, ref, String(op.node ?? ''), { name: typeof op.name === 'string' ? op.name : undefined, request: typeof op.request === 'string' ? op.request : undefined, by, via: 'browser', expectSeq })
-            return send(res, 200, { ok: true, seq: r.parent.seq, record: r.parent, created: r.child.ref })
-          }
           const r = await runOp(ws, ref, op as unknown as OpInput, { by, via: 'browser', expectSeq })
           return send(res, 200, { ok: true, seq: r.record.seq, record: r.record })
         }

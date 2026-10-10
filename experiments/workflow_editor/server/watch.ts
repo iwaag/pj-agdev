@@ -12,7 +12,7 @@
 //   with GIT_OPTIONAL_LOCKS=0, so it never takes the index lock.
 //
 // Runs (docs/runs.md) are observed with the definitions: each
-// devdocs/<workflow>/runs/<run>/run.json like a definition file, and each run
+// devdocs/runs/<workflow>/<run>/run.json like a definition file, and each run
 // folder's top-level listing by stat only, so report bodies are never read.
 //
 // The registry file is watched with the definitions (and alone by the
@@ -104,14 +104,14 @@ export class Watcher {
   }
 
   private async runs(prev: Snapshot | null, next: Snapshot, ws: Workspace) {
-    const devdocs = await inside(ws.root, 'devdocs')
-    const tops = (await readdir(devdocs, { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && ID_PATTERN.test(d.name)).map(d => d.name).sort()
+    const runsDir = await inside(ws.root, 'devdocs/runs')
+    const tops = (await readdir(runsDir, { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && ID_PATTERN.test(d.name)).map(d => d.name).sort()
     let count = 0
     for (const wf of tops) {
-      const runs = (await readdir(join(devdocs, wf, 'runs'), { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && RUN_ID.test(d.name)).map(d => d.name).sort()
+      const runs = (await readdir(join(runsDir, wf), { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && RUN_ID.test(d.name)).map(d => d.name).sort()
       for (const run of runs) {
         if (count++ >= MAX_RUNS) return
-        const dir = join(devdocs, wf, 'runs', run)
+        const dir = join(runsDir, wf, run)
         await this.file(prev, next, `${RUN}${wf}/${run}`, join(dir, 'run.json'))
         const names = (await readdir(dir).catch(() => [] as string[])).sort().slice(0, MAX_FILES)
         const sigs = await Promise.all(names.map(async n => `${n} ${await sigOf(join(dir, n))}`))

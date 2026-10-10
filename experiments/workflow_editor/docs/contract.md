@@ -1,4 +1,4 @@
-# Workflow editor file contract (p1, p2/pre1)
+# Workflow editor file contract (p1, p2/pre1, p4)
 
 The definition files are the authority. The editor reads and writes them; it
 keeps no database. A person or an agent can edit the same files with any text
@@ -13,16 +13,17 @@ from being silently replaced.
 
 | Information | Authority |
 | --- | --- |
-| Project schema, stable ID, name, intent, goals | `project.yaml` at the project root |
+| Project schema, stable ID, name, devdocs storage mode, intent, goals | `project.yaml` at the project root |
 | Submodule paths and source locations | `.gitmodules` at the project root |
 | Recorded submodule revisions | Gitlinks in the root repository |
 | Checkout, initialization, uncommitted changes | The workspace's Git state |
 | Workflow definition, approvals, layout | `devdocs/workflows/*.yaml` |
 | Registered workspaces and host settings | An ignored local registry (`registry.json`) |
 
-A project is a Git repository, conventionally `pj-<name>`. `devdocs/` is a
-required submodule. Other submodules may live under `study/`, `wedo/` or any
-other path; those names categorize repositories and imply nothing about node
+A project is a Git repository, conventionally `pj-<name>`. `devdocs/` is
+required: a directory of the root repository or a submodule, as
+`project.yaml` declares (below). Other submodules may live under `study/`,
+`wedo/` or any other path; those names categorize repositories and imply nothing about node
 types or access. Every workspace has an ignored `.local/` directory.
 
 `project.yaml` stays small. It does not copy repository URLs, branches,
@@ -30,12 +31,13 @@ commits or workspace lists. Workflows are discovered from
 `devdocs/workflows/*.yaml` (and `*.yml`); a workflow is identified by its `id`,
 not its file name.
 
-## `ag.project.v1`
+## `ag.project.v2`
 
 ```yaml
-schema: ag.project.v1
+schema: ag.project.v2
 id: demo                 # stable; see "Identifiers"
 name: Demo Delivery Project
+devdocs: directory       # directory | submodule; fixed at creation
 intent: |
   Why the project exists.
 goals:
@@ -75,6 +77,32 @@ layout:                  # optional; absent positions are laid out automatically
     survey: {x: 40, y: 60}
 ```
 
+`ag.project.v1` (no storage mode) is not read: it is reported as an
+unsupported schema, and such a project is registered again under v2.
+
+### devdocs storage modes (p4)
+
+| Mode | What devdocs is | Owning repository and path |
+| --- | --- | --- |
+| `directory` (default for new projects) | a folder of the project root | the root repository, `devdocs/...` |
+| `submodule` | a repository of its own, at `devdocs` | the devdocs repository, paths from its root |
+
+Both use `devdocs/...` paths in the working tree. History reads and
+publication go through one resolver (`server/devdocs.ts`) that names the
+owning repository and the path inside it. A declaration that disagrees with
+Git (`.gitmodules` lists devdocs, or not) is reported as
+`devdocs-mode-mismatch` (`devdocs-mode-undeclared` when absent) and blocks
+run creation; it is never converted, and the mode is not changed after
+creation.
+
+A historical reference names a repository and a commit: `<commit>` is a
+commit of the owning repository; `root:<commit>` is a commit of the project
+root, and in submodule mode its recorded devdocs gitlink is followed and
+shown as such. Historical content never falls back to current files. To a
+workflow, devdocs is a documentation area: a binding to `devdocs` is valid in
+both modes; in directory mode it is a project resource, not a separate
+repository.
+
 ### Identifiers
 
 Workflow IDs, node IDs and binding keys match `^[a-z0-9][a-z0-9_.-]{0,63}$`.
@@ -85,17 +113,24 @@ target's name or file name.
 ### Repository bindings
 
 `path` is project-relative POSIX: `.` is the project root, `devdocs` the devdocs
-submodule, anything else must be a submodule path in `.gitmodules`. Absolute
+area (either mode), anything else must be a submodule path in `.gitmodules`. Absolute
 paths and `..` are invalid. A binding to a path that is not in `.gitmodules`
 is reported as missing; a submodule that is not initialized in the current
 workspace is reported as such (a warning — it depends on the workspace, not
 the definition).
 
-`access` is `readonly` or `editable`. In p1 it is a declaration and a
-restriction on the editor's own operations, not filesystem isolation: external
-editors and agents can still change a readonly repository. Access belongs to
-the workflow: the same repository can be readonly in one workflow and editable
-in another.
+`access` is `readonly` or `editable`. It is a declaration and a restriction
+on the editor's own operations, not filesystem isolation: external editors and
+agents can still change a readonly repository. Access belongs to the workflow:
+the same repository can be readonly in one workflow and editable in another.
+
+Since p4, bindings are **path scopes**: the most specific binding whose path
+contains a path governs it (`.` contains everything), so `root: readonly`
+with `game: editable` leaves only `game/` editable. A run may always write its
+own records (`devdocs/runs/<workflow>/<run>/`) — reporting, not permission to
+edit source code, other runs or workflow definitions (`shared/access.ts`,
+`wfe run access`). Restrictions are the executor's self-checks, never
+described as OS-enforced.
 
 ### Node types and repository conventions
 
@@ -104,7 +139,7 @@ in another.
 | `study` | Research: reading the web or files a person points to, and recording what was learned |
 | `do` | General work: coding, running and testing, file operations |
 | `talk` | Consulting a person, or an agent they entrusted, to agree on something or get permission |
-| `delegate` | Running another workflow of the project (`workflow: <id>`) |
+| `delegate` | Running another workflow of the project (`workflow: <id>`). Definition and display only since p4: runs of a workflow with a delegate node are refused |
 
 Submodules under `study/` conventionally accumulate the results of study
 steps (repository names prefixed `study-`). Submodules under `wedo/`
@@ -121,8 +156,7 @@ outgoing edges are parallel branches; a node with several incoming edges waits
 for all of them. A delegate waits for its target workflow to complete; work
 beside a delegate is another branch. Graphs must be acyclic. Runs (p3/pre1)
 record execution against a fixed copy of a definition and check these rules
-when nodes start and complete; nothing schedules or performs nodes. See
-[runs.md](runs.md).
+when nodes start and complete. See [runs.md](runs.md).
 
 ## Validation
 
@@ -142,6 +176,7 @@ fulfils its intent.
 | `node-binding-missing` | error | node refers to an undeclared binding key |
 | `node-description-missing`, `node-binding-duplicate`, `nodes-empty` | warning | incomplete draft |
 | `delegate-target-missing`, `delegate-target-unknown`, `delegate-self`, `delegate-recursive` | error | delegate target absent, not in the project, itself, or reaching back to itself |
+| `delegate-not-executable` | warning | a delegate node: the workflow can be edited and shown, but no run of it is created |
 | `workflow-on-non-delegate` | warning | `workflow` on a non-delegate node |
 | `edge-from-missing`, `edge-to-missing`, `edge-self`, `graph-cycle` | error | broken or cyclic edges |
 | `edge-duplicate`, `layout-orphan` | warning | redundant entries |
