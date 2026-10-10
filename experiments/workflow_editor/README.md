@@ -84,6 +84,30 @@ The browser creates projects only beneath the service's authoring area
 own process and takes any destination. A missing registry is an empty setup
 state; a malformed one is shown as an error and never overwritten.
 
+## Authoring area (person + IDE agent)
+
+```sh
+node cli/wfe.ts setup ../../.local/workflow-editor-p2 --port 8097
+```
+
+creates or refreshes an ignored authoring area, separate from the p1 fixture:
+
+| File | Content |
+| --- | --- |
+| `AGENTS.md` | the IDE agent's guide, from `templates/AGENTS.md` |
+| `CLAUDE.md` | `@AGENTS.md`, so Claude Code reads the same guide |
+| `START.md` | the person's steps, from `templates/START.md` |
+| `wfe` | launcher pinning the area's registry, area and port |
+| `registry.json` | the area's workspaces (created empty if missing, never rewritten) |
+| `.claude/settings.json` | Claude Code permissions for `wfe`, Git and edits in the area (created once, then kept) |
+| `sources/` | local repositories that projects use as submodules |
+
+The machine-specific paths are filled in only in these generated files. A
+generated Markdown file whose first-line stamp was removed counts as edited
+by hand, and setup keeps it. Setup never creates a project. The person opens
+the area in VS Code and starts the agent there; `START.md` gives the service
+command, the URL and a first prompt.
+
 ## Command line
 
 `wfe help` lists the commands; `wfe help <command>` says what each reads or

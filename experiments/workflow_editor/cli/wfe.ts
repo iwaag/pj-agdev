@@ -12,6 +12,7 @@ import { APPROVAL_KINDS, type ApprovalKind, type Issue } from '../shared/model.t
 import { createProject } from '../server/create.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, workspaceAt, type Registration } from '../server/registry.ts'
 import { RequestError, Workspace } from '../server/workspace.ts'
+import { setupArea } from './setup.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const EXPERIMENT = resolve(here, '..')
@@ -188,7 +189,7 @@ Starts the editor service for this registry in the foreground: it builds the
 UI, then serves the UI and API on http://127.0.0.1:<port>/ (default 8095, or
 WFE_PORT). Stop it with Ctrl-C. Browser-created projects go beneath the
 authoring area. Open views follow file changes without a reload.`,
-  _setup: `wfe setup <area> [--port <port>]
+  setup: `wfe setup <area> [--port <port>]
 
 Creates or refreshes an authoring area: <area>/AGENTS.md (from the tracked
 template), <area>/wfe (a launcher that pins this area's registry and port), an
@@ -218,6 +219,7 @@ Workflows (by file name or id)
 
 Editor
   serve                     start the editor (UI and API) for this registry
+  setup <area>              create or refresh an authoring area and its AGENTS.md
 
 Options: --workspace <id> (default: the workspace containing the current directory),
          --json (structured output), --registry <file>, --area <dir>
@@ -372,6 +374,14 @@ async function cmdWorkflow(p: Parsed): Promise<number> {
   }
 }
 
+async function cmdSetup(p: Parsed): Promise<number> {
+  const [dir] = p.positional
+  if (!dir) throw new UsageError('setup needs the area directory')
+  const r = await setupArea(resolve(dir), { port: port(p) })
+  out(r.summary, r)
+  return r.files.some(f => f.status === 'error') ? 1 : 0
+}
+
 async function cmdServe(p: Parsed): Promise<number> {
   const build = spawn(process.execPath, [join(EXPERIMENT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--logLevel', 'warn'], { cwd: EXPERIMENT, stdio: 'inherit' })
   const built = await new Promise<number>(r => build.on('exit', c => r(c ?? 1)))
@@ -383,7 +393,7 @@ async function cmdServe(p: Parsed): Promise<number> {
 
 const COMMANDS: Record<string, (p: Parsed) => Promise<number>> = {
   create: cmdCreate, register: cmdRegister, list: cmdList, status: cmdStatus, validate: cmdValidate,
-  approve: cmdApprove, arrange: cmdArrange, 'add-repo': cmdAddRepo, workflow: cmdWorkflow, serve: cmdServe,
+  approve: cmdApprove, arrange: cmdArrange, 'add-repo': cmdAddRepo, workflow: cmdWorkflow, serve: cmdServe, setup: cmdSetup,
 }
 
 export async function main(argv: string[]): Promise<number> {

@@ -297,3 +297,57 @@ test('cli: add-repo is the editor\'s submodule operation', async () => {
   assert.match(failed.stdout, /Left behind/)
   assert.ok((await readdir(join(dir, 'study'))).includes('notes'))
 })
+
+// ---- authoring area ----------------------------------------------------------
+
+function sh(cmd: string, args: string[], cwd: string, env: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  const clean = { ...process.env }
+  for (const k of ['WFE_REGISTRY', 'WFE_AREA', 'WFE_PORT']) delete clean[k]
+  return new Promise(r => execFile(cmd, args, { cwd, env: { ...clean, ...env } }, (e, stdout, stderr) => r({ code: e ? (e.code as number) : 0, stdout, stderr })))
+}
+
+test('setup: a fresh area gets its guide, launcher and empty registry, and no project', async () => {
+  const fresh = join(root, 'fresh-area')
+  const r = await sh(process.execPath, [join(experiment, 'cli', 'wfe.ts'), 'setup', fresh, '--port', '8199'], root)
+  assert.equal(r.code, 0, r.stderr)
+  for (const f of ['AGENTS.md', 'CLAUDE.md', 'START.md', 'wfe', 'registry.json', '.claude/settings.json', 'sources']) assert.ok(await exists(join(fresh, f)), f)
+  assert.deepEqual((await readdir(fresh)).filter(f => f.startsWith('pj-')), [], 'no project is pre-created')
+  assert.deepEqual(JSON.parse(await readFile(join(fresh, 'registry.json'), 'utf8')).workspaces, [])
+  const guide = await readFile(join(fresh, 'AGENTS.md'), 'utf8')
+  assert.ok(!guide.includes('{{'), 'all placeholders filled')
+  const contract = /described in `([^`]+)`/.exec(guide)?.[1]
+  assert.ok(contract && await exists(contract), 'the contract path in the guide exists')
+  assert.ok(guide.includes(`at \`${join(fresh, 'wfe')}\``))
+  assert.ok(r.stdout.includes('http://127.0.0.1:8199/') && r.stdout.includes(`${join(fresh, 'wfe')} serve`) && r.stdout.includes('Create a project in this authoring area'), 'setup names URL, service command and prompt')
+  // The launcher works from the area itself, with the area's registry.
+  const help = await sh(join(fresh, 'wfe'), ['help'], fresh)
+  assert.equal(help.code, 0, help.stderr)
+  assert.ok(help.stdout.includes(`Registry: ${join(fresh, 'registry.json')}`))
+  // Every command the guide names exists.
+  for (const c of [...guide.matchAll(/`wfe ([a-z-]+)/g)].map(m => m[1]).filter(c => c !== 'help')) {
+    assert.equal((await sh(join(fresh, 'wfe'), [c, '--help'], fresh)).code, 0, c)
+  }
+})
+
+test('setup: refreshing keeps the registry, projects and hand-edited files', async () => {
+  const fresh = join(root, 'fresh-area')
+  const made = await sh(join(fresh, 'wfe'), ['create', 'pj-kept', '--name', 'Kept'], fresh)
+  assert.equal(made.code, 0, made.stderr + made.stdout)
+  const status = await sh(join(fresh, 'wfe'), ['status', '--json'], join(fresh, 'pj-kept'))
+  assert.equal(JSON.parse(status.stdout).workspace, 'kept', 'the launcher works from inside a project')
+  await writeFile(join(fresh, 'AGENTS.md'), '# my own guide\n')
+  const registryBefore = await readFile(join(fresh, 'registry.json'), 'utf8')
+  const r = await sh(process.execPath, [join(experiment, 'cli', 'wfe.ts'), 'setup', fresh, '--port', '8199', '--json'], root)
+  assert.equal(r.code, 0, r.stderr)
+  const files = Object.fromEntries((JSON.parse(r.stdout).files as { path: string; status: string }[]).map(f => [f.path.slice(fresh.length + 1), f.status]))
+  assert.equal(files['AGENTS.md'], 'kept')
+  assert.equal(files['registry.json'], 'kept')
+  assert.equal(files['START.md'], 'unchanged')
+  assert.equal(await readFile(join(fresh, 'AGENTS.md'), 'utf8'), '# my own guide\n')
+  assert.equal(await readFile(join(fresh, 'registry.json'), 'utf8'), registryBefore)
+  assert.ok(await exists(join(fresh, 'pj-kept', 'project.yaml')))
+  await writeFile(join(fresh, 'registry.json'), '{oops')
+  const bad = await sh(process.execPath, [join(experiment, 'cli', 'wfe.ts'), 'setup', fresh], root)
+  assert.equal(bad.code, 1)
+  assert.equal(await readFile(join(fresh, 'registry.json'), 'utf8'), '{oops', 'a malformed registry is reported, not replaced')
+})
