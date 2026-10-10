@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import type { Diagnostic, RepositoryStatus, WorkflowSummary } from '../shared/api.ts'
 import { autoArrange } from '../shared/layout.ts'
 import { APPROVAL_KINDS, type ApprovalKind, type Issue } from '../shared/model.ts'
-import { createProject } from '../server/create.ts'
+import { addNewRepository, createProject } from '../server/create.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, workspaceAt, type Registration } from '../server/registry.ts'
 import { RequestError, Workspace } from '../server/workspace.ts'
 import { setupArea } from './setup.ts'
@@ -25,7 +25,7 @@ class Refused extends Error { detail?: unknown; constructor(m: string, detail?: 
 // ---- arguments ---------------------------------------------------------------
 
 interface Parsed { positional: string[]; opts: Map<string, string[]>; flags: Set<string> }
-const FLAGS = new Set(['json', 'help', 'resume', 'h'])
+const FLAGS = new Set(['json', 'help', 'resume', 'h', 'new'])
 function parse(argv: string[]): Parsed {
   const p: Parsed = { positional: [], opts: new Map(), flags: new Set() }
   for (let i = 0; i < argv.length; i++) {
@@ -167,15 +167,24 @@ Exit 0 recorded; 1 refused.`,
   arrange: `wfe arrange <workflow>
 
 Auto-arrange: replaces layout.nodes with positions computed by rank, the same
-algorithm as the editor's Auto-arrange button, and saves the file. Only
-layout changes; approvals are unaffected. Refuses a file that cannot be read.`,
+algorithm as the editor's Auto-arrange button, and saves the file. Every
+stored position is replaced, including cards someone placed by hand; to place
+one new card only, write its layout.nodes entry (or leave it out: nodes
+without a position are laid out automatically). Only layout changes;
+approvals are unaffected. Refuses a file that cannot be read.`,
   'add-repo': `wfe add-repo <path> <location> [--workspace <id>]
+wfe add-repo <path> --new [--workspace <id>]
 
-Adds a Git submodule at <path> (for example study/evals) from <location>, the
+Adds a Git submodule at <path> (for example study/evals or wedo/runtime), the
 same operation as the project view's "Add submodule": git submodule add.
-A relative location resolves against the project's origin, or against the
-project root when it has no remote. Local file transport is enabled for this
-command only. The result is staged in the project root, not committed.
+  <location>  an existing repository. A relative location resolves against the
+          project's origin, or against the project root when it has no remote.
+  --new   creates a new local repository first:
+          <area>/sources/<project id>-<path with / as ->.git with a README and
+          an initial commit (your Git identity), recorded as a URL relative to
+          the project root.
+Local file transport is enabled for this command only. The submodule is
+staged in the project root, not committed.
 Exit 0 added; 1 failed (what Git left behind is reported; nothing is reset).`,
   workflow: `wfe workflow new <id> [--name <name>] [--workspace <id>]
 
@@ -209,7 +218,7 @@ Projects and workspaces
   register [<dir>]          register an existing project's Git root
   list                      registered workspaces and what is observed
   status                    project, repositories (Git state), workflows, editor service
-  add-repo <path> <loc>     add a Git submodule (git submodule add)
+  add-repo <path> <loc>     add a Git submodule (git submodule add); --new creates a local repository
 
 Workflows (by file name or id)
   workflow new <id>         create devdocs/workflows/<id>.yaml from the template
@@ -281,7 +290,7 @@ async function cmdStatus(p: Parsed): Promise<number> {
     r.structure.length ? 'Structure:' : 'Structure: complete', ...r.structure.map(diag),
     'Repositories:', ...r.repositories.map(repoLine),
     `Workflows (devdocs/workflows):${r.workflowsDir.exists ? '' : ` ${r.workflowsDir.reason}`}`,
-    ...(r.workflows.length ? r.workflows.map(workflowLine) : ['  (none)']),
+    ...(r.workflows.length ? r.workflows.map(w => workflowLine(w) + (svc.running && svc.sameRegistry ? `\n${' '.repeat(27)}${svc.url}/#/ws/${encodeURIComponent(ws.reg.id)}/wf/${encodeURIComponent(w.file)}` : '')) : ['  (none)']),
     svc.running ? `Editor: running at ${svc.url}/${svc.sameRegistry ? `#/ws/${encodeURIComponent(ws.reg.id)}` : ` — but it serves ${svc.registry ? `another registry (${svc.registry})` : 'another registry or an older version'}; start this one with: wfe serve --port <free port>`}`
       : `Editor: not running at ${svc.url} (start it with: wfe serve)`,
   ]
@@ -345,10 +354,11 @@ async function cmdArrange(p: Parsed): Promise<number> {
 
 async function cmdAddRepo(p: Parsed): Promise<number> {
   const [path, location] = p.positional
-  if (!path || !location) throw new UsageError('add-repo needs <path> and <location>')
+  const fresh = p.flags.has('new')
+  if (!path || (!location && !fresh) || (location && fresh)) throw new UsageError('add-repo needs <path> and either <location> or --new')
   const ws = await workspace(p)
   try {
-    const r = await ws.addSubmodule(path, location)
+    const r = fresh ? await addNewRepository(ws, path, join(areaDir(p), 'sources')) : await ws.addSubmodule(path, location)
     const lines = [r.message, ...(r.stderr ? [r.stderr] : [])]
     if (r.partial) lines.push(`Left behind — .gitmodules entry: ${r.partial.gitmodulesEntry}; path exists: ${r.partial.pathExists}; staged: ${r.partial.staged}; module git dir: ${r.partial.gitDirExists}`)
     out(lines.join('\n'), r)

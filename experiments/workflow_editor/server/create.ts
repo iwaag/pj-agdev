@@ -9,11 +9,11 @@
 // A creation that stops partway leaves a marker (.local/wfe-create.json) in
 // the destination and reports which steps finished. Running it again with
 // `resume` continues from there; nothing that exists is deleted or replaced.
-import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
-import type { CreateProjectResult, CreateStep } from '../shared/api.ts'
-import { ID_PATTERN, PROJECT_SCHEMA } from '../shared/model.ts'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import type { AddSubmoduleResponse, CreateProjectResult, CreateStep } from '../shared/api.ts'
+import { ID_PATTERN, normalizeRepoPath, PROJECT_SCHEMA } from '../shared/model.ts'
 import { readTextOrNull } from './files.ts'
 import { git, gitOk, LOCAL_TRANSPORT } from './git.ts'
 import { registerWorkspace } from './registry.ts'
@@ -39,6 +39,13 @@ const MARKER = '.local/wfe-create.json'
 const exists = (p: string) => stat(p).then(() => true, () => false)
 const isUrl = (s: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(s) || /^[^/\\]+@[^:]+:/.test(s)
 const posix = (p: string) => p.split(sep).join('/')
+// A submodule URL from `from` to `to`, relative and through real paths, so a
+// symlinked prefix (/var vs /private/var) never yields a path via the root.
+async function relativeUrl(from: string, to: string): Promise<string> {
+  const [a, b] = await Promise.all([realpath(from).catch(() => resolve(from)), realpath(to).catch(() => resolve(to))])
+  const url = posix(relative(a, b))
+  return url.startsWith('.') ? url : `./${url}`
+}
 
 // The person's identity as Git would use it. Missing values are reported;
 // no fallback identity is invented.
@@ -50,6 +57,54 @@ export async function gitIdentity(env: Record<string, string> = {}): Promise<{ n
     return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : undefined
   }
   return { name: await get('user.name', 'GIT_AUTHOR_NAME'), email: await get('user.email', 'GIT_AUTHOR_EMAIL') }
+}
+
+// A new local bare repository with one initial commit, made with the
+// person's Git identity. Refuses an existing path.
+export async function createLocalSource(bare: string, files: Record<string, string>, message: string, env: Record<string, string> = {}): Promise<{ commit: string }> {
+  if (await exists(bare)) throw new Error(`${bare} already exists; nothing in it was changed`)
+  const run = (cwd: string, args: string[]) => gitOk(cwd, args, { env, config: { 'init.defaultBranch': 'main' }, timeoutMs: 120_000 })
+  const parent = dirname(bare)
+  await mkdir(parent, { recursive: true })
+  await run(parent, ['init', '--bare', '--initial-branch=main', bare])
+  const work = join(parent, `.tmp-${basename(bare)}-${process.pid}`)
+  try {
+    await run(parent, ['init', '--initial-branch=main', work])
+    for (const [name, text] of Object.entries(files)) {
+      await mkdir(dirname(join(work, name)), { recursive: true })
+      await writeFile(join(work, name), text)
+    }
+    await run(work, ['add', '-A'])
+    await run(work, ['commit', '-m', message])
+    const commit = (await run(work, ['rev-parse', 'HEAD'])).trim()
+    await run(work, ['push', bare, 'main'])
+    return { commit }
+  } finally {
+    await rm(work, { recursive: true, force: true })
+  }
+}
+
+// `wfe add-repo <path> --new` and the project view's "new local repository":
+// creates <sources>/<project id>-<path with / as ->.git with a README, then
+// adds it as a submodule at <path> with a URL relative to the project root.
+export async function addNewRepository(ws: Workspace, path: string, sourcesDir: string, env: Record<string, string> = {}): Promise<AddSubmoduleResponse & { source?: string; commit?: string }> {
+  const norm = normalizeRepoPath(path)
+  if (!norm || norm === '.') return { ok: false, message: `"${path}" is not a project-relative path` }
+  if ((await ws.submodulePaths()).some(s => normalizeRepoPath(s.path) === norm)) return { ok: false, message: `${norm} is already a submodule` }
+  const who = await gitIdentity(env)
+  if (!who.name || !who.email) return { ok: false, message: 'Git has no user.name/user.email configured; set it and run this again. Nothing was created.' }
+  const project = (await ws.readProject()).project
+  const name = `${project?.id || ws.reg.id}-${norm.replace(/\//g, '-')}`
+  const bare = join(sourcesDir, `${name}.git`)
+  let made: { commit: string }
+  try {
+    made = await createLocalSource(bare, { 'README.md': `# ${name}\n\nRepository at ${norm} in ${project?.name || ws.reg.id}.\n` }, `Initialize ${name}`, env)
+  } catch (e) {
+    return { ok: false, message: (e as Error).message }
+  }
+  const url = await relativeUrl(ws.root, bare)
+  const added = await ws.addSubmodule(norm, url)
+  return { ...added, message: `Created ${bare} (initial commit ${made.commit.slice(0, 7)}). ${added.message}`, source: bare, commit: made.commit }
 }
 
 export async function createProject(o: CreateProjectOptions): Promise<CreateProjectResult> {
@@ -93,8 +148,7 @@ export async function createProject(o: CreateProjectOptions): Promise<CreateProj
     let url: string
     if (o.devdocsSource) {
       const src = o.devdocsSource.trim()
-      url = isUrl(src) ? src : posix(relative(dir, resolve(dir, src)))
-      if (!isUrl(src) && !url.startsWith('.')) url = `./${url}`
+      url = isUrl(src) ? src : await relativeUrl(dir, resolve(dir, src))
       step('devdocs source', 'kept', `using the existing repository ${src}`)
     } else {
       const bare = join(o.sourcesDir, `${o.id}-devdocs.git`)
@@ -104,23 +158,11 @@ export async function createProject(o: CreateProjectOptions): Promise<CreateProj
         if (head.code !== 0) throw new Error(`${bare} exists but has no main branch; inspect or remove it by hand, then resume`)
         step('devdocs source', 'kept', `${bare} already exists`)
       } else {
-        await mkdir(o.sourcesDir, { recursive: true })
-        await run(o.sourcesDir, ['init', '--bare', '--initial-branch=main', bare])
-        const work = join(o.sourcesDir, `.tmp-${o.id}-devdocs-${process.pid}`)
-        await run(o.sourcesDir, ['init', '--initial-branch=main', work])
-        await writeFile(join(work, 'README.md'), `# ${o.name} — devdocs\n\nRequests, plans, reports and workflow definitions of ${o.id}.\nWorkflows are in workflows/*.yaml.\n`)
-        await mkdir(join(work, 'workflows'))
-        await writeFile(join(work, 'workflows', '.gitkeep'), '')
-        await run(work, ['add', '-A'])
-        await run(work, ['commit', '-m', `Initialize devdocs for ${o.id}`])
-        const sha = (await run(work, ['rev-parse', 'HEAD'])).trim()
-        await run(work, ['push', bare, 'main'])
-        await rm(work, { recursive: true, force: true })
-        commits.push({ repository: bare, commit: sha, message: `Initialize devdocs for ${o.id}` })
+        const made = await createLocalSource(bare, { 'README.md': `# ${o.name} — devdocs\n\nRequests, plans, reports and workflow definitions of ${o.id}.\nWorkflows are in workflows/*.yaml.\n`, 'workflows/.gitkeep': '' }, `Initialize devdocs for ${o.id}`, env)
+        commits.push({ repository: bare, commit: made.commit, message: `Initialize devdocs for ${o.id}` })
         step('devdocs source', 'done', `created ${bare} with an initial commit (README.md, workflows/)`)
       }
-      url = posix(relative(dir, bare))
-      if (!url.startsWith('.')) url = `./${url}`
+      url = await relativeUrl(dir, bare)
     }
     stop('devdocs source')
 

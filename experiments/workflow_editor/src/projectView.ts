@@ -206,13 +206,15 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
   function renderAddRepo(): HTMLElement {
     const path = h('input', { placeholder: 'study/evals', 'aria-label': 'Submodule path' })
     const url = h('input', { placeholder: '../study-evals.git', 'aria-label': 'Repository location' })
+    const fresh = h('input', { type: 'checkbox', 'aria-label': 'Create a new local repository' })
+    fresh.addEventListener('change', () => { url.disabled = fresh.checked })
     const button = h('button', {
       onclick: async () => {
         button.disabled = true
         addResult = h('p.muted', 'Running git submodule add…')
         render()
         try {
-          const r = await api.addSubmodule(wsId, path.value, url.value)
+          const r = fresh.checked ? await api.addNewRepository(wsId, path.value) : await api.addSubmodule(wsId, path.value, url.value)
           addResult = r.ok
             ? h('div.banner.ok', r.message)
             : h('div.banner.error', h('strong', r.message), r.stderr ? h('pre', r.stderr) : null,
@@ -223,9 +225,10 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
         await load({})
       },
     }, 'Add submodule')
-    return h('div.add-repo', h('h3', 'Add a local repository'),
-      h('p.muted.small', 'Runs git submodule add in this workspace and stages the result. It does not commit. A relative location resolves against the project\'s origin.'),
+    return h('div.add-repo', h('h3', 'Add a repository'),
+      h('p.muted.small', 'Runs git submodule add in this workspace and stages the result. It does not commit. A relative location resolves against the project\'s origin (or its root when it has no remote). A new local repository is created in the authoring area\'s sources/ with an initial commit.'),
       h('div.row', h('label.field', h('span', 'Path'), path), h('label.field', h('span', 'Location'), url), button),
+      h('label.small.inline', fresh, ' Create a new local repository instead of a location'),
       addResult)
   }
 

@@ -97,6 +97,23 @@ editors and agents can still change a readonly repository. Access belongs to
 the workflow: the same repository can be readonly in one workflow and editable
 in another.
 
+### Node types and repository conventions
+
+| Type | What the step is |
+| --- | --- |
+| `study` | Research: reading the web or files a person points to, and recording what was learned |
+| `do` | General work: coding, running and testing, file operations |
+| `talk` | Consulting a person, or an agent they entrusted, to agree on something or get permission |
+| `delegate` | Running another workflow of the project (`workflow: <id>`) |
+
+Submodules under `study/` conventionally accumulate the results of study
+steps (repository names prefixed `study-`). Submodules under `wedo/`
+accumulate what was learned while doing the work (prefixed `wedo-`).
+Other paths are free. These are conventions for sharing knowledge between
+workflows. They imply nothing about access, which each workflow declares in
+its bindings. A node may bind no repository, and a binding that no node uses
+is allowed.
+
 ### Graph semantics
 
 An edge means that its target waits for its source to complete. Several

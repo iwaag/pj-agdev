@@ -275,3 +275,5 @@ ul.diagnostics .fix { color: var(--muted); }
 ul.steps li.kept { color: var(--muted); }
 a.button[hidden] { display: none; }
 .pill.warn { border-color: #8a6d1f; color: #f3d27a; background: rgba(200, 150, 30, .15); }
+input[type=checkbox] { width: auto; }
+label.inline { display: flex; align-items: center; gap: 6px; }

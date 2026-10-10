@@ -4,7 +4,7 @@ import { mkdir, readFile, stat } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
 import type { RepositoryStatus, WorkspaceSummary, WorkspacesResponse } from '../shared/api.ts'
 import { APPROVAL_KINDS, type ApprovalKind, type Project, type Workflow } from '../shared/model.ts'
-import { createProject } from './create.ts'
+import { addNewRepository, createProject } from './create.ts'
 import { BoundaryError, inside } from './files.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, type Registry } from './registry.ts'
 import type { Watcher } from './watch.ts'
@@ -207,7 +207,12 @@ export function createHandler(config: ServiceConfig) {
       }
       if (b === 'submodules' && !file && method === 'POST') {
         const input = await body(req) as Record<string, unknown>
-        if (typeof input.path !== 'string' || typeof input.url !== 'string') throw new RequestError(400, 'path and url are required')
+        if (typeof input.path !== 'string') throw new RequestError(400, 'path is required')
+        if (input.create === true) {
+          const result = await addNewRepository(ws, input.path, join(area, 'sources'))
+          return send(res, result.ok ? 200 : 422, result)
+        }
+        if (typeof input.url !== 'string') throw new RequestError(400, 'url is required (or create: true for a new local repository)')
         const result = await ws.addSubmodule(input.path, input.url)
         return send(res, result.ok ? 200 : 422, result)
       }
