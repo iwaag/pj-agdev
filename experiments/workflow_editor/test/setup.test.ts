@@ -328,6 +328,19 @@ test('setup: a fresh area gets its guide, launcher and empty registry, and no pr
   for (const c of [...guide.matchAll(/`wfe ([a-z-]+)/g)].map(m => m[1]).filter(c => c !== 'help')) {
     assert.equal((await sh(join(fresh, 'wfe'), [c, '--help'], fresh)).code, 0, c)
   }
+  // p3/pre1: the run contract, every run subcommand the guide names, and the execution entry point.
+  const runContract = /run contract\s+is `([^`]+)`/.exec(guide)?.[1]
+  assert.ok(runContract && await exists(runContract) && runContract.endsWith('runs.md'), 'the run contract path in the guide exists')
+  const subs = [...new Set([...guide.matchAll(/`wfe run ([a-z-]+)/g)].map(m => m[1]).filter(c => c !== 'help'))]
+  assert.ok(subs.length >= 4, `the guide names run subcommands: ${subs}`)
+  for (const c of subs) {
+    const h = await sh(join(fresh, 'wfe'), ['run', c, '--help'], fresh)
+    assert.equal(h.code, 0, `wfe run ${c}`)
+    assert.ok(/Writes|Reads only|reads only/.test(h.stdout), `wfe run ${c} --help says what it reads or writes`)
+  }
+  const start = await readFile(join(fresh, 'START.md'), 'utf8')
+  assert.ok(!start.includes('{{') && start.includes('Execute workflow <workflow id>') && start.includes('devdocs/<workflow id>/runs/<run id>/'), 'START.md has the execution entry point')
+  assert.ok(r.stdout.includes('Execute workflow <workflow id> of project <project id>') && r.stdout.includes('run help'), 'setup prints the execution prompt and the run tool')
 })
 
 test('setup: refreshing keeps the registry, projects and hand-edited files', async () => {

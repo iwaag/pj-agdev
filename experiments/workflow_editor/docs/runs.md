@@ -303,9 +303,32 @@ words given in the IDE, where the conversation with the executor happens.
 Submitting an answer in the browser stores it; it does not launch or wake the
 IDE agent. The person continues the conversation in VS Code.
 
+`test/runs.test.ts` ("operation parity") runs every operation, including
+delegation, once through the CLI module and once over HTTP, and requires the
+same record apart from route and times.
+
 `--expect-seq <n>` (browser: always sent) refuses an operation when the
 record's last sequence is not `n`, so an answer typed against an outdated view
 is not applied silently.
+
+## Access
+
+Repository bindings (`readonly` / `editable`) in the run's bundled
+definition are declarations the executor checks itself before changing a
+repository a node uses; nothing enforces them at the OS level. Writing the run
+folder (`run.json`, plans, reports) is the reporting capability every run has.
+It does not grant write access to a repository bound `readonly`, and devdocs
+being `readonly` in a workflow does not forbid recording that workflow's run.
+The definition has no allowed-command schema: restrictions supplied for one
+run (commands, repositories, anything else) are written into its `plan.md`
+and self-checked the same way.
+
+## Setup and entry point
+
+`wfe setup <area>` writes the agent guide (`templates/AGENTS.md`) and the
+person's `START.md` with the execution prompt, the run folder pattern, the
+CLI (`wfe run help`) and the browser link. It keeps the registry, the
+projects, the runs and any generated file whose stamp was removed.
 
 ## Observation
 

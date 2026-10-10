@@ -442,3 +442,55 @@ test('watcher: run.json changes, report files and new runs are separate events; 
   assert.deepEqual(w.diff('r', s2, s3).map(e => [e.kind, e.run ?? null]), [['run', `ship/${d.ref.run}`], ['runs', null]])
   assert.equal(w.diff('r', s3, await w.snapshot({ ws, snapshot: s3 })).length, 0, 'an idle tick reports nothing')
 })
+
+test('operation parity: every operation through HTTP yields the same record as through the CLI module', async () => {
+  const { createHandler } = await import('../server/api.ts')
+  const { createServer } = await import('node:http')
+  const handler = createHandler({ registryFile: registry, area: root, allowedOrigins: [], allowedHosts: ['127.0.0.1'] })
+  const server = createServer((req, res) => void handler(req, res))
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/workspaces/r`
+  const ops: (OpInput & Record<string, unknown>)[] = [
+    { op: 'node.start', node: 'survey' },
+    { op: 'node.progress', node: 'survey', text: 'half way' },
+    { op: 'question.ask', question: '', node: 'survey', text: 'Scope?', to: 'Test Person' },
+    { op: 'question.answer', question: 'q1', text: 'Small', from: 'Test Person' },
+    { op: 'question.take-up', question: 'q1' },
+    { op: 'artifact.attach', path: 'devdocs/README.md', node: 'survey', title: 'readme' },
+    { op: 'node.complete', node: 'survey', outcome: 'ok', artifacts: ['devdocs/README.md'] },
+    { op: 'node.start', node: 'build' },
+    { op: 'node.wait', node: 'build', reason: 'CI', holder: 'CI service', external: 'build #12' },
+    { op: 'node.start', node: 'build' },
+    { op: 'node.fail', node: 'build', reason: 'red' },
+    { op: 'node.start', node: 'build', reason: 'retry by hand' },
+    { op: 'node.cancel', node: 'build', reason: 'dropped' },
+    { op: 'node.start', node: 'ask' },
+    { op: 'question.ask', question: '', node: 'ask', text: 'Withdrawn later', to: 'Test Person' },
+    { op: 'question.withdraw', question: 'q2', reason: 'not needed' },
+    { op: 'node.start', node: 'handoff' },
+    { op: 'node.delegate', node: 'handoff', child: { workflow: 'sub', run: 'run-x' } },
+    { op: 'run.decide', decision: 'rejected', evidence: 'the build was dropped' },
+    { op: 'run.cancel', reason: 'parity done' },
+  ]
+  try {
+    const a = await createRun(ws, base({ name: 'run-parity-cli' }))
+    const b = await createRun(ws, base({ name: 'run-parity-http' }))
+    for (const o of ops) {
+      if (o.op === 'node.delegate') await delegate(ws, a.ref, o.node, { via: 'cli', by: 'Omni Agent', name: 'run-parity-cli' })
+      else await runOp(ws, a.ref, o, { via: 'cli', by: 'Omni Agent' })
+      const body = o.op === 'node.delegate' ? { op: o.op, node: o.node, name: 'run-parity-http', by: 'Omni Agent' } : { ...o, by: 'Omni Agent' }
+      const r = await fetch(`${url}/runs/ship/run-parity-http/ops`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      assert.equal(r.status, 200, `${o.op}: ${await r.clone().text()}`)
+    }
+    // Same record except route, times, the run's own name and the dirty count
+    // of devdocs at creation (the second run sees the first run's files).
+    const norm = (rec: RunRecord) => JSON.parse(JSON.stringify(rec)
+      .replace(/"\d{4}-\d\d-\d\dT[^"]+Z"/g, '"T"').replace(/"via":"(cli|browser)"/g, '"via":"V"').replace(/run-parity-(cli|http)/g, 'run-P').replace(/"dirty":\d+/g, '"dirty":0'))
+    const ra = (await readRun(ws, a.ref)).record!, rb = (await readRun(ws, b.ref)).record!
+    assert.deepEqual(norm(rb), norm(ra))
+    assert.deepEqual([...new Set(rb.history.slice(1).map(e => e.via))], ['browser'])
+    assert.equal((await readRun(ws, { workflow: 'sub', run: 'run-parity-http' })).record?.parent?.run, 'run-parity-http')
+  } finally {
+    server.closeAllConnections(); server.close()
+  }
+})

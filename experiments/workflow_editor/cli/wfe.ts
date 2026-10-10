@@ -12,6 +12,7 @@ import { APPROVAL_KINDS, type ApprovalKind, type Issue } from '../shared/model.t
 import { addNewRepository, createProject } from '../server/create.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, workspaceAt, type Registration } from '../server/registry.ts'
 import { RequestError, Workspace } from '../server/workspace.ts'
+import { listRuns } from '../server/runs.ts'
 import { setupArea } from './setup.ts'
 import { runCommand, runIndex } from './run.ts'
 
@@ -146,8 +147,8 @@ Lists the registered workspaces and what is observed now: available or not
 Shows one workspace: project id, name, intent and goals; structure diagnostics;
 every repository with Git state (branch or detached HEAD, recorded/staged
 gitlink, uncommitted entries, not initialized); every workflow with its id,
-validation counts and approval states; and whether the editor service is
-running. Reads only. The workspace is the one containing the current
+validation counts and approval states; every run with its execution state and
+what waits for whom; and whether the editor service is running. Reads only. The workspace is the one containing the current
 directory unless --workspace is given.`,
   validate: `wfe validate [<workflow>] [--workspace <id>]
 
@@ -203,11 +204,12 @@ authoring area. Open views follow file changes without a reload.`,
   setup: `wfe setup <area> [--port <port>]
 
 Creates or refreshes an authoring area: <area>/AGENTS.md (from the tracked
-template), <area>/wfe (a launcher that pins this area's registry and port), an
-empty registry if none exists, and sources/. It never creates or changes a
-project, and keeps an existing registry and everything else in the area.
-Prints the directory, the tool, the service command, the URL and a first
-prompt.`,
+template), START.md, <area>/wfe (a launcher that pins this area's registry and
+port), an empty registry if none exists, and sources/. It never creates or
+changes a project or a run, keeps an existing registry, the projects and
+everything else in the area, and keeps a generated file whose first-line stamp
+was removed. Prints the directory, the tool, the service command, the URL, a
+first authoring prompt and the prompt for executing a workflow.`,
 }
 
 function index(p: Parsed): string {
@@ -290,6 +292,7 @@ async function cmdStatus(p: Parsed): Promise<number> {
   const ws = await workspace(p)
   const r = await ws.projectResponse()
   const svc = await serviceState(p)
+  const runs = await listRuns(ws)
   const pr = r.project
   const lines = [
     `Workspace ${ws.reg.id}: ${ws.root}`,
@@ -299,10 +302,12 @@ async function cmdStatus(p: Parsed): Promise<number> {
     'Repositories:', ...r.repositories.map(repoLine),
     `Workflows (devdocs/workflows):${r.workflowsDir.exists ? '' : ` ${r.workflowsDir.reason}`}`,
     ...(r.workflows.length ? r.workflows.map(w => workflowLine(w) + (svc.running && svc.sameRegistry ? `\n${' '.repeat(27)}${svc.url}/#/ws/${encodeURIComponent(ws.reg.id)}/wf/${encodeURIComponent(w.file)}` : '')) : ['  (none)']),
+    `Runs (devdocs/<workflow>/runs/; wfe run show <run>):`,
+    ...(runs.length ? runs.map(s => `  ${s.ref.padEnd(30)} ${s.problem ? `cannot be used: ${s.problem.message}` : `${s.execution}${s.waiting?.length ? `; waiting: ${s.waiting.map(w => `${w.node} (next move: ${w.holder})`).join(', ')}` : ''}${s.ready?.length ? `; ready: ${s.ready.join(', ')}` : ''}`}${svc.running && svc.sameRegistry ? `\n${' '.repeat(33)}${svc.url}/#/ws/${encodeURIComponent(ws.reg.id)}/run/${s.workflow}/${s.run}` : ''}`) : ['  (none)']),
     svc.running ? `Editor: running at ${svc.url}/${svc.sameRegistry ? `#/ws/${encodeURIComponent(ws.reg.id)}` : ` — but it serves ${svc.registry ? `another registry (${svc.registry})` : 'another registry or an older version'}; start this one with: wfe serve --port <free port>`}`
       : `Editor: not running at ${svc.url} (start it with: wfe serve)`,
   ]
-  out(lines.join("\n"), { ...r, workspace: ws.reg.id, root: ws.root, editor: svc })
+  out(lines.join("\n"), { ...r, workspace: ws.reg.id, root: ws.root, runs, editor: svc })
   return 0
 }
 

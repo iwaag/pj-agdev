@@ -22,10 +22,12 @@ export interface SetupResult {
   serve: string
   files: { path: string; status: 'written' | 'unchanged' | 'kept' | 'created' | 'error'; note?: string }[]
   prompt: string
+  runPrompt: string
   summary: string
 }
 
 export const FIRST_PROMPT = 'Create a project in this authoring area for <purpose>. Clarify its intent and goals, establish the repositories it needs, and create one workflow. Make the result available in the editor for me to review and adjust.'
+export const RUN_PROMPT = 'Execute workflow <workflow id> of project <project id> with the braindump below. Save my words as the run\'s braindump with me as the author, record the run with wfe as you work, and write your plan and reports in the run folder. Ask me here or as a run question when you need me.'
 
 const fill = (text: string, vars: Record<string, string>) => text.replace(/\{\{([A-Z_]+)\}\}/g, (_, k: string) => vars[k] ?? `{{${k}}}`)
 const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
@@ -51,7 +53,7 @@ export async function setupArea(area: string, opts: { port: number }): Promise<S
   }
 
   // Generated files: rewritten from the templates unless edited by hand.
-  const vars = { AREA: area, WFE: launcher, URL: url, SERVE: serve, CONTRACT: join(experiment, 'docs', 'contract.md') }
+  const vars = { AREA: area, WFE: launcher, URL: url, SERVE: serve, CONTRACT: join(experiment, 'docs', 'contract.md'), RUN_CONTRACT: join(experiment, 'docs', 'runs.md') }
   const generated = async (path: string, body: string, opts2: { stamp?: boolean; mode?: number } = {}) => {
     const text = opts2.stamp === false ? body : `${STAMP}\n${body}`
     const current = await readTextOrNull(path)
@@ -90,10 +92,13 @@ export async function setupArea(area: string, opts: { port: number }): Promise<S
     `Service:  ${serve}`,
     `Browser:  ${url}`,
     `IDE:      open ${area} in VS Code and start the agent there (it reads AGENTS.md; Claude Code via CLAUDE.md)`,
-    'Prompt:',
+    'Prompt (authoring):',
     `  ${FIRST_PROMPT}`,
+    'Prompt (executing a workflow; add the braindump after it):',
+    `  ${RUN_PROMPT}`,
+    `Runs:     ${url}#/ws/<project id> → Runs; folders devdocs/<workflow id>/runs/<run id>/; ${launcher} run help`,
     '',
-    'No project was created. START.md in the area repeats these steps.',
+    'No project or run was created. START.md in the area repeats these steps.',
   ].join('\n')
-  return { area, launcher, url, serve, files, prompt: FIRST_PROMPT, summary }
+  return { area, launcher, url, serve, files, prompt: FIRST_PROMPT, runPrompt: RUN_PROMPT, summary }
 }
