@@ -1,6 +1,6 @@
 // Thin client for the local service. Errors carry the service's message.
 import type {
-  AddSubmoduleResponse, CreateProjectResult, ProjectResponse, RegisterResponse, RunOpResponse, RunResponse, RunSummary, SaveResponse,
+  AddSubmoduleResponse, AgdevResult, CreateProjectResult, DashboardResponse, ProjectResponse, RegisterResponse, RunOpResponse, RunResponse, RunSummary, SaveResponse,
   WorkflowResponse, WorkspacesResponse,
 } from '../shared/api.ts'
 import type { ApprovalState } from '../shared/canonical.ts'
@@ -28,14 +28,24 @@ async function call<T>(method: string, path: string, body?: unknown, okStatuses:
   return data as T
 }
 
-const ws = (id: string) => `/api/workspaces/${encodeURIComponent(id)}`
+// Paths are relative to the page, so the UI works at the service's root and
+// under agdevworld's same-origin prefix (/wfe/) alike.
+const ws = (id: string) => `api/workspaces/${encodeURIComponent(id)}`
 const wf = (id: string, file: string) => `${ws(id)}/workflows/${encodeURIComponent(file)}`
 
 export const api = {
-  workspaces: () => call<WorkspacesResponse>('GET', '/api/workspaces'),
+  workspaces: () => call<WorkspacesResponse>('GET', 'api/workspaces'),
+  dashboard: () => call<DashboardResponse>('GET', 'api/agdev'),
+  createGiteaProject: (input: { id: string; name: string; intent: string; goals: string[]; devdocs: 'directory' | 'submodule'; resume?: boolean; reuse?: boolean }) =>
+    call<CreateProjectResult>('POST', 'api/agdev/projects', input, [422]),
+  registerGiteaProject: (owner: string, name: string) => call<AgdevResult>('POST', 'api/agdev/projects/register', { owner, name }),
+  obtainWorkspace: (project: string) => call<AgdevResult>('POST', `api/agdev/projects/${encodeURIComponent(project)}/workspaces`),
+  registerRepository: (owner: string, name: string, category: string) => call<AgdevResult>('POST', 'api/agdev/repositories', { owner, name, category }),
+  createRepository: (name: string, category: string, description: string) => call<AgdevResult>('POST', 'api/agdev/repositories', { create: true, name, category, description }),
+  addShared: (id: string, repository: string, path: string) => call<AddSubmoduleResponse & { url?: string }>('POST', `${ws(id)}/shared`, { repository, path }, [422]),
   createProject: (input: { id: string; name: string; intent: string; goals: string[]; dir?: string; devdocsSource?: string; resume?: boolean }) =>
-    call<CreateProjectResult>('POST', '/api/projects', input, [422]),
-  register: (path: string, id?: string) => call<RegisterResponse>('POST', '/api/workspaces', { path, id }, [422]),
+    call<CreateProjectResult>('POST', 'api/projects', input, [422]),
+  register: (path: string, id?: string) => call<RegisterResponse>('POST', 'api/workspaces', { path, id }, [422]),
   project: (id: string, refresh = false) => call<ProjectResponse>('GET', `${ws(id)}/project${refresh ? '?refresh=1' : ''}`),
   saveProject: (id: string, project: Project) => call<SaveResponse>('PUT', `${ws(id)}/project`, { project }),
   addSubmodule: (id: string, path: string, url: string) => call<AddSubmoduleResponse>('POST', `${ws(id)}/submodules`, { path, url }, [422]),
@@ -53,5 +63,5 @@ export const api = {
   // One run operation (docs/runs.md); `by` is the declared actor, `expectSeq` the sequence the view showed.
   runOp: (id: string, workflow: string, run: string, op: Record<string, unknown> & { op: string; by: string; expectSeq?: number }) =>
     call<RunOpResponse>('POST', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/ops`, op),
-  eventsUrl: (id?: string) => (id ? `${ws(id)}/events` : '/api/events'),
+  eventsUrl: (id?: string) => (id ? `${ws(id)}/events` : 'api/events'),
 }

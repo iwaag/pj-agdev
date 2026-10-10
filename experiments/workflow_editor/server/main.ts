@@ -2,6 +2,7 @@
 //
 //   node server/main.ts [--registry <file>] [--area <dir>] [--port 8095]
 //     [--poll-ms 1000] [--git-poll-ms 3000] [--serve-dist]
+//     [--gitea <setting.json>] [--origins <url,url>]
 //
 // The registry defaults to pj-agdev/.local/workflow-editor/registry.json (the
 // p1 fixture); `wfe serve` starts it for an authoring area's registry instead.
@@ -9,11 +10,15 @@
 // projects go.
 //
 // It binds to 127.0.0.1 only. Browser writes are accepted from the Vite dev
-// origin and from its own origin (when serving the built UI).
+// origin, from its own origin (when serving the built UI) and from the
+// origins given with --origins / WFE_ORIGINS (agdevworld's loopback route).
+// The Gitea setting defaults to gitea.json beside the registry, when present.
 import { createServer } from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { existsSync } from 'node:fs'
 import { createHandler } from './api.ts'
+import { Gitea, loadGiteaSetting } from './gitea.ts'
 import { Watcher } from './watch.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -30,7 +35,13 @@ const serveDist = args.includes('--serve-dist')
 const pollMs = Number(option('--poll-ms', '1000'))
 const gitPollMs = Number(option('--git-poll-ms', '3000'))
 
-const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://127.0.0.1:${DEV_PORT}`, `http://localhost:${DEV_PORT}`]
+const extraOrigins = option('--origins', '').split(',').map(o => o.trim()).filter(Boolean)
+const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://127.0.0.1:${DEV_PORT}`, `http://localhost:${DEV_PORT}`, ...extraOrigins]
+const giteaFile = option('--gitea', join(dirname(registryFile), 'gitea.json'))
+let gitea: Gitea | undefined, giteaProblem: string | undefined
+if (existsSync(giteaFile)) {
+  try { gitea = new Gitea(await loadGiteaSetting(giteaFile)) } catch (e) { giteaProblem = (e as Error).message }
+} else giteaProblem = `no Gitea setting at ${giteaFile}`
 const handler = createHandler({
   registryFile,
   area,
@@ -38,6 +49,7 @@ const handler = createHandler({
   allowedHosts: ['127.0.0.1', 'localhost'],
   distDir: serveDist ? join(experiment, 'dist') : undefined,
   watcher: new Watcher(pollMs, { gitIntervalMs: gitPollMs, registryFile }),
+  gitea, giteaProblem,
 })
 
 const server = createServer((req, res) => void handler(req, res))
@@ -50,4 +62,6 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`workflow editor service on http://127.0.0.1:${port}${serveDist ? ' (serving dist/)' : ''}`)
   console.log(`registry: ${registryFile}`)
   console.log(`authoring area: ${area}`)
+  console.log(gitea ? `gitea: ${gitea.url} (owner ${gitea.owner})` : `gitea: none — ${giteaProblem}`)
+  if (extraOrigins.length) console.log(`extra origins: ${extraOrigins.join(', ')}`)
 })

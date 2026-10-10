@@ -38,6 +38,16 @@ function categoryOf(path: string): RepoCategory {
   return 'other'
 }
 
+// Local commits that no remote-tracking ref contains (as last fetched; no
+// network read), and the branch's upstream when it has one. A detached
+// submodule checkout is published when some remote branch contains it.
+async function publication(dir: string): Promise<RepositoryStatus['publication']> {
+  const up = await git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+  const ahead = await git(dir, ['rev-list', '--count', 'HEAD', '--not', '--remotes'])
+  const behind = up.code === 0 ? await git(dir, ['rev-list', '--count', 'HEAD..@{upstream}']) : null
+  return { upstream: up.code === 0 ? up.stdout.trim() : null, ahead: Number(ahead.stdout.trim()) || 0, behind: Number(behind?.stdout.trim()) || 0 }
+}
+
 async function isDir(p: string) { try { return (await stat(p)).isDirectory() } catch { return false } }
 
 export class Workspace {
@@ -76,6 +86,7 @@ export class Workspace {
       head: rootHead.code === 0 ? rootHead.stdout.trim() : undefined,
       branch: rootBranch.code === 0 ? rootBranch.stdout.trim() : null,
       dirty: rootDirty.code === 0 ? rootDirty.stdout.split('\n').filter(Boolean).length : 0,
+      publication: await publication(this.root),
     }]
     const subs = await this.submodulePaths()
     const inspected = await Promise.all(subs.map(sm => this.inspectSubmodule(sm)))
@@ -124,6 +135,7 @@ export class Workspace {
         status.branch = branch.code === 0 ? branch.stdout.trim() : null
         const dirty = await git(dir, ['status', '--porcelain=v1'])
         status.dirty = dirty.stdout.split('\n').filter(Boolean).length
+        status.publication = await publication(dir)
         const expected = status.staged ?? status.recorded
         if (status.head && expected) status.matchesRecorded = status.head === expected
       }
@@ -356,18 +368,19 @@ export class Workspace {
 
   // ---- submodules -----------------------------------------------------
 
-  async addSubmodule(rawPath: string, url: string): Promise<AddSubmoduleResponse> {
+  async addSubmodule(rawPath: string, url: string, env: Record<string, string> = {}): Promise<AddSubmoduleResponse> {
     const path = normalizeRepoPath(rawPath)
     if (!path || path === '.') throw new RequestError(400, `"${rawPath}" is not a project-relative path`)
     if (!url.trim()) throw new RequestError(400, 'a repository location is required')
     if (/^-/.test(url) || /^-/.test(path)) throw new RequestError(400, 'locations and paths may not start with "-"')
     const existing = await this.submodulePaths()
     if (existing.some(s => normalizeRepoPath(s.path) === path)) throw new RequestError(409, `${path} is already a submodule`)
-    await inside(this.root, path) // bounds check before Git touches anything
+    const target = await inside(this.root, path) // bounds check before Git touches anything
+    if (await stat(target).then(() => true, () => false)) throw new RequestError(409, `${path} already exists in the workspace; choose another path (nothing was changed)`)
     // Local sources need file transport, which Git disables for submodules by
     // default. Enable it for this one command when the source is local.
-    const local = !/^[a-z][a-z0-9+.-]*:\/\//i.test(url) || url.startsWith('file://')
-    const r = await git(this.root, ['submodule', 'add', '--', url.trim(), path], { config: local ? LOCAL_TRANSPORT : {}, timeoutMs: 120_000 })
+    const local = (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url) && !env.GIT_CONFIG_COUNT) || url.startsWith('file://')
+    const r = await git(this.root, ['submodule', 'add', '--', url.trim(), path], { config: local ? LOCAL_TRANSPORT : {}, env, timeoutMs: 120_000 })
     if (r.code === 0) return { ok: true, message: `Added ${path}. The change is staged in the project root; commit it when ready.`, stderr: r.stderr.trim() || undefined }
     const after = await this.submodulePaths()
     const staged = await git(this.root, ['ls-files', '--stage', '--', path])

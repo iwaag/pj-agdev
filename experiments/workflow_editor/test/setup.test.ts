@@ -41,7 +41,7 @@ const opts = (id: string, extra: Partial<Parameters<typeof createProject>[0]> = 
 })
 
 test('a missing registry is empty; a malformed one is an error naming the file', async () => {
-  assert.deepEqual(await loadRegistry(join(root, 'none.json')), { approver: '', workspaces: [], exists: false })
+  assert.deepEqual(await loadRegistry(join(root, 'none.json')), { approver: '', workspaces: [], projects: [], repositories: [], exists: false })
   const bad = join(root, 'bad.json')
   await writeFile(bad, '{"workspaces": [')
   await assert.rejects(loadRegistry(bad), (e: Error) => e instanceof RegistryError && e.message.includes(bad))

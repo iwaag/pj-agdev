@@ -363,3 +363,19 @@ ol.history code { font-size: 12px; background: #eef0f3; border-radius: 4px; padd
 .runs-card .run-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #eef0f3; }
 
 .node .unsupported { color: #b5532f; font-weight: 600; margin-top: 2px; }
+
+/* agdev dashboard (p4) */
+.dashboard { display: flex; flex-direction: column; gap: 14px; padding: 16px 24px; background: var(--paper); flex: 1; }
+.dash-status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.dash-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 980px) { .dash-grid { grid-template-columns: 1fr; } }
+.project-entry, .repo-entry { border-bottom: 1px solid #eef0f3; padding: 10px 0; display: flex; flex-direction: column; gap: 4px; }
+.entry-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.project-entry .intent { margin: 2px 0; white-space: pre-wrap; }
+.project-entry .source, .repo-entry .error { margin: 0; }
+.chip.ok { border-color: #8fc79a; color: #2f6b3a; }
+.chip.muted { color: var(--muted); }
+.add-shared .shared-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; margin: 6px 0; }
+.add-shared .shared-row { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.add-shared .shared-row.picked { background: #eef3fb; }
+.top-actions { display: flex; gap: 10px; align-items: center; margin-left: auto; }

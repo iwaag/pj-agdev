@@ -70,6 +70,9 @@ export interface RepositoryStatus extends RepositoryInfo {
   branch?: string | null // null = detached HEAD
   dirty: number // changed entries in `git status --porcelain`
   matchesRecorded?: boolean
+  // Publication: the branch's upstream as last fetched (no network read).
+  // ahead = local commits not published; null upstream = nothing to compare.
+  publication?: { upstream: string | null; ahead: number; behind: number }
   error?: string
 }
 
@@ -196,3 +199,55 @@ export interface RunResponse {
 }
 
 export interface RunOpResponse { ok: true; seq: number; record: RunRecord }
+
+// ---- the agdev dashboard (p4) -----------------------------------------------------
+
+// Where a listed fact was read and when. A fact that could not be read
+// carries `error` instead of a value: unavailable is never shown as empty.
+export interface Observation { source: string; at: string; error?: string }
+
+export interface DashboardWorkspace {
+  id: string
+  label: string
+  host: string
+  available: boolean
+  reason?: string
+  runs?: { ongoing: number; waitingOnPerson: number; problems: number; list: { ref: string; execution?: string; waiting: { node: string; holder: string }[] }[] }
+  runsError?: string
+}
+
+export interface DashboardProject {
+  id: string
+  root: { key: string; fullName?: string; htmlUrl?: string; error?: string }
+  name?: string
+  intent?: string
+  devdocs?: string
+  definition: Observation // where name, intent and devdocs mode were read
+  workspaces: DashboardWorkspace[]
+}
+
+export interface RepositoryUse { project: string; path: string; source: string; at: string }
+
+export interface DashboardRepository {
+  key: string
+  category: 'root' | 'devdocs' | 'study' | 'wedo' | 'other'
+  description: string
+  registered: { owner: string; name: string }
+  gitea: { state: 'ok' | 'renamed' | 'missing' | 'unknown'; fullName?: string; htmlUrl?: string; description?: string; empty?: boolean; error?: string; at: string }
+  usedBy: RepositoryUse[]
+  usageUnknown: { project: string; error: string }[] // projects whose usage could not be read
+}
+
+export interface DashboardResponse {
+  at: string
+  registry: { path: string; exists: boolean }
+  gitea: { state: 'ok' | 'unconfigured' | 'unreachable'; url?: string; owner?: string; error?: string }
+  executor: { state: 'available' | 'unavailable' | 'unknown' | 'not-configured'; detail?: string; at?: string }
+  projects: DashboardProject[]
+  repositories: DashboardRepository[]
+  // Workspaces registered without a project entry (local-only projects).
+  unlinkedWorkspaces: DashboardWorkspace[]
+}
+
+export interface AgdevStep { name: string; status: 'done' | 'kept' | 'failed'; detail: string }
+export interface AgdevResult { ok: boolean; message: string; steps?: AgdevStep[]; [k: string]: unknown }

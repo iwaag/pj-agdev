@@ -5,6 +5,9 @@ import { dirname, extname, isAbsolute, join, normalize, sep } from 'node:path'
 import type { RepositoryStatus, WorkspaceSummary, WorkspacesResponse } from '../shared/api.ts'
 import { APPROVAL_KINDS, type ApprovalKind, type Project, type Workflow } from '../shared/model.ts'
 import { addNewRepository, createProject } from './create.ts'
+import { addSharedRepository, createSharedRepository, dashboard, obtainWorkspace, registerGiteaProject, registerSharedRepository, type AgdevContext } from './agdev.ts'
+import type { Gitea } from './gitea.ts'
+import { REPO_CATEGORIES, type RepoCategory } from './registry.ts'
 import { BoundaryError, inside } from './files.ts'
 import { loadRegistry, observe, registerWorkspace, RegistryError, type Registry } from './registry.ts'
 import { listRuns, readRunFile, runOp, runResponse } from './runs.ts'
@@ -21,7 +24,16 @@ export interface ServiceConfig {
   allowedHosts: string[]
   distDir?: string // serve the built UI from the same origin
   watcher?: Watcher
+  gitea?: Gitea
+  giteaProblem?: string
+  executor?: AgdevContext['executor']
 }
+
+// Requests forwarded by agdevworld's same-origin route carry this header
+// (set by its nginx). Through that route the service offers the agdev and
+// editor operations, but no operation that takes an arbitrary host path or
+// repository location: those stay with local processes (the CLI).
+export const ROUTE_HEADER = 'x-wfe-route'
 
 const MAX_BODY = 2 * 1024 * 1024
 
@@ -85,6 +97,10 @@ export function createHandler(config: ServiceConfig) {
   const area = config.area ?? dirname(config.registryFile)
   const texts = (v: unknown) => Array.isArray(v) && v.every(x => typeof x === 'string')
 
+  const agdev: AgdevContext = { registryFile: config.registryFile, area, gitea: config.gitea, giteaProblem: config.giteaProblem, executor: config.executor }
+  const str = (v: unknown, what: string) => { if (typeof v !== 'string' || !v.trim()) throw new RequestError(400, `${what} is required`); return v.trim() }
+  const category = (v: unknown): RepoCategory => { if (!REPO_CATEGORIES.includes(v as RepoCategory)) throw new RequestError(400, `category must be one of ${REPO_CATEGORIES.join(', ')}`); return v as RepoCategory }
+
   async function workspace(id: string): Promise<Workspace> {
     const reg = (await registry()).workspaces.find(w => w.id === id)
     if (!reg) throw new RequestError(404, `workspace "${id}" is not registered`)
@@ -147,6 +163,38 @@ export function createHandler(config: ServiceConfig) {
         throw new RequestError(404, 'not found')
       }
       const [, a, wsId, b, file, action] = parts
+      const routed = req.headers[ROUTE_HEADER] !== undefined
+      const localOnly = (what: string) => { if (routed) throw new RequestError(403, `${what} takes a host path or repository location and is not offered through agdevworld; use the wfe command line on this host`) }
+
+      // ---- the agdev dashboard and resources (p4) ----
+      if (a === 'agdev') {
+        if (!wsId && method === 'GET') return send(res, 200, await dashboard(agdev))
+        if (wsId === 'projects' && !b && method === 'POST') {
+          const input = await body(req) as Record<string, unknown>
+          const id = str(input.id, 'id')
+          if (input.goals !== undefined && !texts(input.goals)) throw new RequestError(400, 'goals must be a list of text')
+          if (input.devdocs !== undefined && input.devdocs !== 'directory' && input.devdocs !== 'submodule') throw new RequestError(400, 'devdocs is directory or submodule')
+          if (!config.gitea) throw new RequestError(503, `Gitea is not available: ${config.giteaProblem ?? 'no Gitea setting'}`)
+          await mkdir(area, { recursive: true })
+          const result = await createProject({
+            dir: await inside(area, `pj-${id}`), id, name: str(input.name, 'name'), intent: typeof input.intent === 'string' ? input.intent : '',
+            goals: (input.goals as string[] | undefined) ?? [], devdocs: (input.devdocs as 'directory' | 'submodule' | undefined) ?? 'directory',
+            registryFile: config.registryFile, gitea: config.gitea, resume: input.resume === true, reuse: input.reuse === true,
+          })
+          return send(res, result.ok ? 201 : 422, result)
+        }
+        if (wsId === 'projects' && b === 'register' && method === 'POST') {
+          const input = await body(req) as Record<string, unknown>
+          return send(res, 200, await registerGiteaProject(agdev, str(input.owner, 'owner'), str(input.name, 'name')))
+        }
+        if (wsId === 'projects' && b && file === 'workspaces' && method === 'POST') return send(res, 201, await obtainWorkspace(agdev, b))
+        if (wsId === 'repositories' && !b && method === 'POST') {
+          const input = await body(req) as Record<string, unknown>
+          if (input.create === true) return send(res, 201, await createSharedRepository(agdev, str(input.name, 'name'), category(input.category), typeof input.description === 'string' ? input.description : ''))
+          return send(res, 200, await registerSharedRepository(agdev, str(input.owner, 'owner'), str(input.name, 'name'), category(input.category)))
+        }
+        throw new RequestError(404, `no route for ${method} ${url.pathname}`)
+      }
 
       // The home page's stream: registry changes only.
       if (a === 'events' && method === 'GET') {
@@ -165,6 +213,7 @@ export function createHandler(config: ServiceConfig) {
       }
       // Registration writes only the registry. A relative path is taken from the authoring area.
       if (a === 'workspaces' && !wsId && method === 'POST') {
+        localOnly('Registering a workspace by path')
         const input = await body(req) as Record<string, unknown>
         if (typeof input.path !== 'string' || !input.path.trim()) throw new RequestError(400, 'path is required')
         const id = typeof input.id === 'string' && input.id.trim() ? input.id.trim() : undefined
@@ -174,6 +223,7 @@ export function createHandler(config: ServiceConfig) {
       }
       // Creation writes only beneath the authoring area (the CLI takes any destination).
       if (a === 'projects' && !wsId && method === 'POST') {
+        localOnly('Creating a local project without Gitea')
         const input = await body(req) as Record<string, unknown>
         for (const k of ['id', 'name']) if (typeof input[k] !== 'string') throw new RequestError(400, `${k} is required`)
         if (input.goals !== undefined && !texts(input.goals)) throw new RequestError(400, 'goals must be a list of text')
@@ -228,7 +278,13 @@ export function createHandler(config: ServiceConfig) {
         }
         throw new RequestError(404, `no route for ${method} ${url.pathname}`)
       }
+      if (b === 'shared' && !file && method === 'POST') {
+        const input = await body(req) as Record<string, unknown>
+        const result = await addSharedRepository(agdev, ws, str(input.repository, 'repository'), str(input.path, 'path'))
+        return send(res, result.ok ? 200 : 422, result)
+      }
       if (b === 'submodules' && !file && method === 'POST') {
+        localOnly('Adding a submodule from a location')
         const input = await body(req) as Record<string, unknown>
         if (typeof input.path !== 'string') throw new RequestError(400, 'path is required')
         if (input.create === true) {

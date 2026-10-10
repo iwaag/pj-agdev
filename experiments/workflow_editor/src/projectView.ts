@@ -1,5 +1,5 @@
 // Project editor: metadata, sub-repositories, workspaces and workflows.
-import type { ProjectResponse, RepositoryStatus, RunSummary, WorkflowResponse, WorkspaceSummary } from '../shared/api.ts'
+import type { DashboardResponse, ProjectResponse, RepositoryStatus, RunSummary, WorkflowResponse, WorkspaceSummary } from '../shared/api.ts'
 import { PROJECT_SCHEMA, type Project } from '../shared/model.ts'
 import { validateProject } from '../shared/validate.ts'
 import { api, ApiError } from './api.ts'
@@ -27,6 +27,8 @@ export function statusChips(r: RepositoryStatus): HTMLElement[] {
   if (r.kind === 'root' && r.head) chips.push(h('span.chip', { title: r.head }, `# ${short(r.head)}`))
   if (r.initialized && r.kind === 'submodule' && r.matchesRecorded === false) chips.push(h('span.chip.warn', { title: `Checked out ${r.head}` }, `HEAD ${short(r.head)} ≠ recorded`))
   if (r.dirty) chips.push(h('span.chip.warn', { title: 'Uncommitted changes (git status --porcelain)' }, `${r.dirty} uncommitted`))
+  if (r.publication?.ahead) chips.push(h('span.chip.warn', { title: `Commits that no remote branch contains, as last fetched${r.publication.upstream ? ` (upstream ${r.publication.upstream})` : ''}` }, `${r.publication.ahead} unpublished`))
+  else if (r.initialized && r.publication && r.kind !== 'directory') chips.push(h('span.chip.muted', { title: `Every commit is on a remote branch, as last fetched${r.publication.upstream ? ` (upstream ${r.publication.upstream})` : ''}` }, 'published'))
   if (r.error) chips.push(h('span.chip.error', r.error))
   return chips
 }
@@ -44,6 +46,9 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
   let accessData: WorkflowResponse | null = null
   let workspaces: WorkspaceSummary[] = []
   let addResult: HTMLElement | null = null
+  let sharedResult: HTMLElement | null = null
+  let shared: DashboardResponse | null = null
+  let sharedError = ''
   let createError = ''
   let disposed = false
   let connected = true
@@ -205,8 +210,48 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
     // Bindings whose path is not a repository of this project.
     const unresolved = bindings.filter(([, b]) => !data!.repositories.some(r => r.path === (b.path.replace(/^\.\//, '').replace(/\/$/, '') || '.')))
     if (unresolved.length) card.append(h('div.banner.error', `Unresolved in ${accessData?.workflow?.name}: `, unresolved.map(([k, b]) => `${k} → ${b.path}`).join(', ')))
-    card.append(renderAddRepo())
+    card.append(renderAddShared(), renderAddRepo())
     return card
+  }
+
+  // "Add existing repository": a shared repository from the global
+  // registry, added as a submodule of this project at a chosen path. Only
+  // this project's .gitmodules and index change.
+  const sharedQuery = h('input', { placeholder: 'search registered repositories', 'aria-label': 'Search registered repositories' })
+  const sharedPath = h('input', { placeholder: 'study/rts', 'aria-label': 'Destination path' })
+  let sharedPick = ''
+  sharedQuery.addEventListener('input', () => render())
+  function renderAddShared(): HTMLElement {
+    const box = h('div.add-shared', h('h3', 'Add existing repository'),
+      h('p.muted.small', 'Searches the shared repositories registered on this host (agdev dashboard) and adds the chosen one here as a submodule, with a URL relative to this project on Gitea. It is staged, not committed. Other projects keep their own pinned revisions.'))
+    if (!shared && !sharedError) {
+      void api.dashboard().then(d => { shared = d; render() }, e => { sharedError = (e as Error).message; render() })
+      box.append(h('p.muted.small', 'Loading the registry…'))
+      return box
+    }
+    if (sharedError) { box.append(h('div.banner.error', `The registry cannot be read: ${sharedError}`)); return box }
+    const q = sharedQuery.value.trim().toLowerCase()
+    const list = (shared?.repositories ?? []).filter(r => r.category !== 'devdocs' && r.category !== 'root')
+      .filter(r => !q || `${r.registered.owner}/${r.registered.name} ${r.description} ${r.category}`.toLowerCase().includes(q))
+    const rows = h('div.shared-list', list.length ? list.map(r => h(`label.shared-row${sharedPick === r.key ? '.picked' : ''}`,
+      h('input', { type: 'radio', name: `shared-${wsId}`, checked: sharedPick === r.key, onchange: () => { sharedPick = r.key; if (!sharedPath.value) sharedPath.value = `${r.category === 'other' ? 'shared' : r.category}/${r.registered.name.replace(/^(study|wedo)-/, '')}`; render() } }),
+      h('span', h('strong', r.gitea.fullName ?? `${r.registered.owner}/${r.registered.name}`), h('span.muted.small', ` · ${r.category}${r.description ? ` · ${r.description}` : ''}${r.usedBy.length ? ` · used by ${[...new Set(r.usedBy.map(u => u.project))].join(', ')}` : ' · not used yet'}`),
+        r.gitea.state !== 'ok' ? h('span.chip.warn', r.gitea.state) : null))) : h('p.muted.small', shared?.repositories.length ? 'No registered repository matches.' : 'No shared repository is registered yet (agdev dashboard → Repositories).'))
+    const add = h('button', {
+      disabled: !sharedPick,
+      onclick: async () => {
+        add.disabled = true
+        sharedResult = h('p.muted', 'Running git submodule add…')
+        render()
+        try {
+          const r = await api.addShared(wsId, sharedPick, sharedPath.value)
+          sharedResult = r.ok ? h('div.banner.ok', `${r.message} (URL ${r.url})`) : h('div.banner.error', h('strong', r.message), r.stderr ? h('pre', r.stderr) : null)
+        } catch (e) { sharedResult = h('div.banner.error', (e as ApiError).message) }
+        await load({})
+      },
+    }, 'Add as submodule')
+    box.append(sharedQuery, rows, h('div.row', h('label.field', h('span', 'Destination path'), sharedPath), add), ...(sharedResult ? [sharedResult] : []))
+    return box
   }
 
   function renderAddRepo(): HTMLElement {
@@ -231,7 +276,7 @@ export function renderProjectView(root: HTMLElement, wsId: string): ViewHandle {
         await load({})
       },
     }, 'Add submodule')
-    return h('div.add-repo', h('h3', 'Add a repository'),
+    return h('div.add-repo', h('h3', 'Add a repository by location'),
       h('p.muted.small', 'Runs git submodule add in this workspace and stages the result. It does not commit. A relative location resolves against the project\'s origin (or its root when it has no remote). A new local repository is created in the authoring area\'s sources/ with an initial commit.'),
       h('div.row', h('label.field', h('span', 'Path'), path), h('label.field', h('span', 'Location'), url), button),
       h('label.small.inline', fresh, ' Create a new local repository instead of a location'),

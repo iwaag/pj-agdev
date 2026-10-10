@@ -10,6 +10,10 @@ import type { Diagnostic, RepositoryStatus, WorkflowSummary } from '../shared/ap
 import { autoArrange } from '../shared/layout.ts'
 import { APPROVAL_KINDS, type ApprovalKind, type Issue } from '../shared/model.ts'
 import { addNewRepository, createProject } from '../server/create.ts'
+import { addSharedRepository, createSharedRepository, dashboard, obtainWorkspace, registerGiteaProject, registerSharedRepository, type AgdevContext } from '../server/agdev.ts'
+import { Gitea, GiteaError, loadGiteaSetting } from '../server/gitea.ts'
+import { REPO_CATEGORIES, type RepoCategory } from '../server/registry.ts'
+import { existsSync } from 'node:fs'
 import { loadRegistry, observe, registerWorkspace, RegistryError, workspaceAt, type Registration } from '../server/registry.ts'
 import { RequestError, Workspace } from '../server/workspace.ts'
 import { listRuns } from '../server/runs.ts'
@@ -28,7 +32,7 @@ class Refused extends Error { detail?: unknown; constructor(m: string, detail?: 
 // ---- arguments ---------------------------------------------------------------
 
 interface Parsed { positional: string[]; opts: Map<string, string[]>; flags: Set<string> }
-const FLAGS = new Set(['json', 'help', 'resume', 'h', 'new', 'history'])
+const FLAGS = new Set(['json', 'help', 'resume', 'h', 'new', 'history', 'no-gitea', 'reuse'])
 function parse(argv: string[]): Parsed {
   const p: Parsed = { positional: [], opts: new Map(), flags: new Set() }
   for (let i = 0; i < argv.length; i++) {
@@ -55,6 +59,23 @@ const devdocsMode = (p: Parsed) => {
 }
 const registryFile = (p: Parsed) => resolve(opt(p, 'registry') ?? process.env.WFE_REGISTRY ?? DEFAULT_REGISTRY)
 const areaDir = (p: Parsed) => resolve(opt(p, 'area') ?? process.env.WFE_AREA ?? dirname(registryFile(p)))
+const giteaFile = (p: Parsed) => resolve(opt(p, 'gitea') ?? process.env.WFE_GITEA ?? join(dirname(registryFile(p)), 'gitea.json'))
+// The Gitea of this registry: its setting beside the registry (or --gitea /
+// WFE_GITEA). Absent means local-only operation.
+async function giteaOf(p: Parsed): Promise<Gitea | undefined> {
+  const file = giteaFile(p)
+  if (!existsSync(file)) return undefined
+  try { return new Gitea(await loadGiteaSetting(file)) } catch (e) { throw new Refused((e as Error).message) }
+}
+async function agdevCtx(p: Parsed): Promise<AgdevContext> {
+  const gitea = await giteaOf(p)
+  return { registryFile: registryFile(p), area: areaDir(p), gitea, giteaProblem: gitea ? undefined : `no Gitea setting at ${giteaFile(p)}` }
+}
+const ownerName = (text: string | undefined, what: string) => {
+  const m = /^([^/\s]+)\/([^/\s]+)$/.exec(text ?? '')
+  if (!m) throw new UsageError(`${what} must be <owner>/<name>`)
+  return { owner: m[1], name: m[2].replace(/\.git$/, '') }
+}
 const port = (p: Parsed) => Number(opt(p, 'port') ?? process.env.WFE_PORT ?? 8095)
 
 async function workspace(p: Parsed): Promise<Workspace> {
@@ -116,7 +137,11 @@ function workflowLine(w: WorkflowSummary) {
 const HELP: Record<string, string> = {
   create: `wfe create <dir> --name <name> [--id <id>] [--intent <text>] [--goal <text>]... [--devdocs directory|submodule] [--devdocs-source <path|url>] [--resume]
 
-Creates a new project and registers it as a workspace.
+Creates a new project and registers it as a workspace. With a Gitea setting
+(gitea.json beside the registry, --gitea or WFE_GITEA) the repositories are
+created on Gitea, the initial commits are pushed (devdocs first), and the
+project and its repositories are registered too; --no-gitea, or no setting,
+makes a local project that is pushed nowhere.
   Writes  <dir>/ as a new Git repository with project.yaml (ag.project.v2),
           .gitignore (.local/), an empty .local/, and devdocs/: a directory of
           the root repository (--devdocs directory, the default) or a
@@ -202,6 +227,32 @@ Creates devdocs/workflows/<id>.yaml with the editor's template (schema, id,
 name, empty intent, no nodes), as the project view's "New workflow" does.
 Refuses an id already used by another workflow file. Writing the file by hand
 is equally valid; see docs/contract.md.`,
+  project: `wfe project register <owner>/<name>
+wfe project obtain <project id>
+
+register  records a project root that exists on Gitea (its project.yaml must be
+          ag.project.v2), its devdocs repository in submodule mode, and the
+          project, in the registry. Only the registry changes.
+obtain    clones a registered project with its submodules from Gitea into the
+          area (pj-<id>, or pj-<id>-2 … when taken) and registers that
+          workspace. An existing folder is never reused or overwritten.
+Needs the Gitea setting (gitea.json beside the registry, --gitea or WFE_GITEA).`,
+  repo: `wfe repo register <owner>/<name> --category study|wedo|other|devdocs
+wfe repo create <name> --category study|wedo|other [--description <text>]
+wfe repo add <owner>/<name>|gitea:<id> <path> [--workspace <id>]
+
+register  records a Gitea repository by its Gitea id; it needs no project.
+create    creates a repository under the configured owner with a README and
+          registers it. A same-named repository with content is refused.
+add       adds a registered repository to this workspace's project as a
+          submodule at <path>, with a URL relative to the project on Gitea.
+          Staged, not committed. Other projects keep their pinned revisions.`,
+  dashboard: `wfe dashboard
+
+The agdev dashboard as text: every registered project (where its definition
+was read, its workspaces here, ongoing runs and waits) and every shared
+repository (Gitea state, the projects that use it). Facts that could not be
+read are said so, never listed as empty. Reads only.`,
   serve: `wfe serve [--port <port>]
 
 Starts the editor service for this registry in the foreground: it builds the
@@ -225,11 +276,14 @@ function index(p: Parsed): string {
 Usage: wfe <command> [options]        wfe help <command>   (or <command> --help)
 
 Projects and workspaces
-  create <dir> --name …     create a project (Git root, project.yaml, devdocs submodule) and register it
+  create <dir> --name …     create a project (on Gitea when configured) and register it
   register [<dir>]          register an existing project's Git root
   list                      registered workspaces and what is observed
   status                    project, repositories (Git state), workflows, editor service
   add-repo <path> <loc>     add a Git submodule (git submodule add); --new creates a local repository
+  project register|obtain   a project on Gitea: register it here, or clone a workspace of it
+  repo register|create|add  shared repositories on Gitea, and adding one to this project
+  dashboard                 every project and shared repository, with where each fact was read
 
 Workflows (by file name or id)
   workflow new <id>         create devdocs/workflows/<id>.yaml from the template
@@ -240,7 +294,7 @@ Workflows (by file name or id)
 Runs (docs/runs.md; wfe run help)
   run create <workflow> …   create a run: the input, a fixed copy of the definition, run.json
   run list | show | check   runs, one run in full, record checks
-  run start | complete | …  record node starts, waits, questions, answers, outcomes, delegation
+  run start | complete | …  record node starts, waits, questions, answers, outcomes
 
 Editor
   serve                     start the editor (UI and API) for this registry
@@ -250,7 +304,7 @@ Options: --workspace <id> (default: the workspace containing the current directo
          --json (structured output), --registry <file>, --area <dir>
 Registry: ${registryFile(p)}
 File contract (project.yaml, workflow YAML, validation, approvals): ${CONTRACT}
-Run contract (run folders, run.json, states, questions, delegation): ${RUN_CONTRACT}
+Run contract (run folders, run.json, states, questions): ${RUN_CONTRACT}
 No command needs the editor service. Definition files may also be edited directly;
 an open editor view follows the change. Exit codes: 0 ok, 1 refused or errors, 2 usage.`
 }
@@ -258,6 +312,7 @@ an open editor view follows the change. Exit codes: 0 ok, 1 refused or errors, 2
 // ---- commands ----------------------------------------------------------------
 
 async function cmdCreate(p: Parsed): Promise<number> {
+  const gitea = p.flags.has('no-gitea') ? undefined : await giteaOf(p)
   const [dirArg] = p.positional
   if (!dirArg) throw new UsageError('create needs a destination directory')
   const name = opt(p, 'name')
@@ -268,6 +323,7 @@ async function cmdCreate(p: Parsed): Promise<number> {
     dir, id, name, intent: opt(p, 'intent') ?? '', goals: p.opts.get('goal') ?? [],
     sourcesDir: resolve(opt(p, 'sources') ?? join(areaDir(p), 'sources')),
     devdocs: devdocsMode(p), devdocsSource: opt(p, 'devdocs-source'), registryFile: registryFile(p), resume: p.flags.has('resume'),
+    gitea, reuse: p.flags.has('reuse'),
   })
   const lines = [r.message, ...r.steps.map(s => `  ${s.status.padEnd(6)} ${s.name}: ${s.detail}`)]
   if (r.commits.length) lines.push('Commits:', ...r.commits.map(c => `  ${short(c.commit)} ${c.message} (${c.repository})`))
@@ -435,8 +491,66 @@ async function cmdRun(p: Parsed): Promise<number> {
   })
 }
 
+async function agdevRun(f: () => Promise<{ ok: boolean; message: string } & Record<string, unknown>>): Promise<number> {
+  try {
+    const r = await f()
+    const steps = (r.steps as { name: string; status: string; detail: string }[] | undefined) ?? []
+    out([r.message, ...steps.map(s => `  ${s.status.padEnd(6)} ${s.name}: ${s.detail}`)].join('\n'), r)
+    return r.ok ? 0 : 1
+  } catch (e) {
+    if (e instanceof RequestError || e instanceof GiteaError) throw new Refused(e.message)
+    throw e
+  }
+}
+
+async function cmdProject(p: Parsed): Promise<number> {
+  const [sub, arg] = p.positional
+  const ctx = await agdevCtx(p)
+  if (sub === 'register') return agdevRun(() => { const o = ownerName(arg, '<repository>'); return registerGiteaProject(ctx, o.owner, o.name) })
+  if (sub === 'obtain') { if (!arg) throw new UsageError('obtain needs a project id'); return agdevRun(() => obtainWorkspace(ctx, arg)) }
+  throw new UsageError('wfe project register <owner>/<name> | obtain <project id>')
+}
+
+async function cmdRepo(p: Parsed): Promise<number> {
+  const [sub, arg, path] = p.positional
+  const ctx = await agdevCtx(p)
+  const cat = () => { const c = opt(p, 'category'); if (!REPO_CATEGORIES.includes(c as RepoCategory)) throw new UsageError(`--category is one of ${REPO_CATEGORIES.filter(x => x !== 'root').join(', ')}`); return c as RepoCategory }
+  if (sub === 'register') return agdevRun(() => { const o = ownerName(arg, '<repository>'); return registerSharedRepository(ctx, o.owner, o.name, cat()) })
+  if (sub === 'create') { if (!arg) throw new UsageError('create needs a name'); return agdevRun(() => createSharedRepository(ctx, arg, cat(), opt(p, 'description') ?? '')) }
+  if (sub === 'add') {
+    if (!arg || !path) throw new UsageError('add needs <repository> <path>')
+    const ws = await workspace(p)
+    const reg = await loadRegistry(registryFile(p))
+    const key = arg.startsWith('gitea:') ? arg : reg.repositories.find(r => `${r.gitea.owner}/${r.gitea.name}` === arg)?.key
+    if (!key) throw new Refused(`${arg} is not a registered repository (see: wfe dashboard)`)
+    return agdevRun(async () => { const r = await addSharedRepository(ctx, ws, key, path); return { ...r, message: r.ok ? `${r.message} (URL ${r.url})` : r.message } })
+  }
+  throw new UsageError('wfe repo register <owner>/<name> --category … | create <name> --category … [--description …] | add <repository> <path>')
+}
+
+async function cmdDashboard(p: Parsed): Promise<number> {
+  const d = await dashboard(await agdevCtx(p))
+  const lines = [`Gitea: ${d.gitea.state}${d.gitea.url ? ` ${d.gitea.url} (owner ${d.gitea.owner})` : ''}${d.gitea.error ? ` — ${d.gitea.error}` : ''}`, `Execution host: ${d.executor.state}${d.executor.detail ? ` — ${d.executor.detail}` : ''}`, '', 'Projects:']
+  if (!d.projects.length) lines.push('  (none registered)')
+  for (const pr of d.projects) {
+    lines.push(`  ${pr.id.padEnd(20)} ${pr.name ?? '?'}  root ${pr.root.fullName ?? pr.root.key}${pr.root.error ? ` (${pr.root.error})` : ''}  devdocs ${pr.devdocs ?? '?'}`)
+    lines.push(`  ${' '.repeat(20)} definition ${pr.definition.error ? `NOT READ (${pr.definition.source}): ${pr.definition.error}` : `read from ${pr.definition.source}`}`)
+    if (!pr.workspaces.length) lines.push(`  ${' '.repeat(20)} no workspace on this host (wfe project obtain ${pr.id})`)
+    for (const w of pr.workspaces) lines.push(`  ${' '.repeat(20)} workspace ${w.id}: ${w.available ? (w.runs ? `${w.runs.ongoing} ongoing, ${w.runs.waitingOnPerson} waiting` : `runs not read: ${w.runsError}`) : `unavailable: ${w.reason}`}`)
+  }
+  lines.push('', 'Repositories:')
+  if (!d.repositories.length) lines.push('  (none registered)')
+  for (const r of d.repositories) {
+    lines.push(`  ${(r.gitea.fullName ?? `${r.registered.owner}/${r.registered.name}`).padEnd(36)} ${r.category.padEnd(8)} ${r.key}${r.gitea.state !== 'ok' ? `  [${r.gitea.state}${r.gitea.error ? `: ${r.gitea.error}` : ''}]` : ''}`)
+    lines.push(`  ${' '.repeat(36)} used by: ${r.usedBy.length ? r.usedBy.map(u => `${u.project} (${u.path})`).join(', ') : 'none'}${r.usageUnknown.length ? `; unknown for ${r.usageUnknown.map(u => u.project).join(', ')}` : ''}`)
+  }
+  if (d.unlinkedWorkspaces.length) lines.push('', 'Workspaces without a registered project:', ...d.unlinkedWorkspaces.map(w => `  ${w.id}`))
+  out(lines.join('\n'), d)
+  return 0
+}
+
 const COMMANDS: Record<string, (p: Parsed) => Promise<number>> = {
-  run: cmdRun,
+  run: cmdRun, project: cmdProject, repo: cmdRepo, dashboard: cmdDashboard,
   create: cmdCreate, register: cmdRegister, list: cmdList, status: cmdStatus, validate: cmdValidate,
   approve: cmdApprove, arrange: cmdArrange, 'add-repo': cmdAddRepo, workflow: cmdWorkflow, serve: cmdServe, setup: cmdSetup,
 }

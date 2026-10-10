@@ -20,6 +20,54 @@ runs (execution records) are in [docs/runs.md](docs/runs.md).
 | `test/` | `node --test` suites |
 | `checks/` | Browser checks and the update measurement (`measure.ts`) |
 
+## agdev operation (p4)
+
+The operating instance serves the **agdev dashboard** (`#/`) and the Project
+Editor for the registry in `pj-agdev/.local/agdev/` (ignored):
+
+| File | Content |
+| --- | --- |
+| `registry.json` | projects (id → Gitea root repository), repositories (by Gitea id: owner/name as registered, category, description), workspaces on this host |
+| `gitea.json` | `{"url", "owner", "tokenFile"}`; the token file is outside every repository |
+| `pj-<id>/` | workspaces created here or obtained from Gitea |
+
+```sh
+node server/main.ts --serve-dist --port 8098 --registry ../../.local/agdev/registry.json \
+  --origins http://localhost:8093,http://127.0.0.1:8093
+```
+
+agdevworld reaches it same-origin at `http://localhost:8093/wfe/`: its nginx
+listens on 8093, published on 127.0.0.1 only, and proxies `/wfe/` to the
+service on the host's loopback with an `x-wfe-route` header. Through that
+route the service refuses every operation that takes a host path or a
+repository location (path registration, submodules by URL, local projects);
+those stay with `wfe` on this host. The operation room links "agdev dashboard
+↗" to it.
+
+- **Gitea.** New projects and shared repositories live on Gitea
+  (`server/gitea.ts`). The token reaches Git as an HTTP header through
+  `GIT_CONFIG_*` variables scoped to the Gitea URL; it is never in a URL, a
+  remote, a Git config file, a project file or a run record. Submodule URLs are
+  relative (`../<name>.git`). Creation, registration and workspace retrieval
+  are `wfe create` (with the setting), `wfe project register|obtain`, `wfe repo
+  register|create|add`, `wfe dashboard`, and the dashboard's forms. Creation
+  journals each step with the Gitea ids it created, so `--resume` continues
+  after a partial failure without creating anything twice; a same-named
+  repository it did not create is a collision (`--reuse` adopts an empty one
+  on purpose). Gitea's API lags behind pushes, so contents are read through
+  `git ls-remote` / a shallow fetch into `<area>/.local/gitea-cache/`.
+- **Dashboard and Project Editor.** The dashboard lists every project (purpose,
+  workspaces here, ongoing runs and waits, where its definition was read) and
+  every shared repository once (category, description, Gitea link, every
+  project that uses it, read from that project's workspace or Gitea commit). A
+  read failure is shown as such, never as an empty list. The Project Editor's
+  "Add existing repository" searches the registry and adds one as a submodule
+  of that project only; other projects keep their gitlinks.
+- **Tests and checks.** `test/gitea.test.ts` and `checks/agdev.ts` start a
+  disposable Gitea container (`test/giteaFixture.ts`, image
+  `gitea/gitea:latest`; skipped without Docker; `WFE_TEST_GITEA=<setting>`
+  points them at another test instance).
+
 ## Fixture
 
 ```sh
