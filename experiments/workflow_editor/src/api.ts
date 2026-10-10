@@ -48,8 +48,8 @@ export const api = {
   runs: (id: string) => call<RunSummary[]>('GET', `${ws(id)}/runs`),
   run: (id: string, workflow: string, run: string, rev?: string) =>
     call<RunResponse>('GET', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}${rev ? `?rev=${encodeURIComponent(rev)}` : ''}`),
-  runFile: (id: string, workflow: string, run: string, path: string) =>
-    call<{ path: string; text: string }>('GET', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/file?path=${encodeURIComponent(path)}`),
+  runFile: (id: string, workflow: string, run: string, path: string, rev?: string) =>
+    call<{ path: string; text: string }>('GET', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/file?path=${encodeURIComponent(path)}${rev ? `&rev=${encodeURIComponent(rev)}` : ''}`),
   // One run operation (docs/runs.md); `by` is the declared actor, `expectSeq` the sequence the view showed.
   runOp: (id: string, workflow: string, run: string, op: Record<string, unknown> & { op: string; by: string; expectSeq?: number }) =>
     call<RunOpResponse>('POST', `${ws(id)}/runs/${encodeURIComponent(workflow)}/${encodeURIComponent(run)}/ops`, op),

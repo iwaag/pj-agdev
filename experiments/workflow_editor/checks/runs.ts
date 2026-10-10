@@ -190,9 +190,11 @@ try {
   console.log('take-up, completion, failure')
   await op(R1, { op: 'question.take-up', question: 'q1' })
   const atCommit = (await op(R1, { op: 'node.complete', node: 'ask', outcome: 'Small map agreed.' })).seq
+  await writeFile(join(dir, 'devdocs', R1.workflow, 'runs', R1.run, 'report-history.md'), 'Report captured at this commit.')
   await gitOk(join(dir, 'devdocs'), ['add', '-A'])
   await gitOk(join(dir, 'devdocs'), ['commit', '-q', '-m', 'check: ask completed'])
   const commit = (await gitOk(join(dir, 'devdocs'), ['rev-parse', 'HEAD'])).trim()
+  await writeFile(join(dir, 'devdocs', R1.workflow, 'runs', R1.run, 'report-history.md'), 'Current report changed after the commit.')
   await waitSeq(atCommit)
   check(await cardText('ask') === 'Completed' && await cardText('join') === 'Pending', 'take-up then completion shown; the join still waits for build and handoff')
   const failed = (await op(R1, { op: 'node.fail', node: 'build', reason: 'The engine does not compile.' })).seq
@@ -282,7 +284,15 @@ try {
   await page.waitForSelector('.run-summary[data-seq]')
   check(await seqShown(page) === atCommit && /As committed in devdocs/.test(await page.locator('.banners').innerText()) && await cardText('build') === 'Running (reported)' && await cardText('ask') === 'Completed',
     `history view at ${commit.slice(0, 7)}: seq ${atCommit}, build running, ask completed`)
+  await page.locator('.run-side .file-link', { hasText: 'report-history.md' }).first().click()
+  await page.waitForSelector('.file-view pre')
+  check(await page.locator('.file-view pre').innerText() === 'Report captured at this commit.', 'history report uses the displayed commit, not the current file')
   await shot(page, 'p3-run-at-commit', false)
+  await page.goto(hash(R1))
+  await page.waitForSelector('.run-summary[data-seq]')
+  await page.locator('.run-side .file-link', { hasText: 'report-history.md' }).first().click()
+  await page.waitForSelector('.file-view pre')
+  check(await page.locator('.file-view pre').innerText() === 'Current report changed after the commit.', 'current run report still uses the working tree')
 
   // 17. Old timestamps are shown as such and change nothing.
   console.log('old timestamps')

@@ -215,7 +215,7 @@ export function createHandler(config: ServiceConfig) {
         const sub = parts[6]
         if (!ref.workflow || !ref.run || parts.length > 7) throw new RequestError(404, 'not found')
         if (!sub && method === 'GET') return send(res, 200, await runResponse(ws, ref, { rev: url.searchParams.get('rev') || undefined }))
-        if (sub === 'file' && method === 'GET') return send(res, 200, await readRunFile(ws, ref, url.searchParams.get('path') ?? ''))
+        if (sub === 'file' && method === 'GET') return send(res, 200, await readRunFile(ws, ref, url.searchParams.get('path') ?? '', { rev: url.searchParams.get('rev') ?? undefined }))
         if (sub === 'ops' && method === 'POST') {
           const input = await body(req) as Record<string, unknown>
           if (!(OPS as readonly string[]).includes(input.op as string) || input.op === 'run.create') throw new RequestError(400, `op must be one of ${OPS.filter(o => o !== 'run.create').join(', ')}`)

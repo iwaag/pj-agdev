@@ -304,14 +304,29 @@ export async function runResponse(ws: Workspace, ref: RunRef, opts: { rev?: stri
 }
 
 // A top-level file of the run folder, or an artifact the run records. Text only.
-export async function readRunFile(ws: Workspace, ref: RunRef, path: string): Promise<{ path: string; text: string }> {
+export async function readRunFile(ws: Workspace, ref: RunRef, path: string, opts: { rev?: string } = {}): Promise<{ path: string; text: string }> {
   const rel = runDir(ref)
-  const r = await readRun(ws, ref)
-  const own = !path.includes('/') && path !== RUN_FILE ? `${rel}/${path}` : null
+  const r = opts.rev ? await runResponse(ws, ref, opts) : await readRun(ws, ref)
+  const own = !path.includes('/') && path !== RUN_FILE && path !== '.' && path !== '..' ? `${rel}/${path}` : null
   const normalized = normalizeRepoPath(path)
   const recorded = r.record?.artifacts.some(a => a.path === normalized) ? normalized : null
   const target = own ?? recorded
   if (!target) throw new RequestError(404, `"${path}" is neither a file of ${runKey(ref)} nor an artifact it records`)
+  if (opts.rev) {
+    // Only devdocs content belongs to this commit. Never fall back to a
+    // working-tree artifact, including files in another repository.
+    if (!target.startsWith('devdocs/')) throw new RequestError(404, `${target} is outside the devdocs commit; open the current run to read it`)
+    const devdocs = await inside(ws.root, 'devdocs')
+    const object = `${(r as RunResponse).rev}:${target.slice('devdocs/'.length)}`
+    const type = await git(devdocs, ['cat-file', '-t', object])
+    if (type.code !== 0 || type.stdout.trim() !== 'blob') throw new RequestError(404, `${target} does not exist as a file in this commit`)
+    const size = await git(devdocs, ['cat-file', '-s', object])
+    if (size.code !== 0) throw new RequestError(404, `${target} could not be read from this commit`)
+    if (Number(size.stdout.trim()) > MAX_READ) throw new RequestError(413, `${target} is larger than ${MAX_READ} bytes; open it in Git`)
+    const content = await git(devdocs, ['show', object])
+    if (content.code !== 0) throw new RequestError(404, `${target} could not be read from this commit`)
+    return { path: target, text: content.stdout }
+  }
   const abs = await inside(ws.root, target)
   const s = await stat(abs).catch(() => null)
   if (!s?.isFile()) throw new RequestError(404, `${target} does not exist`)

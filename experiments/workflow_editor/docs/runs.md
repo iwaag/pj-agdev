@@ -46,6 +46,12 @@ Saving a file never commits. Commit devdocs at meaningful milestones; when the
 project is published, commit its updated `devdocs` gitlink in the project root
 as well. A browser view follows saved files before any commit.
 
+In a history view (`/at/<commit>`), report and input files are read from that
+same devdocs commit. Missing historical files never fall back to the working
+tree. Artifacts outside devdocs cannot be read from a devdocs commit; use the
+current run to read them. The file HTTP endpoint accepts `rev` like the run
+endpoint.
+
 ### Identifiers
 
 | Identifier | Pattern | Notes |

@@ -268,7 +268,7 @@ export function renderRunView(root: HTMLElement, wsId: string, workflow: string,
     viewing = { path }
     render()
     try {
-      const r = await api.runFile(wsId, workflow, run, path)
+      const r = await api.runFile(wsId, workflow, run, path, rev ? shown?.rev ?? rev : undefined)
       if (viewing?.path === path) viewing = { path, text: r.text }
     } catch (e) {
       if (viewing?.path === path) viewing = { path, error: (e as Error).message }
