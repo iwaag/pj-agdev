@@ -64,10 +64,12 @@ carrying the variable is harmless (nothing reads it) until the next
 `bootout`/`bootstrap`.
 
 `com.agdev.wfe-service.plist.in` is the workflow editor service of the agdev
-area (`workflow_editor` p4): it runs the deployed release
-`.local/agdev/service/current` (written by the `pj-workflow-editor` project's
-`scripts/deploy.sh`), on 127.0.0.1:8098, which agdevworld's loopback origin
-proxies at `http://localhost:8093/wfe/`.
+area: it runs the installed release `.local/agdev/service/current`, on
+127.0.0.1:8098, which agdevworld's loopback origin proxies at
+`http://localhost:8093/wfe/`. Since `workflow_editor` p4/ex1 the editor is
+agdevworld system code (`agdevworld/workflow_editor/`); releases are built and
+switched by `agdevworld/scripts/wfe-release.sh`, which restarts this job with
+`kickstart -k`. The plist itself does not change between releases.
 
 `com.agdev.agautolab-wfexec.plist.in` is autolab as the executor of workflow
 runs (`agautolab.wfexec`, one execution slot). It needs

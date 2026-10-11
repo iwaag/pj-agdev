@@ -3,10 +3,13 @@
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.agdev.wfe-service</string>
-  <!-- The workflow editor service of the agdev area (workflow_editor p4):
-       the deployed release (service/current, scripts/deploy.sh of the
-       pj-workflow-editor project), never a workspace being edited. Loopback
-       only; agdevworld reaches it at http://localhost:8093/wfe/. -->
+  <!-- The workflow editor service of the agdev area: agdevworld system code
+       (agdevworld/workflow_editor, workflow_editor p4/ex1), run from the
+       installed release service/current that agdevworld's
+       scripts/wfe-release.sh builds from an agdevworld commit and switches;
+       never a source tree or a managed workspace. The same release backs the
+       area's bin/wfe launcher. Loopback only; agdevworld reaches it at
+       http://localhost:8093/wfe/. -->
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
