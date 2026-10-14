@@ -408,11 +408,14 @@ class WorkflowMonitor:
                 self.close(inc, "resumed", {"executor": doc.get("executor")}, now)
             return
         f = by_uid.get(inc["uid"])
+        if f is None and ":" in inc["uid"]:
+            # Opened while the record was unreadable (no uid yet): the same run by its place.
+            f = next((x for x in by_uid.values() if x.workspace == inc["workspace"] and x.ref == inc["ref"]), None)
         if f is None:
             return  # not observed: nothing is concluded from absence
         if f.key == iid:
             return  # still the same episode
-        run = next((r for r in doc.get("runs") or [] if r["identity"].get("uid") == inc["uid"]), None)
+        run = next((r for r in doc.get("runs") or [] if r["identity"].get("uid") == f.uid), None)
         if f.condition in ("unobservable", "executor-blocked") or run is None:
             return
         if self.recoverer is not None:
@@ -510,6 +513,8 @@ ACTIONS = {
 def settled_outcome(inc, f: wc.Finding, run: dict) -> tuple[str, dict]:
     """How an incident ended when nobody of ours acted on it."""
     ev = {"seq": run.get("seq"), "situation": run.get("situation"), "condition": f.condition}
+    if inc["family"] == "observation":
+        return "resumed", {**ev, "why": f"the run's record is readable again ({f.condition})"}
     if f.condition == "terminal":
         return ("cancelled" if run.get("cancelled") else "completed"), {**ev, "why": f"the run is {f.kind}"}
     if f.condition == "respected-hold":

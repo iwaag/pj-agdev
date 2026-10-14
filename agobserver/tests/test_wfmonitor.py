@@ -501,3 +501,26 @@ def test_each_successful_look_writes_the_liveness_status_nodeutils_reads(tmp_pat
     clock.t += 60
     m.look()
     assert json.loads(status.read_text())["last_poll_ok"] == s1["last_poll_ok"]
+
+
+def test_an_unreadable_copy_that_is_readable_again_closes_its_observation_incident(tmp_path):
+    fx = fixture("unavailable-source.json")["observation"]
+    doc = copy.deepcopy(fx)
+    doc["runs"] = [doc["runs"][0]]
+    doc["runs"][0]["identity"].update(uid="", creation="", project="")  # as WFE reports a record it cannot read
+    doc["executor"].update(state="available", ageSeconds=1.0)
+    clock = Clock(ts(doc["observedAt"]))
+    m, store, _, state = make(tmp_path, doc, clock)
+    m.look()
+    clock.t += 1900
+    m.look()
+    (inc,) = store.open_incidents()
+    assert inc["family"] == "observation" and ":" in inc["uid"]
+    back = copy.deepcopy(fixture("intentional-hold.json")["observation"])
+    run = back["runs"][0]
+    run["identity"].update(workspace="rts-vs-bot", workflow="improve-game", run="run-007", project="rts-vs-bot", uid="rts-vs-bot/improve-game/run-007#77")
+    back["runs"] = [run]
+    state["docs"] = back
+    clock.t += 60
+    m.look()
+    assert store.incident(inc["id"])["outcome"] == "resumed"
