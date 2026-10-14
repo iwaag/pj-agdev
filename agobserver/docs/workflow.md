@@ -31,7 +31,10 @@ makes a suspicion, never a verdict.
 | `interrupted` / `unknown` hold, no recovery recorded for that attempt | `interrupted` | incident (family `attempt`) → recovery request |
 | an attempt open in the record, process gone or the attempt row ended | `lost-attempt` | grace for the executor's reconcile (180 s), then incident (family `attempt`) |
 | an attempt alive with an open tool call inside its declared timeout (+60 s), or log/CPU advancing | `working` | none |
-| an attempt alive, log silent ≥ 900 s, no open tool call within bounds, CPU not advancing | `uncertain` | probe again each look; after 300 s from first suspicion ask the local triage model; `waiting` postpones (30 min, doubling to 2 h, evidence must still match); `stalled`/`unclear` are told to the owners at 900 s; never a second writer |
+| an attempt alive with an open tool call past its declared timeout (+60 s) | `uncertain` (`tool-overrun`) | as below, suspected from the moment the bound passed |
+| an attempt alive, log silent ≥ 900 s, no open tool call with a timeout, CPU not advancing | `uncertain` (`silent`) | suspected from the moment the silence crossed 900 s; judged by the local model 300 s later; `waiting` postpones (30 min, doubling to 2 h, only while the evidence digest still matches, at most 6 h in all); `stalled`/`unclear` are told to the owners at 900 s, never before a pending judgment; never a second writer |
+| a node failed and nothing else runs (execution `stopped`) | `awaiting-person` (`failed`) | none: the failure is a record, the person decides |
+| an external wait past its declared `deadline` | `uncertain` (family `wait`) | told to the owners |
 | ready work or an answer recorded and not taken up, no hold, no attempt, no queued job | `unowned` | grace 180 s (the executor's reconcile re-queues answers), then incident (family `continuation`) → recovery request |
 | a queued job behind a healthy executing attempt | `queued` | none (legitimate wait, `ahead` recorded) |
 | a queued job, slot free, executor healthy, not claimed for 300 s | `queue-stalled` | incident (family `queue`) → owners |
@@ -46,7 +49,9 @@ An incident is `(run uid, family, episode)`:
 
 | Family | Episode |
 | --- | --- |
-| `attempt` (interrupted, unknown, lost-attempt, uncertain) | the attempt id whose end (or silence) is the problem |
+| `attempt` (interrupted, unknown, lost-attempt, uncertain) | the attempt id whose end (or silence) is the problem; a silence that ended (`false-alarm`, `resumed`) and returns reopens it with a new first suspicion |
+| `wait` | the waiting node and its deadline |
+| `observation` | the source state |
 | `continuation` | the record sequence at which the run became unowned |
 | `queue` | the job id |
 | `publication` | the checkpoint id |
@@ -115,3 +120,24 @@ sharing a session id are two attempts. An idle retained session can wait
 legitimately; it does not prove a process. The executor's attempt time
 budget (`wfexec` `timeout_seconds`, 4 h) is not a session lifetime and not a
 wait deadline.
+
+## Running it
+
+`python -m agobserver.wfmonitor [--once] [--settings .local/workflow.toml]`
+(`agobserver-workflow`). Settings (ignored, per host):
+
+```toml
+wfe = ["<area>/bin/wfe"]          # the launcher of the operating area
+channel = "agobserver-agstudio1"  # incident topics: incident-<id>
+interval_seconds = 60
+judge = true                      # local-model judgments (role wftriage)
+[timing]                          # optional overrides for trials (seconds; wfclassify.TIMING)
+[recovery]                        # the recovery path (step 4)
+```
+
+Store: `.local/workflow/observer.sqlite`; health: `.local/workflow-health.json`
+(`agobserver.workflow-health.v1`: cycle, observation source, run conditions,
+open incidents by state, judgments, unacknowledged recovery assignments,
+outbox). While the executor is down, lost attempts and unowned work are
+listed as affected runs of the one executor incident, not incidents of
+their own.

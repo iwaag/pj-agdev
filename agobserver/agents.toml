@@ -62,3 +62,12 @@ allowed_tools = "Read,Glob,Grep,Bash(agrefs:*)"
 profile = "local"
 requires = []
 allowed_tools = "Read,Write"
+
+# One judgment of one uncertain workflow attempt (observer p3 step 3): alive,
+# silent, not inside a command with a declared timeout — a long quiet task or
+# a hung harness? Code decides everything the facts decide; this is asked only
+# for what is left, on the local model, and it writes one result file.
+[roles.wftriage]
+profile = "local"
+requires = []
+allowed_tools = "Read,Write"
