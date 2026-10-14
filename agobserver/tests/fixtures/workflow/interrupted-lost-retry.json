@@ -79,7 +79,8 @@
       "outcome": "interrupted",
       "ended": "2026-10-13T14:50:14.862Z",
       "detail": "the executor exited with survey recorded as running"
-     }
+     },
+     "beganSeq": 7
     },
     "process": {
      "attempt": "amv6sl63n-accd7c",
@@ -101,7 +102,13 @@
       "turns": 41,
       "session": "f0e1d2c3-fixture",
       "problem": null,
-      "openTool": null
+      "openTool": null,
+      "ended": {
+       "subtype": "success",
+       "stopReason": "end_turn"
+      },
+      "backgroundStopped": 1,
+      "partial": false
      }
     },
     "queue": {
@@ -124,8 +131,7 @@
      "at": "2026-10-13T14:45:14.626Z",
      "op": "node.start",
      "by": "jevlab-agent",
-     "attempt": "amv6sl63n-accd7c",
-     "attemptSeq": 7
+     "attempt": "amv6sl63n-accd7c"
     },
     "recoveries": [],
     "publication": {
@@ -145,7 +151,12 @@
      "requester": null,
      "source": null
     },
-    "unavailable": {}
+    "unavailable": {},
+    "executor": {
+     "name": "jevlab-agent",
+     "host": "autolab"
+    },
+    "problems": []
    }
   ],
   "problems": []

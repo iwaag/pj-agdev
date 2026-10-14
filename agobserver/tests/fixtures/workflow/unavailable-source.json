@@ -63,7 +63,8 @@
     "attempts": {
      "count": 0,
      "open": null,
-     "last": null
+     "last": null,
+     "beganSeq": null
     },
     "process": null,
     "queue": {
@@ -99,7 +100,12 @@
     "unavailable": {
      "record": "copy-missing",
      "process": "no record to read the attempt from"
-    }
+    },
+    "executor": {
+     "name": "agent",
+     "host": "autolab"
+    },
+    "problems": []
    },
    {
     "identity": {
@@ -146,7 +152,8 @@
       "backend": "claude_code / anthropic/claude-sonnet-5",
       "agent": "ppt-agent"
      },
-     "last": null
+     "last": null,
+     "beganSeq": 25
     },
     "process": {
      "attempt": "amw0ccccc-555555",
@@ -180,8 +187,7 @@
      "at": "2026-10-14T05:59:59.000Z",
      "op": "node.progress",
      "by": "ppt-agent",
-     "attempt": "amw0ccccc-555555",
-     "attemptSeq": 25
+     "attempt": "amw0ccccc-555555"
     },
     "recoveries": [],
     "publication": {
@@ -204,7 +210,17 @@
     "unavailable": {
      "process.group": "ps failed",
      "process.log": "the attempt log cannot be read: EACCES"
-    }
+    },
+    "executor": {
+     "name": "ppt-agent",
+     "host": "autolab"
+    },
+    "problems": [
+     {
+      "code": "changing",
+      "message": "the record changed while it was read 3 times; its facts may straddle a transition"
+     }
+    ]
    }
   ],
   "problems": []

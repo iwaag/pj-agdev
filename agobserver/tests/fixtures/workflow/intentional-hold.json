@@ -89,7 +89,8 @@
       "outcome": "stopped",
       "ended": "2026-10-13T15:59:36.327Z",
       "detail": "process ended with exit code 143"
-     }
+     },
+     "beganSeq": 6
     },
     "process": null,
     "queue": {
@@ -112,8 +113,7 @@
      "at": "2026-10-13T15:58:01.000Z",
      "op": "question.ask",
      "by": "jevlab-agent",
-     "attempt": "amv6v92d0-0a3066",
-     "attemptSeq": 6
+     "attempt": "amv6v92d0-0a3066"
     },
     "recoveries": [],
     "publication": {
@@ -133,7 +133,12 @@
      "requester": null,
      "source": null
     },
-    "unavailable": {}
+    "unavailable": {},
+    "executor": {
+     "name": "jevlab-agent",
+     "host": "autolab"
+    },
+    "problems": []
    },
    {
     "identity": {
@@ -180,7 +185,8 @@
       "backend": "claude_code / anthropic/claude-sonnet-5",
       "agent": "rts-agent"
      },
-     "last": null
+     "last": null,
+     "beganSeq": 2
     },
     "process": {
      "attempt": "amw0aaaaa-111111",
@@ -205,7 +211,10 @@
       "turns": 22,
       "session": "1a2b3c4d-fixture",
       "problem": null,
-      "openTool": null
+      "openTool": null,
+      "ended": null,
+      "backgroundStopped": 0,
+      "partial": false
      }
     },
     "queue": {
@@ -224,8 +233,7 @@
      "at": "2026-10-14T05:20:00.000Z",
      "op": "node.progress",
      "by": "rts-agent",
-     "attempt": "amw0aaaaa-111111",
-     "attemptSeq": 2
+     "attempt": "amw0aaaaa-111111"
     },
     "recoveries": [],
     "publication": {
@@ -245,7 +253,12 @@
      "requester": null,
      "source": null
     },
-    "unavailable": {}
+    "unavailable": {},
+    "executor": {
+     "name": "rts-agent",
+     "host": "autolab"
+    },
+    "problems": []
    }
   ],
   "problems": []

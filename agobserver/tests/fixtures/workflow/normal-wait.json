@@ -69,7 +69,8 @@
         "question": "q1"
        },
        "holder": "iwaag",
-       "since": "2026-10-14T04:00:00.000Z"
+       "since": "2026-10-14T04:00:00.000Z",
+       "deadline": null
       }
      ]
     },
@@ -84,7 +85,8 @@
       "outcome": "exited",
       "ended": "2026-10-14T04:00:05.000Z",
       "detail": ""
-     }
+     },
+     "beganSeq": 2
     },
     "process": null,
     "queue": {
@@ -115,8 +117,7 @@
      "at": "2026-10-14T04:00:00.000Z",
      "op": "question.ask",
      "by": "ppt-agent",
-     "attempt": "amvzzzzzz-222222",
-     "attemptSeq": 2
+     "attempt": "amvzzzzzz-222222"
     },
     "recoveries": [],
     "publication": {
@@ -136,7 +137,12 @@
      "requester": null,
      "source": null
     },
-    "unavailable": {}
+    "unavailable": {},
+    "executor": {
+     "name": "ppt-agent",
+     "host": "autolab"
+    },
+    "problems": []
    },
    {
     "identity": {
@@ -183,7 +189,8 @@
       "backend": "claude_code / anthropic/claude-sonnet-5",
       "agent": "sfx-agent"
      },
-     "last": null
+     "last": null,
+     "beganSeq": 2
     },
     "process": {
      "attempt": "amw0bbbbb-333333",
@@ -213,7 +220,10 @@
        "since": "2026-10-14T04:31:00.000Z",
        "timeoutSeconds": 600,
        "summary": "for i in 1..12: curl … ; sleep 45 (paced foreground retry loop)"
-      }
+      },
+      "ended": null,
+      "backgroundStopped": 0,
+      "partial": false
      }
     },
     "queue": {
@@ -232,8 +242,7 @@
      "at": "2026-10-14T04:30:00.000Z",
      "op": "node.progress",
      "by": "sfx-agent",
-     "attempt": "amw0bbbbb-333333",
-     "attemptSeq": 2
+     "attempt": "amw0bbbbb-333333"
     },
     "recoveries": [],
     "publication": {
@@ -253,7 +262,12 @@
      "requester": null,
      "source": null
     },
-    "unavailable": {}
+    "unavailable": {},
+    "executor": {
+     "name": "sfx-agent",
+     "host": "autolab"
+    },
+    "problems": []
    },
    {
     "identity": {
@@ -291,7 +305,8 @@
         "question": "q2"
        },
        "holder": "ppt-agent (answer recorded, not yet taken up)",
-       "since": "2026-10-14T04:10:00.000Z"
+       "since": "2026-10-14T04:10:00.000Z",
+       "deadline": null
       }
      ]
     },
@@ -306,7 +321,8 @@
       "outcome": "exited",
       "ended": "2026-10-14T04:10:05.000Z",
       "detail": ""
-     }
+     },
+     "beganSeq": 5
     },
     "process": null,
     "queue": {
@@ -352,8 +368,7 @@
      "at": "2026-10-14T04:10:00.000Z",
      "op": "question.ask",
      "by": "ppt-agent",
-     "attempt": "amvyyyyyy-444444",
-     "attemptSeq": 5
+     "attempt": "amvyyyyyy-444444"
     },
     "recoveries": [],
     "publication": {
@@ -373,7 +388,12 @@
      "requester": null,
      "source": null
     },
-    "unavailable": {}
+    "unavailable": {},
+    "executor": {
+     "name": "ppt-agent",
+     "host": "autolab"
+    },
+    "problems": []
    }
   ],
   "problems": []
