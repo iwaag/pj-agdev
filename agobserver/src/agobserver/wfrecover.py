@@ -32,6 +32,9 @@ from typing import Any, Callable
 
 from . import wfclassify as wc
 
+#: The run agent's reports that show work after a recovery (a recorded failure is a hand-off to the person).
+WORK_OPS = ("node.progress", "node.complete", "question.ask", "node.wait", "artifact.attach", "node.fail", "presentation.register")
+
 DEFAULTS = {"workflow": "agops/recover", "channel": "wf-agops.recover", "ack_timeout": 1800.0, "max_assignments": 2, "verify_timeout": 3600.0}
 
 
@@ -198,7 +201,8 @@ class Recoverer:
             return "cancelled", {**evidence, "why": "the run was cancelled after the recovery"}
         if f.condition == "respected-hold":
             return "held", {**evidence, "why": "a person holds the run"}
-        if progress.get("seq") and progress["seq"] > rc["seq"] and progress.get("attempt") and progress["attempt"] != inc["episode"]:
+        # Useful work, not a start: a start alone is the agent beginning, which an attempt that dies at once also does.
+        if progress.get("seq") and progress["seq"] > rc["seq"] and progress.get("attempt") and progress["attempt"] != inc["episode"] and progress.get("op") in WORK_OPS:
             self._close_assignments(m, inc, now, "restored")
             return "restored", {**evidence, "why": f"the run's agent reported {progress.get('op')} (seq {progress['seq']}) in attempt {progress['attempt']} after the recovery (seq {rc['seq']})"}
         if f.condition == "terminal" and f.kind == "completed":

@@ -120,6 +120,12 @@ def test_interrupted_run_is_requested_acknowledged_performed_and_verified_restor
     clock.t += 60
     m2.look()
     assert store.incident(iid)["outcome"] is None
+    # Its agent starts a node: a start is not yet work.
+    r["progress"] = {"seq": 14, "at": time_iso(clock.t), "op": "node.start", "by": "jevlab-agent", "attempt": "amv7new-000001"}
+    r["seq"] = 14
+    clock.t += 60
+    m2.look()
+    assert store.incident(iid)["outcome"] is None
     # Its agent reports work after the recovery: restored.
     r["progress"] = {"seq": 15, "at": time_iso(clock.t), "op": "node.progress", "by": "jevlab-agent", "attempt": "amv7new-000001"}
     r["seq"] = 15
