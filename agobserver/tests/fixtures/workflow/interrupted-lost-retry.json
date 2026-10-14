@@ -1,0 +1,163 @@
+{
+ "description": "The motivating interruption (project_migration p2 report3): a background retry died with the session; the attempt exited with survey running and the run was held as interrupted. Nobody had resumed it.",
+ "observation": {
+  "schema": "ag.wfe-observation.v1",
+  "observedAt": "2026-10-13T14:52:00.000Z",
+  "host": "fixture-host",
+  "release": "fixture",
+  "executor": {
+   "state": "available",
+   "heartbeatAt": "2026-10-13T14:50:30.000Z",
+   "ageSeconds": 4.0,
+   "name": "autolab",
+   "pid": 68404,
+   "detail": "autolab; idle",
+   "slot": null,
+   "queued": 0
+  },
+  "workspaces": [
+   {
+    "id": "jevlab",
+    "available": true,
+    "problem": null
+   },
+   {
+    "id": "rts-vs-bot",
+    "available": true,
+    "problem": null
+   }
+  ],
+  "runs": [
+   {
+    "identity": {
+     "project": "jevlab",
+     "workspace": "jevlab",
+     "workflow": "study",
+     "run": "run-001",
+     "creation": "5d0c3a9e81f2b7c4",
+     "uid": "jevlab/study/run-001#5d0c3a9e81f2b7c4",
+     "created": "2026-10-13T14:33:01.660Z",
+     "receipt": "request:fixture",
+     "branch": "wfe/jevlab/study/run-001"
+    },
+    "source": {
+     "state": "ok",
+     "problem": null,
+     "location": "copy",
+     "readAt": "2026-10-13T14:50:14.862Z",
+     "reads": 1,
+     "consistent": true
+    },
+    "seq": 11,
+    "updated": "2026-10-13T14:50:14.862Z",
+    "situation": "interrupted",
+    "execution": {
+     "state": "in-progress",
+     "ready": [],
+     "active": [
+      "survey"
+     ],
+     "failed": [],
+     "blocked": [],
+     "waiting": []
+    },
+    "hold": {
+     "kind": "interrupted",
+     "since": "2026-10-13T14:50:14.862Z",
+     "by": "autolab",
+     "human": false,
+     "reason": "the executor exited with survey recorded as running",
+     "because": null
+    },
+    "stop": null,
+    "cancelled": null,
+    "attempts": {
+     "count": 2,
+     "open": null,
+     "last": {
+      "id": "amv6sl63n-accd7c",
+      "outcome": "interrupted",
+      "ended": "2026-10-13T14:50:14.862Z",
+      "detail": "the executor exited with survey recorded as running"
+     }
+    },
+    "process": {
+     "attempt": "amv6sl63n-accd7c",
+     "state": "ended",
+     "host": "fixture-host",
+     "local": true,
+     "pid": 70211,
+     "alive": false,
+     "began": "2026-10-13T14:44:36.678Z",
+     "ended": "2026-10-13T14:50:14.862Z",
+     "exit": 0,
+     "signal": null,
+     "outcome": "interrupted",
+     "stopRequested": null,
+     "group": null,
+     "log": {
+      "last": "2026-10-13T14:50:12.000Z",
+      "bytes": 182311,
+      "turns": 41,
+      "session": "f0e1d2c3-fixture",
+      "problem": null,
+      "openTool": null
+     }
+    },
+    "queue": {
+     "job": null,
+     "position": null,
+     "ahead": []
+    },
+    "inputs": {
+     "questions": [],
+     "answeredNotTakenUp": [],
+     "instructionsPending": 0
+    },
+    "waiting": {
+     "reason": "held: interrupted (the executor exited with survey recorded as running)",
+     "responsible": "recovery",
+     "since": "2026-10-13T14:50:14.862Z"
+    },
+    "progress": {
+     "seq": 10,
+     "at": "2026-10-13T14:45:14.626Z",
+     "op": "node.start",
+     "by": "jevlab-agent",
+     "attempt": "amv6sl63n-accd7c",
+     "attemptSeq": 7
+    },
+    "recoveries": [],
+    "publication": {
+     "failed": [],
+     "attention": [],
+     "pending": []
+    },
+    "integration": {
+     "queued": [],
+     "running": [],
+     "failed": [],
+     "refused": [],
+     "attention": []
+    },
+    "input": {
+     "kind": "braindump",
+     "requester": null,
+     "source": null
+    },
+    "unavailable": {}
+   }
+  ],
+  "problems": []
+ },
+ "expect": {
+  "jevlab/study/run-001#5d0c3a9e81f2b7c4": {
+   "condition": "interrupted",
+   "incident": {
+    "family": "attempt",
+    "episode": "amv6sl63n-accd7c"
+   },
+   "request": true
+  }
+ }
+}

@@ -1,0 +1,398 @@
+{
+ "description": "Normal waits: a question the person has not answered, a paced foreground command inside its declared timeout (the guidance that replaced the lost background retry), and an answer queued behind that healthy attempt.",
+ "observation": {
+  "schema": "ag.wfe-observation.v1",
+  "observedAt": "2026-10-14T04:40:00.000Z",
+  "host": "fixture-host",
+  "release": "fixture",
+  "executor": {
+   "state": "available",
+   "heartbeatAt": "2026-10-14T04:39:58.000Z",
+   "ageSeconds": 2.0,
+   "name": "autolab",
+   "pid": 68404,
+   "detail": "autolab; executing create/run-002 (amw0bbbbb-333333)",
+   "slot": {
+    "attempt": "amw0bbbbb-333333",
+    "workspace": "agsfx",
+    "run": "create/run-002",
+    "uid": "agsfx/create/run-002#4d5e6f7a8b9c0d1e"
+   },
+   "queued": 1
+  },
+  "workspaces": [
+   {
+    "id": "jevlab",
+    "available": true,
+    "problem": null
+   },
+   {
+    "id": "rts-vs-bot",
+    "available": true,
+    "problem": null
+   }
+  ],
+  "runs": [
+   {
+    "identity": {
+     "project": "ppt",
+     "workspace": "ppt",
+     "workflow": "study",
+     "run": "run-004",
+     "creation": "3c4d5e6f7a8b9c0d",
+     "uid": "ppt/study/run-004#3c4d5e6f7a8b9c0d",
+     "created": "2026-10-13T14:33:01.660Z",
+     "receipt": "request:fixture",
+     "branch": "wfe/ppt/study/run-004"
+    },
+    "source": {
+     "state": "ok",
+     "problem": null,
+     "location": "copy",
+     "readAt": "2026-10-14T04:00:00.000Z",
+     "reads": 1,
+     "consistent": true
+    },
+    "seq": 6,
+    "updated": "2026-10-14T04:00:00.000Z",
+    "situation": "awaiting-person",
+    "execution": {
+     "state": "in-progress",
+     "ready": [],
+     "active": [],
+     "failed": [],
+     "blocked": [],
+     "waiting": [
+      {
+       "node": "_plan",
+       "on": {
+        "question": "q1"
+       },
+       "holder": "iwaag",
+       "since": "2026-10-14T04:00:00.000Z"
+      }
+     ]
+    },
+    "hold": null,
+    "stop": null,
+    "cancelled": null,
+    "attempts": {
+     "count": 1,
+     "open": null,
+     "last": {
+      "id": "amvzzzzzz-222222",
+      "outcome": "exited",
+      "ended": "2026-10-14T04:00:05.000Z",
+      "detail": ""
+     }
+    },
+    "process": null,
+    "queue": {
+     "job": null,
+     "position": null,
+     "ahead": []
+    },
+    "inputs": {
+     "questions": [
+      {
+       "id": "q1",
+       "node": "_plan",
+       "to": "iwaag",
+       "asked": "2026-10-14T04:00:00.000Z",
+       "state": "open"
+      }
+     ],
+     "answeredNotTakenUp": [],
+     "instructionsPending": 0
+    },
+    "waiting": {
+     "reason": "question q1 to iwaag",
+     "responsible": "person:iwaag",
+     "since": "2026-10-14T04:00:00.000Z"
+    },
+    "progress": {
+     "seq": 5,
+     "at": "2026-10-14T04:00:00.000Z",
+     "op": "question.ask",
+     "by": "ppt-agent",
+     "attempt": "amvzzzzzz-222222",
+     "attemptSeq": 2
+    },
+    "recoveries": [],
+    "publication": {
+     "failed": [],
+     "attention": [],
+     "pending": []
+    },
+    "integration": {
+     "queued": [],
+     "running": [],
+     "failed": [],
+     "refused": [],
+     "attention": []
+    },
+    "input": {
+     "kind": "braindump",
+     "requester": null,
+     "source": null
+    },
+    "unavailable": {}
+   },
+   {
+    "identity": {
+     "project": "agsfx",
+     "workspace": "agsfx",
+     "workflow": "create",
+     "run": "run-002",
+     "creation": "4d5e6f7a8b9c0d1e",
+     "uid": "agsfx/create/run-002#4d5e6f7a8b9c0d1e",
+     "created": "2026-10-13T14:33:01.660Z",
+     "receipt": "request:fixture",
+     "branch": "wfe/agsfx/create/run-002"
+    },
+    "source": {
+     "state": "ok",
+     "problem": null,
+     "location": "copy",
+     "readAt": "2026-10-14T04:30:00.000Z",
+     "reads": 1,
+     "consistent": true
+    },
+    "seq": 9,
+    "updated": "2026-10-14T04:30:00.000Z",
+    "situation": "executing",
+    "execution": {
+     "state": "in-progress",
+     "ready": [],
+     "active": [
+      "render"
+     ],
+     "failed": [],
+     "blocked": [],
+     "waiting": []
+    },
+    "hold": null,
+    "stop": null,
+    "cancelled": null,
+    "attempts": {
+     "count": 1,
+     "open": {
+      "id": "amw0bbbbb-333333",
+      "began": "2026-10-14T04:20:00.000Z",
+      "reason": "start",
+      "backend": "claude_code / anthropic/claude-sonnet-5",
+      "agent": "sfx-agent"
+     },
+     "last": null
+    },
+    "process": {
+     "attempt": "amw0bbbbb-333333",
+     "state": "running",
+     "host": "fixture-host",
+     "local": true,
+     "pid": 81500,
+     "alive": true,
+     "began": "2026-10-14T04:20:00.000Z",
+     "ended": null,
+     "exit": null,
+     "signal": null,
+     "outcome": null,
+     "stopRequested": null,
+     "group": {
+      "members": 4,
+      "cpuSeconds": 12.0
+     },
+     "log": {
+      "last": "2026-10-14T04:31:00.000Z",
+      "bytes": 40211,
+      "turns": 9,
+      "session": "2b3c4d5e-fixture",
+      "problem": null,
+      "openTool": {
+       "name": "Bash",
+       "since": "2026-10-14T04:31:00.000Z",
+       "timeoutSeconds": 600,
+       "summary": "for i in 1..12: curl … ; sleep 45 (paced foreground retry loop)"
+      }
+     }
+    },
+    "queue": {
+     "job": null,
+     "position": null,
+     "ahead": []
+    },
+    "inputs": {
+     "questions": [],
+     "answeredNotTakenUp": [],
+     "instructionsPending": 0
+    },
+    "waiting": null,
+    "progress": {
+     "seq": 9,
+     "at": "2026-10-14T04:30:00.000Z",
+     "op": "node.progress",
+     "by": "sfx-agent",
+     "attempt": "amw0bbbbb-333333",
+     "attemptSeq": 2
+    },
+    "recoveries": [],
+    "publication": {
+     "failed": [],
+     "attention": [],
+     "pending": []
+    },
+    "integration": {
+     "queued": [],
+     "running": [],
+     "failed": [],
+     "refused": [],
+     "attention": []
+    },
+    "input": {
+     "kind": "braindump",
+     "requester": null,
+     "source": null
+    },
+    "unavailable": {}
+   },
+   {
+    "identity": {
+     "project": "ppt",
+     "workspace": "ppt",
+     "workflow": "create",
+     "run": "run-002",
+     "creation": "5e6f7a8b9c0d1e2f",
+     "uid": "ppt/create/run-002#5e6f7a8b9c0d1e2f",
+     "created": "2026-10-13T14:33:01.660Z",
+     "receipt": "request:fixture",
+     "branch": "wfe/ppt/create/run-002"
+    },
+    "source": {
+     "state": "ok",
+     "problem": null,
+     "location": "copy",
+     "readAt": "2026-10-14T04:35:00.000Z",
+     "reads": 1,
+     "consistent": true
+    },
+    "seq": 8,
+    "updated": "2026-10-14T04:35:00.000Z",
+    "situation": "awaiting-person",
+    "execution": {
+     "state": "in-progress",
+     "ready": [],
+     "active": [],
+     "failed": [],
+     "blocked": [],
+     "waiting": [
+      {
+       "node": "confirm",
+       "on": {
+        "question": "q2"
+       },
+       "holder": "ppt-agent (answer recorded, not yet taken up)",
+       "since": "2026-10-14T04:10:00.000Z"
+      }
+     ]
+    },
+    "hold": null,
+    "stop": null,
+    "cancelled": null,
+    "attempts": {
+     "count": 2,
+     "open": null,
+     "last": {
+      "id": "amvyyyyyy-444444",
+      "outcome": "exited",
+      "ended": "2026-10-14T04:10:05.000Z",
+      "detail": ""
+     }
+    },
+    "process": null,
+    "queue": {
+     "job": {
+      "id": 77,
+      "kind": "resume",
+      "state": "queued",
+      "created": "2026-10-14T04:35:00.000Z",
+      "reason": "resume: answer 0 to q2 recorded",
+      "receipt": "answer:ppt/create/run-002/q2/0"
+     },
+     "position": 1,
+     "ahead": [
+      {
+       "uid": "agsfx/create/run-002#4d5e6f7a8b9c0d1e",
+       "kind": "attempt",
+       "state": "running"
+      }
+     ]
+    },
+    "inputs": {
+     "questions": [
+      {
+       "id": "q2",
+       "node": "confirm",
+       "to": "iwaag",
+       "asked": "2026-10-14T04:10:00.000Z",
+       "state": "answered"
+      }
+     ],
+     "answeredNotTakenUp": [
+      "q2"
+     ],
+     "instructionsPending": 0
+    },
+    "waiting": {
+     "reason": "answer to q2 queued behind the executing attempt",
+     "responsible": "executor",
+     "since": "2026-10-14T04:35:00.000Z"
+    },
+    "progress": {
+     "seq": 6,
+     "at": "2026-10-14T04:10:00.000Z",
+     "op": "question.ask",
+     "by": "ppt-agent",
+     "attempt": "amvyyyyyy-444444",
+     "attemptSeq": 5
+    },
+    "recoveries": [],
+    "publication": {
+     "failed": [],
+     "attention": [],
+     "pending": []
+    },
+    "integration": {
+     "queued": [],
+     "running": [],
+     "failed": [],
+     "refused": [],
+     "attention": []
+    },
+    "input": {
+     "kind": "braindump",
+     "requester": null,
+     "source": null
+    },
+    "unavailable": {}
+   }
+  ],
+  "problems": []
+ },
+ "expect": {
+  "ppt/study/run-004#3c4d5e6f7a8b9c0d": {
+   "condition": "awaiting-person",
+   "incident": null,
+   "request": false
+  },
+  "agsfx/create/run-002#4d5e6f7a8b9c0d1e": {
+   "condition": "working",
+   "incident": null,
+   "request": false
+  },
+  "ppt/create/run-002#5e6f7a8b9c0d1e2f": {
+   "condition": "queued",
+   "incident": null,
+   "request": false
+  }
+ }
+}

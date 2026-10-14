@@ -1,0 +1,235 @@
+{
+ "description": "Unavailable evidence: a missing copy is an observation problem (never a finished run); a record that kept changing is not judged; an executor whose heartbeat is 10 minutes old is one infrastructure incident naming the affected runs.",
+ "observation": {
+  "schema": "ag.wfe-observation.v1",
+  "observedAt": "2026-10-14T06:00:00.000Z",
+  "host": "fixture-host",
+  "release": "fixture",
+  "executor": {
+   "state": "unavailable",
+   "heartbeatAt": "2026-10-14T05:49:48.000Z",
+   "ageSeconds": 612.0,
+   "name": "autolab",
+   "pid": 68404,
+   "detail": "autolab; executing freework/run-001 (amw0ccccc-555555)",
+   "slot": {
+    "attempt": "amw0ccccc-555555",
+    "workspace": "ppt",
+    "run": "freework/run-001",
+    "uid": "ppt/freework/run-001#7a8b9c0d1e2f3041"
+   },
+   "queued": 0
+  },
+  "workspaces": [
+   {
+    "id": "jevlab",
+    "available": true,
+    "problem": null
+   },
+   {
+    "id": "rts-vs-bot",
+    "available": true,
+    "problem": null
+   }
+  ],
+  "runs": [
+   {
+    "identity": {
+     "project": "rts-vs-bot",
+     "workspace": "rts-vs-bot",
+     "workflow": "improve-game",
+     "run": "run-007",
+     "creation": "6f7a8b9c0d1e2f30",
+     "uid": "rts-vs-bot/improve-game/run-007#6f7a8b9c0d1e2f30",
+     "created": "2026-10-13T14:33:01.660Z",
+     "receipt": "request:fixture",
+     "branch": "wfe/rts-vs-bot/improve-game/run-007"
+    },
+    "source": {
+     "state": "copy-missing",
+     "problem": "the run's working copy is missing (.local/wfe/runs/improve-game/run-007/tree has no repository); its saved branch wfe/rts-vs-bot/improve-game/run-007 is in the project's repositories",
+     "location": "copy",
+     "readAt": "2026-10-14T06:00:00.000Z",
+     "reads": 1,
+     "consistent": true
+    },
+    "seq": 0,
+    "updated": null,
+    "situation": null,
+    "execution": null,
+    "hold": null,
+    "stop": null,
+    "cancelled": null,
+    "attempts": {
+     "count": 0,
+     "open": null,
+     "last": null
+    },
+    "process": null,
+    "queue": {
+     "job": null,
+     "position": null,
+     "ahead": []
+    },
+    "inputs": {
+     "questions": [],
+     "answeredNotTakenUp": [],
+     "instructionsPending": 0
+    },
+    "waiting": null,
+    "progress": null,
+    "recoveries": [],
+    "publication": {
+     "failed": [],
+     "attention": [],
+     "pending": []
+    },
+    "integration": {
+     "queued": [],
+     "running": [],
+     "failed": [],
+     "refused": [],
+     "attention": []
+    },
+    "input": {
+     "kind": "braindump",
+     "requester": null,
+     "source": null
+    },
+    "unavailable": {
+     "record": "copy-missing",
+     "process": "no record to read the attempt from"
+    }
+   },
+   {
+    "identity": {
+     "project": "ppt",
+     "workspace": "ppt",
+     "workflow": "freework",
+     "run": "run-001",
+     "creation": "7a8b9c0d1e2f3041",
+     "uid": "ppt/freework/run-001#7a8b9c0d1e2f3041",
+     "created": "2026-10-13T14:33:01.660Z",
+     "receipt": "request:fixture",
+     "branch": "wfe/ppt/freework/run-001"
+    },
+    "source": {
+     "state": "ok",
+     "problem": null,
+     "location": "copy",
+     "readAt": "2026-10-14T06:00:00.000Z",
+     "reads": 3,
+     "consistent": false
+    },
+    "seq": 31,
+    "updated": "2026-10-14T05:59:59.000Z",
+    "situation": "executing",
+    "execution": {
+     "state": "in-progress",
+     "ready": [],
+     "active": [
+      "talk"
+     ],
+     "failed": [],
+     "blocked": [],
+     "waiting": []
+    },
+    "hold": null,
+    "stop": null,
+    "cancelled": null,
+    "attempts": {
+     "count": 3,
+     "open": {
+      "id": "amw0ccccc-555555",
+      "began": "2026-10-14T05:50:00.000Z",
+      "reason": "resume",
+      "backend": "claude_code / anthropic/claude-sonnet-5",
+      "agent": "ppt-agent"
+     },
+     "last": null
+    },
+    "process": {
+     "attempt": "amw0ccccc-555555",
+     "state": "running",
+     "host": "fixture-host",
+     "local": true,
+     "pid": 82000,
+     "alive": true,
+     "began": "2026-10-14T05:50:00.000Z",
+     "ended": null,
+     "exit": null,
+     "signal": null,
+     "outcome": null,
+     "stopRequested": null,
+     "group": null,
+     "log": null
+    },
+    "queue": {
+     "job": null,
+     "position": null,
+     "ahead": []
+    },
+    "inputs": {
+     "questions": [],
+     "answeredNotTakenUp": [],
+     "instructionsPending": 0
+    },
+    "waiting": null,
+    "progress": {
+     "seq": 31,
+     "at": "2026-10-14T05:59:59.000Z",
+     "op": "node.progress",
+     "by": "ppt-agent",
+     "attempt": "amw0ccccc-555555",
+     "attemptSeq": 25
+    },
+    "recoveries": [],
+    "publication": {
+     "failed": [],
+     "attention": [],
+     "pending": []
+    },
+    "integration": {
+     "queued": [],
+     "running": [],
+     "failed": [],
+     "refused": [],
+     "attention": []
+    },
+    "input": {
+     "kind": "braindump",
+     "requester": null,
+     "source": null
+    },
+    "unavailable": {
+     "process.group": "ps failed",
+     "process.log": "the attempt log cannot be read: EACCES"
+    }
+   }
+  ],
+  "problems": []
+ },
+ "expect": {
+  "rts-vs-bot/improve-game/run-007#6f7a8b9c0d1e2f30": {
+   "condition": "unobservable",
+   "incident": null,
+   "request": false
+  },
+  "ppt/freework/run-001#7a8b9c0d1e2f3041": {
+   "condition": "unobservable",
+   "incident": null,
+   "request": false
+  },
+  "executor": {
+   "condition": "executor-down",
+   "incident": {
+    "family": "executor",
+    "episode": "2026-10-14T05:49:48.000Z"
+   },
+   "request": false,
+   "affected": [
+    "ppt/freework/run-001#7a8b9c0d1e2f3041"
+   ]
+  }
+ }
+}

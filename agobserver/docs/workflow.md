@@ -1,0 +1,117 @@
+# Observer over workflows (observer p3)
+
+Observer watches workflow runs, not conversations. It reads WFE's observation
+(`wfe observe --json`, `agdevworld/workflow_editor/docs/observation.md`),
+decides mechanically what is moving, waiting or stopped, opens one incident
+per interruption episode, asks a recovery recipient to investigate through
+Zulip, and records a recovery only when later observations show useful
+work. Front, `#front` conversations, traces and serving probes are not part
+of it.
+
+## Who does what
+
+| Party | Responsibility | Never |
+| --- | --- | --- |
+| WFE | run state, validated transitions (`run.recover`), the observation | infers liveness from silence |
+| Executor (autolab `wfexec`) | processes, the queue and slot, heartbeat, reconcile | decides a recovery |
+| Observer | discovery, classification, incidents, assignment and delivery, verification, its own health | changes a run, resumes, accepts, kills |
+| Recovery agent (`agops/recover` runs) | investigates the evidence and decides: continue (`wfe run recover`), repair the environment, or hand the question to a person | writes while the old attempt lives, replays side effects, accepts results |
+| Person | holds, answers, cancellation, acceptance, anything outside the recovery authority | — |
+| Watchdog (`agobserver.watchdog`, separate process) | Observer's loop and source freshness, the executor heartbeat, recovery backlog | depends on Observer's process |
+
+## Classification
+
+Each look classifies every observed run from its own facts. Elapsed time
+makes a suspicion, never a verdict.
+
+| Observation | Condition | Response |
+| --- | --- | --- |
+| `hold.human` (stopped), or an unanswered question to a person | `respected-hold`, `awaiting-person` | none; stays observed |
+| `node.wait` on an external reference | `awaiting-external` | none; observed, with its age |
+| `interrupted` / `unknown` hold, no recovery recorded for that attempt | `interrupted` | incident (family `attempt`) → recovery request |
+| an attempt open in the record, process gone or the attempt row ended | `lost-attempt` | grace for the executor's reconcile (180 s), then incident (family `attempt`) |
+| an attempt alive with an open tool call inside its declared timeout (+60 s), or log/CPU advancing | `working` | none |
+| an attempt alive, log silent ≥ 900 s, no open tool call within bounds, CPU not advancing | `uncertain` | probe again each look; after 300 s from first suspicion ask the local triage model; `waiting` postpones (30 min, doubling to 2 h, evidence must still match); `stalled`/`unclear` are told to the owners at 900 s; never a second writer |
+| ready work or an answer recorded and not taken up, no hold, no attempt, no queued job | `unowned` | grace 180 s (the executor's reconcile re-queues answers), then incident (family `continuation`) → recovery request |
+| a queued job behind a healthy executing attempt | `queued` | none (legitimate wait, `ahead` recorded) |
+| a queued job, slot free, executor healthy, not claimed for 300 s | `queue-stalled` | incident (family `queue`) → owners |
+| executor heartbeat older than 180 s | `executor-down` | one infrastructure incident naming every affected run → owners (independent route); no per-run requests |
+| failed/attention checkpoint, failed/refused/attention integration | `publication` / `integration` | separate incident; recovery may retry publication, never re-run work or accept |
+| `source.state` not ok, `ambiguous`, or the observation command failing | `unobservable` | observation problem recorded once; nothing concluded, nobody asked |
+| completed or cancelled with nothing outstanding | `terminal` | an open incident closes with that outcome |
+
+## Incident identity
+
+An incident is `(run uid, family, episode)`:
+
+| Family | Episode |
+| --- | --- |
+| `attempt` (interrupted, unknown, lost-attempt, uncertain) | the attempt id whose end (or silence) is the problem |
+| `continuation` | the record sequence at which the run became unowned |
+| `queue` | the job id |
+| `publication` | the checkpoint id |
+| `integration` | the integration row id |
+| `executor` | the last heartbeat time seen before the outage |
+
+The kind and its description are attributes: `lost-attempt` becoming
+`unknown` after the executor's reconcile is the same incident, and so is a
+different wording of the same evidence. Retry budgets belong to the
+incident and are never replenished by a re-description. A later attempt
+interrupted again is a new episode — and WFE's own `recover-budget` (2 per
+person-originated control) bounds the chain.
+
+## Records (`agobserver/.local/workflow/observer.sqlite`)
+
+| Record | Fields |
+| --- | --- |
+| incident | id, run uid, workspace, ref, family, episode, kind, state (`open`, `assigned`, `recovering`, `verifying`, `escalated`, `closed`), first suspicion, detected, next review, outcome (`restored`, `handed-off`, `completed`, `cancelled`, `held`, `false-alarm`, `withdrawn`, `escalated`), outcome evidence |
+| evidence | incident, observed at, observation digest, the run facts the decision used |
+| judgment | incident, evidence digest, verdict, model, prompt/input/transcript paths, invalidated |
+| assignment | incident, n (≤ 2), recipient, request text digest, journaled, delivery state (`owed` → `sending` → `sent` \| `failed` \| `uncertain`), message id, acknowledged by (recovery run uid), performed (`run.recover` seq), actor, outcome |
+| event | append-only log of every transition above |
+
+Workflow records and Git stay authoritative; these records say what
+Observer saw, asked and verified.
+
+## Recovery path
+
+1. **Journal, then send.** The assignment is written (`owed`), set to
+   `sending` before the post, `sent` with the message id after. A post that
+   may have gone out is looked for (the incident marker in the request topic)
+   before anything is posted again; a failed search keeps it `uncertain`.
+2. **Zulip request.** One `request-<incident>` topic in the channel of the
+   `agops/recover` workflow (`wf-agops.recover`), posted by Observer's bot.
+   WFE's intake accepts posts from configured agent requesters for named
+   workflows only (`zulip.json` `intake.agents`), and the post becomes a
+   recovery run (input kind `request`, requester Observer). The same post
+   never creates a second run (its receipt). The run's progress and result
+   are posted back into that topic by WFE's notifier.
+3. **Acknowledgement** is the recovery run existing with that post as its
+   source; **performance** is `run.recover` naming the incident in the target
+   run's history; **restoration** is a later observation showing the
+   continued attempt's agent reporting work (a progress, completion, a
+   question to a person, or the run completed) after the recovery. A new PID,
+   an ack or a promise is none of these.
+4. **Bounds.** At most 2 assignments per incident, the second after 30 min
+   without acknowledgement or with the recovery run ended without action.
+   A recovery run is never itself the target of a recovery request: an
+   incident on an `agops` run is told to the owners. Zulip failure is
+   recorded and retried with backoff; it never stops observation or erases
+   an assignment.
+5. **Outcomes.** `restored` (verified progress), `handed-off` (the recovery
+   agent recorded a question to a person, or left the run held with its
+   reasons), `completed` / `cancelled` / `held` (the run reached that state
+   by someone else's record), `false-alarm` (the next observation shows it
+   was never stopped), `escalated` (owners told; the incident stays open
+   until one of the others).
+
+## Sessions
+
+Run = the work; session = a retained harness conversation; attempt = one
+execution interval. The observation carries the attempt's session id when
+the log names one. Monitoring obligations attach to the run and incidents
+to attempts; a restart does not reset first suspicion, and two intervals
+sharing a session id are two attempts. An idle retained session can wait
+legitimately; it does not prove a process. The executor's attempt time
+budget (`wfexec` `timeout_seconds`, 4 h) is not a session lifetime and not a
+wait deadline.

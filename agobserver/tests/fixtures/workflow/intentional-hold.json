@@ -1,0 +1,265 @@
+{
+ "description": "An intentional hold: the person's stopped hold stays untouched while another project's run works in the slot.",
+ "observation": {
+  "schema": "ag.wfe-observation.v1",
+  "observedAt": "2026-10-14T05:25:00.000Z",
+  "host": "fixture-host",
+  "release": "fixture",
+  "executor": {
+   "state": "available",
+   "heartbeatAt": "2026-10-14T05:24:58.000Z",
+   "ageSeconds": 2.0,
+   "name": "autolab",
+   "pid": 68404,
+   "detail": "autolab; executing improve-game/run-006 (amw0aaaaa-111111)",
+   "slot": {
+    "attempt": "amw0aaaaa-111111",
+    "workspace": "rts-vs-bot",
+    "run": "improve-game/run-006",
+    "uid": "rts-vs-bot/improve-game/run-006#0f9e8d7c6b5a4932"
+   },
+   "queued": 0
+  },
+  "workspaces": [
+   {
+    "id": "jevlab",
+    "available": true,
+    "problem": null
+   },
+   {
+    "id": "rts-vs-bot",
+    "available": true,
+    "problem": null
+   }
+  ],
+  "runs": [
+   {
+    "identity": {
+     "project": "jevlab",
+     "workspace": "jevlab",
+     "workflow": "experiment",
+     "run": "run-001",
+     "creation": "a1b2c3d4e5f60718",
+     "uid": "jevlab/experiment/run-001#a1b2c3d4e5f60718",
+     "created": "2026-10-13T14:33:01.660Z",
+     "receipt": "request:fixture",
+     "branch": "wfe/jevlab/experiment/run-001"
+    },
+    "source": {
+     "state": "ok",
+     "problem": null,
+     "location": "copy",
+     "readAt": "2026-10-13T18:03:39.511Z",
+     "reads": 1,
+     "consistent": true
+    },
+    "seq": 11,
+    "updated": "2026-10-13T18:03:39.511Z",
+    "situation": "stopped",
+    "execution": {
+     "state": "in-progress",
+     "ready": [],
+     "active": [
+      "_plan"
+     ],
+     "failed": [],
+     "blocked": [],
+     "waiting": []
+    },
+    "hold": {
+     "kind": "stopped",
+     "since": "2026-10-13T15:59:36.327Z",
+     "by": "iwaag",
+     "human": true,
+     "reason": "iwaag asked (answer to q1): circumstances changed, please hold this experiment.",
+     "because": {
+      "kind": "answer",
+      "question": "q1",
+      "answer": 0,
+      "from": "iwaag"
+     }
+    },
+    "stop": null,
+    "cancelled": null,
+    "attempts": {
+     "count": 2,
+     "open": null,
+     "last": {
+      "id": "amv6v92d0-0a3066",
+      "outcome": "stopped",
+      "ended": "2026-10-13T15:59:36.327Z",
+      "detail": "process ended with exit code 143"
+     }
+    },
+    "process": null,
+    "queue": {
+     "job": null,
+     "position": null,
+     "ahead": []
+    },
+    "inputs": {
+     "questions": [],
+     "answeredNotTakenUp": [],
+     "instructionsPending": 0
+    },
+    "waiting": {
+     "reason": "held by iwaag: circumstances changed, please hold this experiment.",
+     "responsible": "person:iwaag",
+     "since": "2026-10-13T15:59:36.327Z"
+    },
+    "progress": {
+     "seq": 9,
+     "at": "2026-10-13T15:58:01.000Z",
+     "op": "question.ask",
+     "by": "jevlab-agent",
+     "attempt": "amv6v92d0-0a3066",
+     "attemptSeq": 6
+    },
+    "recoveries": [],
+    "publication": {
+     "failed": [],
+     "attention": [],
+     "pending": []
+    },
+    "integration": {
+     "queued": [],
+     "running": [],
+     "failed": [],
+     "refused": [],
+     "attention": []
+    },
+    "input": {
+     "kind": "braindump",
+     "requester": null,
+     "source": null
+    },
+    "unavailable": {}
+   },
+   {
+    "identity": {
+     "project": "rts-vs-bot",
+     "workspace": "rts-vs-bot",
+     "workflow": "improve-game",
+     "run": "run-006",
+     "creation": "0f9e8d7c6b5a4932",
+     "uid": "rts-vs-bot/improve-game/run-006#0f9e8d7c6b5a4932",
+     "created": "2026-10-13T14:33:01.660Z",
+     "receipt": "request:fixture",
+     "branch": "wfe/rts-vs-bot/improve-game/run-006"
+    },
+    "source": {
+     "state": "ok",
+     "problem": null,
+     "location": "copy",
+     "readAt": "2026-10-14T05:20:00.000Z",
+     "reads": 1,
+     "consistent": true
+    },
+    "seq": 14,
+    "updated": "2026-10-14T05:20:00.000Z",
+    "situation": "executing",
+    "execution": {
+     "state": "in-progress",
+     "ready": [],
+     "active": [
+      "implement"
+     ],
+     "failed": [],
+     "blocked": [],
+     "waiting": []
+    },
+    "hold": null,
+    "stop": null,
+    "cancelled": null,
+    "attempts": {
+     "count": 1,
+     "open": {
+      "id": "amw0aaaaa-111111",
+      "began": "2026-10-14T05:00:00.000Z",
+      "reason": "start",
+      "backend": "claude_code / anthropic/claude-sonnet-5",
+      "agent": "rts-agent"
+     },
+     "last": null
+    },
+    "process": {
+     "attempt": "amw0aaaaa-111111",
+     "state": "running",
+     "host": "fixture-host",
+     "local": true,
+     "pid": 81234,
+     "alive": true,
+     "began": "2026-10-14T05:00:00.000Z",
+     "ended": null,
+     "exit": null,
+     "signal": null,
+     "outcome": null,
+     "stopRequested": null,
+     "group": {
+      "members": 3,
+      "cpuSeconds": 41.2
+     },
+     "log": {
+      "last": "2026-10-14T05:24:50.000Z",
+      "bytes": 90233,
+      "turns": 22,
+      "session": "1a2b3c4d-fixture",
+      "problem": null,
+      "openTool": null
+     }
+    },
+    "queue": {
+     "job": null,
+     "position": null,
+     "ahead": []
+    },
+    "inputs": {
+     "questions": [],
+     "answeredNotTakenUp": [],
+     "instructionsPending": 0
+    },
+    "waiting": null,
+    "progress": {
+     "seq": 14,
+     "at": "2026-10-14T05:20:00.000Z",
+     "op": "node.progress",
+     "by": "rts-agent",
+     "attempt": "amw0aaaaa-111111",
+     "attemptSeq": 2
+    },
+    "recoveries": [],
+    "publication": {
+     "failed": [],
+     "attention": [],
+     "pending": []
+    },
+    "integration": {
+     "queued": [],
+     "running": [],
+     "failed": [],
+     "refused": [],
+     "attention": []
+    },
+    "input": {
+     "kind": "braindump",
+     "requester": null,
+     "source": null
+    },
+    "unavailable": {}
+   }
+  ],
+  "problems": []
+ },
+ "expect": {
+  "jevlab/experiment/run-001#a1b2c3d4e5f60718": {
+   "condition": "respected-hold",
+   "incident": null,
+   "request": false
+  },
+  "rts-vs-bot/improve-game/run-006#0f9e8d7c6b5a4932": {
+   "condition": "working",
+   "incident": null,
+   "request": false
+  }
+ }
+}
