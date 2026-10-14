@@ -78,9 +78,10 @@ class Settings:
         return (str(wf),) if wf else ()
 
 
-def wfe_observe(cmd: list[str], runs: list[str] | None = None, timeout: float = 90.0) -> tuple[dict | None, str | None]:
-    """The observation, or why there is none. Never raises."""
-    argv = [*cmd, "observe", "--json", *[a for r in runs or [] for a in ("--run", r)]]
+def wfe_observe(cmd: list[str], runs: list[str] | None = None, timeout: float = 90.0, workspace: str | None = None) -> tuple[dict | None, str | None]:
+    """The observation, or why there is none. Never raises. With `workspace`,
+    every run of that workspace, settled ones included (`--terminal`)."""
+    argv = [*cmd, "observe", "--json", *[a for r in runs or [] for a in ("--run", r)], *(["--workspace", workspace, "--terminal"] if workspace else [])]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except Exception as error:  # noqa: BLE001
@@ -150,7 +151,7 @@ class WorkflowMonitor:
         self.s = settings
         self.store = store
         self.poster = poster
-        self.observe = observe or (lambda runs=None: wfe_observe(settings.wfe, runs))
+        self.observe = observe or (lambda runs=None, workspace=None: wfe_observe(settings.wfe, runs, workspace=workspace))
         self.judge = judge
         self.recoverer = recoverer
         self.health_path = health_path
@@ -161,6 +162,7 @@ class WorkflowMonitor:
         self.source = {"state": "unknown", "last_ok_at": None, "failed_since": None, "reason": None, "release": None}
         self.latest_failure: dict[str, Any] | None = None
         self.last_findings: dict[str, wc.Finding] = {}
+        self.last_doc: dict = {}
         self.spent = {"judgments": 0, "posts": 0}
 
     # ---- posting --------------------------------------------------------------------
@@ -210,7 +212,18 @@ class WorkflowMonitor:
                                                          if (r["identity"]["workspace"], f"{r['identity']['workflow']}/{r['identity']['run']}") not in seen]
             elif err:
                 self.log(f"observing tracked runs failed: {err}")
+        # Recovery runs end quickly and are then settled: while assignments are
+        # open, the recovery workspace is observed whole so their runs are seen.
+        rws = (self.s.recovery or {}).get("workspace")
+        if self.recoverer is not None and rws and self.store.open_assignments():
+            extra, err = self.observe(None, workspace=str(rws))
+            if extra:
+                have = {(r["identity"]["workspace"], f"{r['identity']['workflow']}/{r['identity']['run']}") for r in doc.get("runs") or []}
+                doc["runs"] = (doc.get("runs") or []) + [r for r in extra.get("runs") or [] if (r["identity"]["workspace"], f"{r['identity']['workflow']}/{r['identity']['run']}") not in have]
+            elif err:
+                self.log(f"observing the recovery workspace failed: {err}")
         self.source.update(state="live", last_ok_at=now, failed_since=None, reason=None, release=doc.get("release"))
+        self.last_doc = doc
         findings, executor = wc.classify(doc, now, self.timing, self.store.cpu_samples(), self.s.recovery_workflows)
         for r in doc.get("runs") or []:
             p = r.get("process") or {}
@@ -245,7 +258,7 @@ class WorkflowMonitor:
         if self.poster is None:
             return
         try:
-            done = self.poster.flush(now)
+            done = self.poster.flush(max(now, self.clock()))  # what this look enqueued goes out in this look
             self.spent["posts"] += done.get("sent", 0)
         except Exception as error:  # noqa: BLE001 - delivery failure never stops observation
             self.log(f"posting failed: {error!r}")

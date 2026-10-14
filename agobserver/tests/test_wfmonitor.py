@@ -110,7 +110,11 @@ class FakeZulip:
         self.lose_answer = False
         self.next_id = 1000
 
+    down = False
+
     def _post(self, **m) -> int:
+        if self.down:
+            raise TimeoutError("Zulip is down")
         if self.fail_next is not None:
             e, self.fail_next = self.fail_next, None
             raise e
@@ -128,6 +132,8 @@ class FakeZulip:
         return self._post(kind="dm", to=user_ids, content=content)
 
     def topic_history(self, channel, topic, num_before=50):
+        if self.down:
+            raise TimeoutError("Zulip is down")
         return [m for m in self.sent if m.get("channel") == channel and m.get("topic") == topic]
 
     def dm_history(self, user_ids, num_before=50):
@@ -166,7 +172,7 @@ def make(tmp_path, docs, clock, judge=None, store=None, zulip=None):
     zulip = zulip or FakeZulip()
     state = {"docs": docs}
 
-    def observe(runs=None):
+    def observe(runs=None, workspace=None):
         doc = state["docs"]() if callable(state["docs"]) else state["docs"]
         if doc is None:
             return None, "wfe observe exited 1: registry unreadable"
@@ -281,7 +287,7 @@ def test_an_uncertain_attempt_is_judged_and_a_legitimate_wait_postpones_without_
     # The attempt writes again: the incident closes as a false alarm.
     moving = copy.deepcopy(doc)
     moving["runs"][0]["process"]["log"]["last"] = time_iso(clock.t - 5)
-    m.observe = lambda runs=None: (copy.deepcopy(moving), None)
+    m.observe = lambda runs=None, workspace=None: (copy.deepcopy(moving), None)
     m.look()
     assert store.incident(inc["id"])["outcome"] == "false-alarm"
 
@@ -310,7 +316,7 @@ def test_a_judged_stall_is_told_to_the_owners_at_its_bound_and_a_verdict_on_move
     # The evidence moves (CPU sample changes the digest) before the verdict arrives.
     moved = copy.deepcopy(doc)
     moved["runs"][0]["process"]["group"]["cpuSeconds"] = 43.0  # +1.8 s: work
-    m.observe = lambda runs=None: (copy.deepcopy(moved), None)
+    m.observe = lambda runs=None, workspace=None: (copy.deepcopy(moved), None)
     clock.t += 60
     judge.queue.append(judge.held)
     m.look()
@@ -319,7 +325,7 @@ def test_a_judged_stall_is_told_to_the_owners_at_its_bound_and_a_verdict_on_move
     # Silent again with a stall verdict: told to the owners once the bound is reached.
     judge2 = FakeJudge("stalled")
     m.judge = judge2
-    m.observe = lambda runs=None: (copy.deepcopy(moved), None)
+    m.observe = lambda runs=None, workspace=None: (copy.deepcopy(moved), None)
     for _ in range(20):
         clock.t += 60
         m.look()
@@ -350,7 +356,7 @@ def test_executor_outage_is_one_incident_naming_the_affected_runs(tmp_path):
     healthy = copy.deepcopy(doc)
     healthy["executor"].update(state="available", ageSeconds=2.0, heartbeatAt=time_iso(clock.t))
     healthy["runs"] = [queued]
-    m.observe = lambda runs=None: (copy.deepcopy(healthy), None)
+    m.observe = lambda runs=None, workspace=None: (copy.deepcopy(healthy), None)
     m.look()
     assert store.incident(incidents[0]["id"])["outcome"] == "resumed"
 

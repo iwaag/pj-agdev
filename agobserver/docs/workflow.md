@@ -132,7 +132,12 @@ channel = "agobserver-agstudio1"  # incident topics: incident-<id>
 interval_seconds = 60
 judge = true                      # local-model judgments (role wftriage)
 [timing]                          # optional overrides for trials (seconds; wfclassify.TIMING)
-[recovery]                        # the recovery path (step 4)
+[recovery]                        # the recovery path (wfrecover)
+enabled = true
+workflow = "agops/recover"        # <project>/<workflow> of the recovery recipient
+channel = "wf-agops.recover"      # its Zulip channel (request-<incident> topics)
+workspace = "agops"               # observed whole (--terminal) while assignments are open
+# ack_timeout = 1800, max_assignments = 2, verify_timeout = 3600
 ```
 
 Store: `.local/workflow/observer.sqlite`; health: `.local/workflow-health.json`

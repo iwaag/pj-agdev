@@ -1,0 +1,33 @@
+# Workflow definition (ag.workflow.v2). Edit here or in the workflow editor.
+schema: ag.workflow.v2
+id: recover
+name: Recover
+intent: |
+  Investigate one incident Observer found in another workflow run (an
+  interrupted attempt, work nothing continues, a failed publication) and
+  decide, from that run's records, copy and evidence, whether its work can
+  continue safely: continue it (wfe run recover), repair what stops it, or
+  leave it held with what a person must decide. The request names the
+  incident, the run and the evidence. Nothing is resumed on a person's
+  behalf and no result is accepted.
+documentation:
+  policy: manual
+execution:
+  agent: recovery-agent
+  profile: sonnet
+  guides: [agent/guide.md]
+intake:
+  zulip: requests
+repositories:
+  root: {path: ., access: readonly}
+nodes:
+  investigate:
+    type: do
+    name: Investigate and decide
+    description: |
+      Read the incident and the target run's evidence, look at its record,
+      attempts, log, working copy and anything outside Git the interrupted
+      attempt may have touched; then continue the run, repair the obstacle,
+      or leave it to a person. Write report.md in this run's folder: what was
+      checked, what was found, what was done and why.
+edges: []
