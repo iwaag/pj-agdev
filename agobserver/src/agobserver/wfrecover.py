@@ -64,7 +64,7 @@ def request_text(inc, f: wc.Finding, n: int) -> str:
         "and any effect outside Git the attempt may have caused. Git history cannot prove that an external operation did not happen.",
         "",
         "Then do one of:",
-        f"- continue it: `wfe run recover {ref} --workspace {ws} --incident {inc['id']} --attempt {last.get('id') or 'none'} --reason \"<what you checked>\"` (see `wfe run help recover`);",
+        f"- continue it: `wfe run recover {ref} --workspace {ws} --incident {inc['id']} --attempt {(f.episode if inc['family'] == 'attempt' else last.get('id')) or 'none'} --reason \"<what you checked>\"` (see `wfe run help recover`);",
         "- repair what stops it (a failed publication: `wfe exec publish <checkpoint>`; an executor problem: say so) and say what you did;",
         "- or leave it to a person: say in your report what they must decide (a scope change, an external effect that may have happened).",
         "",
@@ -116,6 +116,8 @@ class Recoverer:
                 continue  # verification decides
             if executor is not None:
                 continue  # a recovery run would need the executor; its incident is told to the owners
+            if f.condition == "lost-attempt":
+                continue  # the record still has the attempt open: the executor ends it first (then interrupted/unknown)
             rows = m.store.assignments(inc["id"])
             if not rows:
                 self.assign(m, inc, f, 1, now)

@@ -290,3 +290,27 @@ def test_an_uncertain_attempt_confirmed_lost_moves_to_the_recovery_path(tmp_path
     (same,) = store.open_incidents()
     assert same["id"] == inc["id"] and same["recover"] == 1
     assert len(requests(zulip)) == 1, "now the recovery path takes it"
+
+
+def test_a_lost_attempt_is_assigned_only_once_the_record_holds_it_and_names_that_attempt(tmp_path):
+    doc = copy.deepcopy(fixture("intentional-hold.json")["observation"])
+    doc["runs"] = [doc["runs"][1]]
+    doc["runs"][0]["process"].update(alive=False)
+    clock = Clock(ts(doc["observedAt"]))
+    m, store, zulip, state = make(tmp_path, clock)
+    state["doc"] = doc
+    for _ in range(5):
+        m.look()
+        clock.t += 60
+    (inc,) = store.open_incidents()
+    assert inc["condition"] == "lost-attempt" and requests(zulip) == [], "not while the record still has the attempt open"
+    held = copy.deepcopy(doc)
+    r = held["runs"][0]
+    a = r["attempts"]["open"]["id"]
+    r["attempts"] = {"count": 1, "beganSeq": 2, "open": None, "last": {"id": a, "outcome": "unknown", "ended": time_iso(clock.t), "detail": "gone"}}
+    r["hold"] = {"kind": "unknown", "since": time_iso(clock.t), "by": "autolab", "human": False, "reason": "gone", "because": None}
+    r["situation"] = "unknown"
+    state["doc"] = held
+    m.look()
+    (req,) = requests(zulip)
+    assert f"--attempt {a}" in req["content"]
