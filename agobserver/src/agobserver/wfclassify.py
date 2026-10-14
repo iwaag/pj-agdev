@@ -87,7 +87,11 @@ def _compact(run: dict) -> dict[str, Any]:
         "active": (run.get("execution") or {}).get("active"), "ready": (run.get("execution") or {}).get("ready"),
         "hold": run.get("hold"), "attempts": run.get("attempts"), "waiting": run.get("waiting"),
         "progress": run.get("progress"), "queue": (run.get("queue") or {}).get("job"),
-        "process": {k: p.get(k) for k in ("attempt", "state", "alive", "pid", "began", "ended", "exit", "signal", "outcome", "group")} if p else None,
+        "process": {k: p.get(k) for k in ("attempt", "state", "alive", "pid", "began", "ended", "exit", "signal", "outcome", "group", "session")} if p else None,
+        # agent_session p1: the run's session policy and current session, from
+        # the record. Evidence only: a retained session is no process and its
+        # age is no stall timer; incidents stay per attempt.
+        "session": run.get("session"),
         "log": {k: log.get(k) for k in ("last", "turns", "session", "openTool", "ended", "backgroundStopped")} if log else None,
         "source": run.get("source"), "problems": run.get("problems"), "unavailable": run.get("unavailable"),
         "recoveries": run.get("recoveries"), "publication": run.get("publication"), "integration": run.get("integration"),

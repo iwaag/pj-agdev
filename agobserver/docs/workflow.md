@@ -128,15 +128,23 @@ Monitoring obligations attach to the run and incidents to attempts:
   `wfrun` guide's foreground-wait rule stands until the job-lifetime
   contract changes.
 
-**The attempt time budget is not a session lifetime.** Today `wfexec`
-stops an attempt after `timeout_seconds` (4 h, `.local/wfexec.toml`), one
-process per attempt, one fresh session per process. When agent_session p1
-reuses a session across attempts, the budget must stay per execution
-interval (an attempt), a wait must keep its own deadline (`node.wait
---deadline`), and the attempt should carry the session it resumed in its
-record (`attempt.begin` settings) so the observation reads it from the
-record rather than from the log. Delegation will add parent/child run and
-result-wait references; until then no conversation ancestry is inferred.
+**The attempt time budget is not a session lifetime** (agent_session p1).
+`wfexec` stops an attempt after `timeout_seconds` (4 h), one process per
+attempt. Under a workflow's `run` session policy later attempts resume the
+run's retained conversation, and the budget stays per execution interval: a
+retained session holds no slot and no process while it waits, and its age is
+no stall timer. A wait keeps its own deadline (`node.wait --deadline`).
+The observation reads the session from the record: `session` (policy, the
+current session with its attempts, the last replaced/retired ones and why)
+and `process.session` (the session the attempt ran in, and whether it was
+resumed); the log's `session` is supporting evidence. Both go into an
+incident's evidence. The recovery request names the policy and the sessions,
+and under `run` says how to retire the conversation (`wfe run session <run>
+--retire`) when it should not be carried on; a continued run otherwise
+resumes it with the recovery finding in its brief. Replacing or retiring a
+session resets no recovery budget (only a person's control does).
+Delegation will add parent/child run and result-wait references; until then
+no conversation ancestry is inferred.
 
 ## Retired (observer p3 step 5)
 

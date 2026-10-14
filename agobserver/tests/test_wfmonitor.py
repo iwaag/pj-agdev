@@ -524,3 +524,27 @@ def test_an_unreadable_copy_that_is_readable_again_closes_its_observation_incide
     clock.t += 60
     m.look()
     assert store.incident(inc["id"])["outcome"] == "resumed"
+
+
+# ---- recorded sessions (agent_session p1) --------------------------------------------------
+
+def test_recorded_session_is_evidence_and_reaches_the_recovery_request(tmp_path):
+    from agobserver import wfrecover
+    clock = Clock(ts("2026-10-14T05:00:00Z"))
+    doc = interrupted_doc("a-second", "session-A", "2026-10-14T05:00:00.000Z")
+    r = doc["runs"][0]
+    r["session"] = {"policy": "run", "current": {"id": "session-A", "began": "2026-10-14T04:00:00.000Z", "attempts": ["a-first", "a-second"], "attached": "session-A", "mismatch": False}, "count": 1, "ended": []}
+    r["process"]["session"] = {"id": "session-A", "resumed": True}
+    m, store, zulip, state = make(tmp_path, doc, clock)
+    m.look()
+    (inc,) = store.open_incidents()
+    ev = json.loads(inc["evidence"])
+    assert ev["session"]["policy"] == "run" and ev["process"]["session"] == {"id": "session-A", "resumed": True}
+    assert inc["id"] == wc.incident_id(inc["uid"], "attempt", "a-second"), "the incident is the attempt's, not the session's"
+    text = wfrecover.request_text(inc, wc.Finding(**{**{k: None for k in wc.Finding.__dataclass_fields__}, "uid": inc["uid"], "family": "attempt", "episode": "a-second", "condition": "interrupted", "fact": "x", "evidence": ev}), 1)
+    assert "session policy `run`" in text and "(resumed)" in text
+    assert "--retire" in text, "the recovery agent learns how to start the next attempt in a new session"
+    # Fresh runs say their policy and no retirement advice.
+    ev["session"]["policy"] = "fresh"
+    text = wfrecover.request_text(inc, wc.Finding(**{**{k: None for k in wc.Finding.__dataclass_fields__}, "uid": inc["uid"], "family": "attempt", "episode": "a-second", "condition": "interrupted", "fact": "x", "evidence": ev}), 1)
+    assert "session policy `fresh`" in text and "--retire" not in text

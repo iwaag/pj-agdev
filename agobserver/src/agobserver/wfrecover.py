@@ -58,6 +58,7 @@ def request_text(inc, f: wc.Finding, n: int) -> str:
         f"- its process: alive={proc.get('alive')}, exit={proc.get('exit')}, signal={proc.get('signal')}",
         f"- its session log: last write {log.get('last')}, turns {log.get('turns')}, the harness ended the session: {json.dumps(log.get('ended'))}, background tasks stopped with it: {log.get('backgroundStopped')}",
         f"- the agent's last report: {json.dumps(ev.get('progress'), ensure_ascii=False)}",
+        *session_lines(ev, ref, ws),
         f"- running nodes: {ev.get('active')}; ready: {ev.get('ready')}; earlier recoveries: {len(ev.get('recoveries') or [])}",
         f"- unpublished checkpoints / integration: {json.dumps(ev.get('publication'))} / {json.dumps(ev.get('integration'))}",
         "",
@@ -74,6 +75,25 @@ def request_text(inc, f: wc.Finding, n: int) -> str:
         "You never resume a person's hold, accept a result, answer a question for the person, or change the run's plan.",
     ]
     return "\n".join(lines)
+
+
+def session_lines(ev: dict, ref: str, ws: str) -> list[str]:
+    """The run's session facts for the recovery agent (agent_session p1).
+    Under `run` a continued run resumes its retained conversation with your
+    finding in its brief; when that conversation should not be carried on,
+    it can be retired first."""
+    ses = ev.get("session") or {}
+    if not ses:
+        return []
+    cur = ses.get("current") or {}
+    attempt_session = (ev.get("process") or {}).get("session") or {}
+    out = [f"- session policy `{ses.get('policy')}`; the ended attempt ran in session `{attempt_session.get('id')}`"
+           f" ({'resumed' if attempt_session.get('resumed') else 'new'}); the run's current session: `{cur.get('id')}` over {len(cur.get('attempts') or [])} attempt(s)"]
+    if ses.get("policy") == "run":
+        out.append(f"- continuing resumes that conversation (unless its configuration changed or it is missing on the host); "
+                   f"if it should not be carried on (a resume keeps failing, or it holds a wrong belief), retire it first: "
+                   f"`wfe run session {ref} --workspace {ws} --retire --reason \"<why>\" --by <you>` — the next attempt then starts a new session from the records")
+    return out
 
 
 class Recoverer:
