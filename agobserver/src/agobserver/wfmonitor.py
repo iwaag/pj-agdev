@@ -279,6 +279,11 @@ class WorkflowMonitor:
             if (inc["kind"], inc["condition"], inc["fact"]) != (f.kind, f.condition, f.fact):
                 self.store.update(iid, kind=f.kind, condition=f.condition, fact=f.fact, evidence=f.evidence, affected=f.affected)
                 self.store.event(iid, "redescribed", {"condition": f.condition, "kind": f.kind, "fact": f.fact})
+            if f.recover and not inc["recover"]:
+                # The same episode became recoverable (an uncertain attempt is now
+                # a confirmed loss): the recovery path takes it, even after the owners were told.
+                self.store.update(iid, recover=1, state="open" if inc["state"] == "escalated" else inc["state"])
+                self.store.event(iid, "recoverable", {"condition": f.condition})
             self.progress(self.store.incident(iid), f, now)
             return
         first = self.store.suspect(iid, f.uid, f.family, f.episode, f.condition, now)

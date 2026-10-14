@@ -263,3 +263,30 @@ def test_nothing_is_assigned_while_the_executor_is_down(tmp_path):
     clock.t += 60
     m.look()
     assert len(requests(zulip)) == 1
+
+
+def test_an_uncertain_attempt_confirmed_lost_moves_to_the_recovery_path(tmp_path):
+    doc = copy.deepcopy(fixture("intentional-hold.json")["observation"])
+    doc["runs"] = [doc["runs"][1]]
+    t0 = ts(doc["runs"][0]["process"]["log"]["last"]) + 2000
+    clock = Clock(t0)
+    m, store, zulip, state = make(tmp_path, clock)
+    state["doc"] = doc
+    for _ in range(20):  # uncertain, no judge: told to the owners at its bound; never a recovery while the process lives
+        m.look()
+        clock.t += 60
+    (inc,) = store.open_incidents()
+    assert inc["state"] == "escalated" and requests(zulip) == []
+    # The process is gone and the executor ends the attempt: interrupted, the same episode.
+    gone = copy.deepcopy(doc)
+    r = gone["runs"][0]
+    attempt = r["attempts"]["open"]["id"]
+    r["attempts"] = {"count": 1, "beganSeq": 2, "open": None, "last": {"id": attempt, "outcome": "interrupted", "ended": time_iso(clock.t), "detail": "process ended with signal SIGKILL"}}
+    r["hold"] = {"kind": "interrupted", "since": time_iso(clock.t), "by": "autolab", "human": False, "reason": "process ended with signal SIGKILL", "because": None}
+    r["situation"] = "interrupted"
+    r["process"].update(state="ended", alive=False)
+    state["doc"] = gone
+    m.look()
+    (same,) = store.open_incidents()
+    assert same["id"] == inc["id"] and same["recover"] == 1
+    assert len(requests(zulip)) == 1, "now the recovery path takes it"
