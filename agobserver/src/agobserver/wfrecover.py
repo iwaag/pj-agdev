@@ -89,7 +89,13 @@ def session_lines(ev: dict, ref: str, ws: str) -> list[str]:
     attempt_session = (ev.get("process") or {}).get("session") or {}
     out = [f"- session policy `{ses.get('policy')}`; the ended attempt ran in session `{attempt_session.get('id')}`"
            f" ({'resumed' if attempt_session.get('resumed') else 'new'}); the run's current session: `{cur.get('id')}` over {len(cur.get('attempts') or [])} attempt(s)"]
-    if ses.get("policy") == "run":
+    if ses.get("policy") == "run" and cur.get("mismatch"):
+        # agent_session p1 ex1: the harness reported another conversation than
+        # the one the attempt was launched in; the host stopped the attempt.
+        out.append(f"- that session is UNVERIFIED: the harness reported `{cur.get('attached')}` instead of `{cur.get('id')}`, so the execution host stopped the attempt. "
+                   f"Continuing is refused until it is retired; look at the run and what that attempt did first, then "
+                   f"`wfe run session {ref} --workspace {ws} --retire --reason \"<what you found>\" --by <you>` — the next attempt starts a new session from the records")
+    elif ses.get("policy") == "run":
         out.append(f"- continuing resumes that conversation (unless its configuration changed or it is missing on the host); "
                    f"if it should not be carried on (a resume keeps failing, or it holds a wrong belief), retire it first: "
                    f"`wfe run session {ref} --workspace {ws} --retire --reason \"<why>\" --by <you>` — the next attempt then starts a new session from the records")

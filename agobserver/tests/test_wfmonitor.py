@@ -544,6 +544,10 @@ def test_recorded_session_is_evidence_and_reaches_the_recovery_request(tmp_path)
     text = wfrecover.request_text(inc, wc.Finding(**{**{k: None for k in wc.Finding.__dataclass_fields__}, "uid": inc["uid"], "family": "attempt", "episode": "a-second", "condition": "interrupted", "fact": "x", "evidence": ev}), 1)
     assert "session policy `run`" in text and "(resumed)" in text
     assert "--retire" in text, "the recovery agent learns how to start the next attempt in a new session"
+    # A mismatched session (agent_session p1 ex1) is named as unverified, with both ids.
+    ev["session"]["current"] = {**ev["session"]["current"], "attached": "session-B", "mismatch": True}
+    text = wfrecover.request_text(inc, wc.Finding(**{**{k: None for k in wc.Finding.__dataclass_fields__}, "uid": inc["uid"], "family": "attempt", "episode": "a-second", "condition": "interrupted", "fact": "x", "evidence": ev}), 1)
+    assert "UNVERIFIED" in text and "`session-B`" in text and "Continuing is refused until it is retired" in text and "--retire" in text
     # Fresh runs say their policy and no retirement advice.
     ev["session"]["policy"] = "fresh"
     text = wfrecover.request_text(inc, wc.Finding(**{**{k: None for k in wc.Finding.__dataclass_fields__}, "uid": inc["uid"], "family": "attempt", "episode": "a-second", "condition": "interrupted", "fact": "x", "evidence": ev}), 1)
