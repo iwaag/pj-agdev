@@ -413,3 +413,91 @@ def test_a_post_whose_answer_was_lost_is_found_not_repeated(tmp_path):
     assert len(zulip.sent) == 1
     poster.flush(300.0)
     assert len(zulip.sent) == 2 and "obs x 2" in zulip.sent[-1]["content"]
+
+
+# ---- sessions are not attempts (observer p3 step 5) -------------------------------------------
+
+def interrupted_doc(attempt: str, session: str, at: str) -> dict:
+    doc = copy.deepcopy(fixture("interrupted-lost-retry.json")["observation"])
+    r = doc["runs"][0]
+    r["attempts"]["last"]["id"] = attempt
+    r["hold"]["since"] = at
+    r["process"].update(attempt=attempt)
+    r["process"]["log"]["session"] = session
+    doc["observedAt"] = at
+    return doc
+
+
+def test_a_fresh_session_and_two_intervals_sharing_one_session_are_two_episodes(tmp_path):
+    clock = Clock(ts("2026-10-14T05:00:00Z"))
+    first = interrupted_doc("a-first", "session-A", "2026-10-14T05:00:00.000Z")
+    m, store, zulip, state = make(tmp_path, first, clock)
+    m.look()
+    (i1,) = store.open_incidents()
+    assert json.loads(i1["evidence"])["log"]["session"] == "session-A"
+    # A later interval of the same retained session is interrupted too: its own
+    # episode (attempt), its own first suspicion — a session id does not merge them.
+    clock.t += 3600
+    second = interrupted_doc("a-second", "session-A", "2026-10-14T06:00:00.000Z")
+    state["docs"] = second
+    m.look()
+    i2 = store.incident(wc.incident_id(i1["uid"], "attempt", "a-second"))
+    assert i2 is not None and i2["id"] != i1["id"]
+    assert i2["first_suspected"] > i1["first_suspected"]
+    assert store.incident(i1["id"])["state"] == "closed", "the first episode ended when the run moved past it"
+    # A fresh session in a third interval: again an episode of its attempt.
+    clock.t += 3600
+    third = interrupted_doc("a-third", "session-B", "2026-10-14T07:00:00.000Z")
+    state["docs"] = third
+    m.look()
+    assert store.incident(wc.incident_id(i1["uid"], "attempt", "a-third")) is not None
+
+
+def test_a_process_restart_within_an_attempt_neither_opens_an_incident_nor_resets_its_age(tmp_path):
+    doc = silent_run_doc()
+    t0 = ts(doc["runs"][0]["process"]["log"]["last"]) + 1000
+    clock = Clock(t0)
+    m, store, _, state = make(tmp_path, doc, clock)
+    m.look()
+    (inc,) = store.open_incidents()
+    restarted = copy.deepcopy(doc)
+    restarted["runs"][0]["process"]["pid"] = 99999  # the same attempt, another process (a future session resume)
+    state["docs"] = restarted
+    clock.t += 60
+    m.look()
+    (same,) = store.open_incidents()
+    assert same["id"] == inc["id"] and same["first_suspected"] == inc["first_suspected"]
+
+
+def test_legacy_state_is_archived_with_an_inventory_and_nothing_replayed(tmp_path):
+    from agobserver.retire_legacy import retire
+
+    local = tmp_path / "local"
+    (local / "incidents").mkdir(parents=True)
+    (local / "watches").mkdir()
+    (local / "incidents" / "abc.json").write_text(json.dumps({"state": "reported", "kind": "silent", "topic": "incident-silent-1"}))
+    (local / "incidents" / "tracked.json").write_text("{}")
+    (local / "watches" / "w1.json").write_text(json.dumps({"state": "met", "delivered": {"id": 5}}))
+    (local / "monitor-health.json").write_text("{}")
+    dry = retire(local, dry_run=True, now=1_800_000_000)
+    assert (local / "incidents").exists() and dry["replayed"] is False
+    rec = retire(local, now=1_800_000_000)
+    archive = local / rec["archive"]
+    assert not (local / "incidents").exists() and (archive / "incidents" / "abc.json").exists()
+    assert json.loads((archive / "retirement.json").read_text())["inventory"]["incidents"][0]["state"] == "reported"
+    assert rec["inventory"]["open"] == {"incidents": [], "watches": []}
+
+
+def test_each_successful_look_writes_the_liveness_status_nodeutils_reads(tmp_path, monkeypatch):
+    status = tmp_path / "agag-status.json"
+    monkeypatch.setenv("AGAG_STATUS_PATH", str(status))
+    doc = fixture("normal-wait.json")["observation"]
+    clock = Clock(ts(doc["observedAt"]))
+    m, _, _, state = make(tmp_path, doc, clock)
+    m.look()
+    s1 = json.loads(status.read_text())
+    assert s1["schema"] == "agag.status.v1" and s1["last_poll_ok"].startswith("2026-10-14T04:40")
+    state["docs"] = None  # the observation fails: liveness is not renewed
+    clock.t += 60
+    m.look()
+    assert json.loads(status.read_text())["last_poll_ok"] == s1["last_poll_ok"]

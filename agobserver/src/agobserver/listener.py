@@ -41,11 +41,10 @@ def main() -> None:
         deliver=lambda client, watch, record: notify.deliver(SPEC, client, watch, record),
         mirror=mirror,
     )
-    # The second clock (`robust_workflow` p1 step 4): every active request,
-    # looked at without anybody registering a watch for it.
-    from . import monitor
-
-    monitor.start(SPEC, mirror)
+    # The conversation monitor (`robust_workflow` p1 – `failsafe` p7) is gone
+    # since observer p3: workflow runs are watched by `agobserver.wfmonitor`,
+    # its own process. This listener (the watch entrance) is kept as a library
+    # and is not started by default.
     from .argue import handle_mention
 
     # The mention route answers argue invitations only (`agobserver.argue`);

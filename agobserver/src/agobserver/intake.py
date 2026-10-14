@@ -269,6 +269,11 @@ def _needs_input(
     return TopicResult([question], meta=PostMeta(intent=RESPONSE_REQUEST, ask="question"))
 
 
+def is_incident_topic(topic: str) -> bool:
+    """Observer's incident records (`incident-<id>`, ✔ or not) are not watches."""
+    return topic.removeprefix("✔ ").startswith("incident-")
+
+
 def handle_watch(spec: AgentSpec, client: ZulipClient, channel: str, topic: str) -> None:
     """Serve one watch topic through the shared skeleton.
 
@@ -276,10 +281,8 @@ def handle_watch(spec: AgentSpec, client: ZulipClient, channel: str, topic: str)
     module docstring — this is the one line that keeps an accepted watch from
     costing the requester a run.
     """
-    from .monitor import is_incident_topic
-
     if is_incident_topic(topic):
-        # An incident record (`agobserver.monitor`) is Observer's own report,
+        # An incident record (`agobserver.wfmonitor`) is Observer's own report,
         # not a watch request: a human writing in it is read by humans.
         log(f"{channel!r}/{topic!r} is an incident record, not a watch; not served")
         return

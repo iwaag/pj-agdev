@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Observer over workflow runs (observer p3): wfe observe every 60 s,
+       incidents, recovery requests, workflow-health.json. Replaces
+       com.agdev.agobserver-zulip (the conversation monitor and the watch
+       entrance). -->
+  <key>Label</key><string>com.agdev.agobserver</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__PROJECTS_ROOT__/pj-agdev/agobserver/service/workflow.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>__PROJECTS_ROOT__/pj-agdev/agobserver</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- nodeutils reads Observer's liveness here (nctl agent intent): the
+         monitor writes agag.status.v1 after each look whose observation
+         came back. -->
+    <key>AGAG_STATUS_PATH</key><string>__PROJECTS_ROOT__/pj-agdev/.local/agag-status.json</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__PROJECTS_ROOT__/pj-agdev/agobserver/.local/out/workflow.log</string>
+  <key>StandardErrorPath</key><string>__PROJECTS_ROOT__/pj-agdev/agobserver/.local/out/workflow.log</string>
+</dict>
+</plist>

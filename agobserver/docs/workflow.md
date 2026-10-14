@@ -114,12 +114,45 @@ Observer saw, asked and verified.
 
 Run = the work; session = a retained harness conversation; attempt = one
 execution interval. The observation carries the attempt's session id when
-the log names one. Monitoring obligations attach to the run and incidents
-to attempts; a restart does not reset first suspicion, and two intervals
-sharing a session id are two attempts. An idle retained session can wait
-legitimately; it does not prove a process. The executor's attempt time
-budget (`wfexec` `timeout_seconds`, 4 h) is not a session lifetime and not a
-wait deadline.
+the log names one (`process.log.session`, from the harness's `init` event).
+Monitoring obligations attach to the run and incidents to attempts:
+
+- two intervals sharing a session id are two attempts, two episodes, each
+  with its own first suspicion (`test_a_fresh_session_and_two_intervals_…`);
+- a process restart within an attempt is the same episode and keeps its age
+  (`test_a_process_restart_within_an_attempt_…`);
+- an idle retained session can wait legitimately (a question, an external
+  result with a deadline); its existence does not prove a process, and its
+  waits are judged from the run's record, not from the session;
+- a background job does not become durable because a session is kept: the
+  `wfrun` guide's foreground-wait rule stands until the job-lifetime
+  contract changes.
+
+**The attempt time budget is not a session lifetime.** Today `wfexec`
+stops an attempt after `timeout_seconds` (4 h, `.local/wfexec.toml`), one
+process per attempt, one fresh session per process. When agent_session p1
+reuses a session across attempts, the budget must stay per execution
+interval (an attempt), a wait must keep its own deadline (`node.wait
+--deadline`), and the attempt should carry the session it resumed in its
+record (`attempt.begin` settings) so the observation reads it from the
+record rather than from the log. Delegation will add parent/child run and
+result-wait references; until then no conversation ancestry is inferred.
+
+## Retired (observer p3 step 5)
+
+The conversation monitor (`monitor`, its `triage`, `health` probes,
+`review`/`review_status`, `hold`, `disposition`, `withdraw`, `trial`) is
+removed with its tests: it discovered `#front` conversations, traced them,
+probed listener servings and asked Front to recover. The watch entrance
+(`listener`, `intake`, `worker`, `observe`, `notify`, `anchor`,
+`destination`, `store`) stays as a library and is not started.
+`python -m agobserver.retire_legacy [--dry-run]` archives the old local
+state (incidents, watches, health files) with an inventory, once, at the
+cutover; nothing is replayed and nothing is claimed complete. The process is
+`com.agdev.agobserver` (`service/workflow.sh`,
+`devenv/launchd/com.agdev.agobserver.plist.in`); it writes `agag.status.v1`
+to `AGAG_STATUS_PATH` after each look whose observation came back, which is
+how nodeutils and nctl see Observer alive.
 
 ## Running it
 

@@ -453,7 +453,26 @@ class WorkflowMonitor:
             "outbox": outbox_summary(self.store), "spent": dict(self.spent), "timing": self.timing,
         }
 
+    def write_status(self, now: float) -> None:
+        """`agag.status.v1` for nodeutils (agent liveness in nctl): the last look
+        whose observation came back stands for a poll that returned."""
+        path = os.environ.get("AGAG_STATUS_PATH")
+        if not path or self.source.get("state") != "live" or not self.source.get("last_ok_at"):
+            return
+        import datetime
+
+        doc = {"schema": "agag.status.v1", "queue_id": None, "last_error": self.source.get("reason"),
+               "last_poll_ok": datetime.datetime.fromtimestamp(float(self.source["last_ok_at"]), datetime.timezone.utc).isoformat()}
+        try:
+            tmp = Path(path).with_suffix(".tmp")
+            tmp.write_text(json.dumps(doc, sort_keys=True))
+            os.replace(tmp, path)
+        except OSError as error:
+            self.log(f"status not written: {error!r}")
+
     def write_health(self, now: float) -> None:
+        if not self.cycle["in_progress"]:
+            self.write_status(now)
         if self.health_path is None:
             return
         try:
@@ -513,13 +532,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Observer over workflow runs (observer p3)")
     parser.add_argument("--settings", type=Path, default=SPEC.local / "workflow.toml")
     parser.add_argument("--once", action="store_true", help="one look, then exit")
+    parser.add_argument("--state", type=Path, default=SPEC.local, help="where the store and the health record are (trials: a scratch directory)")
     args = parser.parse_args(argv)
     settings = Settings.load(args.settings)
 
     def log(message: str) -> None:
         print(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {message}", flush=True)
 
-    store = Store(SPEC.local / "workflow" / "observer.sqlite")
+    store = Store(args.state / "workflow" / "observer.sqlite")
     from agag.zulip import ZulipClient
 
     clients: dict[str, Any] = {}
@@ -540,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         from .wfrecover import Recoverer
 
         recoverer = Recoverer(settings.recovery, log=log)
-    monitor = WorkflowMonitor(settings, store, poster, judge=judge, recoverer=recoverer, health_path=SPEC.local / HEALTH_FILE, log=log)
+    monitor = WorkflowMonitor(settings, store, poster, judge=judge, recoverer=recoverer, health_path=args.state / HEALTH_FILE, log=log)
     if args.once:
         print(json.dumps(monitor.look(), indent=1, default=str))
         return 0
