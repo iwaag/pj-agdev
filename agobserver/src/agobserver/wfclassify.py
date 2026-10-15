@@ -35,10 +35,13 @@ TIMING = {
     "review_wait": 1800,       # a legitimate-wait verdict postpones the next judgment this long (doubling)
     "review_wait_max": 7200,
     "postpone_max": 6 * 3600,  # a wait judged legitimate for longer than this is told to the owners anyway
+    # workflow_editor p10 (delegation): the relay runs every 5 s (intake) and 60 s (reconcile).
+    "relay_grace": 300,        # a child's fact that wakes the parent, not recorded on the parent for this long
+    "unbound_grace": 900,      # a dispatched request that has not become a child for this long
 }
 
 #: Conditions that need nobody (the record says whose move it is).
-QUIET = ("respected-hold", "awaiting-person", "awaiting-external", "working", "queued", "terminal")
+QUIET = ("respected-hold", "awaiting-person", "awaiting-external", "awaiting-delegation", "working", "queued", "terminal")
 #: Families a recovery agent is asked about; the others go to the owners.
 RECOVERABLE = ("attempt", "continuation", "publication", "integration")
 
@@ -96,6 +99,8 @@ def _compact(run: dict) -> dict[str, Any]:
         "source": run.get("source"), "problems": run.get("problems"), "unavailable": run.get("unavailable"),
         "recoveries": run.get("recoveries"), "publication": run.get("publication"), "integration": run.get("integration"),
         "input": run.get("input"), "executor": run.get("executor"),
+        # workflow_editor p10: the run's delegations and their children's situation.
+        "delegations": run.get("delegations"),
     }
 
 
@@ -202,6 +207,8 @@ def classify_run(run: dict, now: float, timing: dict[str, float], prev_cpu: dict
         return Finding(**base, condition="queued", kind=job.get("kind", "job"), fact=f"{job.get('kind')} job {job.get('id')} {job.get('state')}",
                        since=ts(job.get("created")), evidence=evidence)
     responsible = str(waiting.get("responsible") or "")
+    if responsible.startswith("delegation:") or responsible.startswith("delegation-unbound:"):
+        return _delegation_wait(run, base, waiting, responsible, now, timing, evidence)
     if responsible.startswith("person:"):
         return Finding(**base, condition="awaiting-person", kind="question", fact=str(waiting.get("reason")), evidence=evidence)
     if responsible.startswith("external:"):
@@ -223,6 +230,35 @@ def classify_run(run: dict, now: float, timing: dict[str, float], prev_cpu: dict
     return Finding(**base, condition="awaiting-person", kind="failed" if failed else str(execution.get("state")),
                    fact=f"{', '.join(failed)} failed; a person decides" if failed else str(waiting.get("reason") or execution.get("state")),
                    evidence=evidence)
+
+
+def _delegation_wait(run: dict, base: dict, waiting: dict, responsible: str, now: float, timing: dict[str, float], evidence: dict) -> Finding:
+    """A delegate node waits on its child (workflow_editor p10). The child is a
+    run of its own with its own finding: its failures, holds and recoveries
+    are its incidents, never a second one here. What is this run's: a child
+    fact the relay has not recorded on it (the continuation path is broken),
+    and a dispatched request that never became a child (its delivery)."""
+    uid = responsible.split(":", 1)[1]
+    facts = next((d for d in run.get("delegations") or [] if (d.get("child") or {}).get("uid") == uid or d.get("uid") == uid), None) or {}
+    stalled = [f for f in facts.get("unrelayed") or [] if f.get("wakes") and (ts(f.get("at")) or now) + timing["relay_grace"] < now]
+    if stalled:
+        f = stalled[0]
+        return Finding(**base, condition="uncertain", family="delegation", episode=f"{facts.get('uid')}@{f.get('childSeq')}", kind="relay-stalled",
+                       fact=f"the child {(facts.get('child') or {}).get('ref')} recorded {f.get('type')} at {f.get('at')}; it is not on this run's delegation {facts.get('id')} yet, so nothing resumes this run",
+                       since=(ts(f.get("at")) or now) + timing["relay_grace"], evidence=evidence)
+    if responsible.startswith("delegation-unbound:"):
+        delivery = facts.get("delivery") or {}
+        dispatched = ts(facts.get("dispatchedAt")) or now
+        state = str(delivery.get("state") or "")
+        error = f" ({delivery['error']})" if delivery.get("error") else ""
+        if state.startswith(("failed", "unresolved")) or "may have been posted" in state or dispatched + timing["unbound_grace"] < now:
+            return Finding(**base, condition="uncertain", family="delegation", episode=f"{facts.get('uid')}@unbound", kind="unbound-dispatch",
+                           fact=f"delegation {facts.get('id')} to {facts.get('target')} was dispatched {facts.get('dispatchedAt')} and has no child: its request delivery is {state or 'unknown'}{error}",
+                           since=max(dispatched + timing["unbound_grace"], ts(delivery.get("since")) or 0) if not state.startswith(("failed", "unresolved")) else ts(delivery.get("since")), evidence=evidence)
+        return Finding(**base, condition="awaiting-delegation", kind="delivering", fact=f"delegation {facts.get('id')} to {facts.get('target')}: request {state or 'queued'}", evidence=evidence)
+    child = facts.get("child") or {}
+    held = f", held {child.get('hold')} (its own finding)" if child.get("hold") else ""
+    return Finding(**base, condition="awaiting-delegation", kind="child", fact=f"delegation {facts.get('id')}: child {child.get('ref')} is {child.get('situation')}{held}", evidence=evidence)
 
 
 def classify(observation: dict, now: float, timing: dict[str, float] | None = None, prev_cpu: dict[str, float] | None = None,

@@ -37,6 +37,10 @@ makes a suspicion, never a verdict.
 | an external wait past its declared `deadline` | `uncertain` (family `wait`) | told to the owners |
 | ready work or an answer recorded and not taken up, no hold, no attempt, no queued job | `unowned` | grace 180 s (the executor's reconcile re-queues answers), then incident (family `continuation`) → recovery request |
 | a queued job behind a healthy executing attempt | `queued` | none (legitimate wait, `ahead` recorded) |
+| a delegate node waiting on its child (workflow_editor p10; `waiting.responsible = delegation:<child uid>`) | `awaiting-delegation` | none: the child is a run of its own with its own finding — its failure, hold or interruption is the child's incident, never a second one on the parent |
+| a relayed child fact the parent has not taken up, no queued job | `unowned` | as any unowned continuation (recovery request) |
+| a child fact that wakes the parent, not recorded on the parent for 300 s (`delegations[].unrelayed`) | `uncertain` (`relay-stalled`, family `delegation`) | told to the owners: the relay is WFE's, nothing a recovery agent can redo |
+| a dispatch with no child (`delegation-unbound:`) whose request delivery failed, may have been posted, or is older than 900 s | `uncertain` (`unbound-dispatch`, family `delegation`) | told to the owners (`wfe notify deliveries`, `wfe intake status`) |
 | a queued job, slot free, executor healthy, not claimed for 300 s | `queue-stalled` | incident (family `queue`) → owners |
 | executor heartbeat older than 180 s | `executor-down` | one infrastructure incident naming every affected run → owners (independent route); no per-run requests |
 | failed/attention checkpoint, failed/refused/attention integration | `publication` / `integration` | separate incident; recovery may retry publication, never re-run work or accept |

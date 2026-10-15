@@ -1,0 +1,392 @@
+{
+  "about": "p10: a child question not relayed to its parent for longer than the relay grace is suspected (told to the owners)",
+  "observation": {
+    "schema": "ag.wfe-observation.v1",
+    "observedAt": "2026-10-15T07:05:12.389Z",
+    "host": "fixture-host",
+    "release": null,
+    "executor": {
+      "state": "available",
+      "heartbeatAt": "2026-10-15T06:55:12.311Z",
+      "ageSeconds": 0.1,
+      "name": "autolab",
+      "pid": 58934,
+      "detail": "autolab; idle",
+      "slot": null,
+      "queued": 0
+    },
+    "workspaces": [
+      {
+        "id": "par",
+        "available": true,
+        "problem": null
+      },
+      {
+        "id": "kid",
+        "available": true,
+        "problem": null
+      }
+    ],
+    "runs": [
+      {
+        "identity": {
+          "project": "par",
+          "workspace": "par",
+          "workflow": "use",
+          "run": "run-001",
+          "creation": "db4fccdf5bfa6b7a",
+          "uid": "par/use/run-001#db4fccdf5bfa6b7a",
+          "created": "2026-10-15T06:55:09.039Z",
+          "receipt": "request:fixture-request-2",
+          "branch": "wfe/par/use/run-001"
+        },
+        "source": {
+          "state": "ok",
+          "problem": null,
+          "location": "copy",
+          "readAt": "2026-10-15T06:55:12.360Z",
+          "reads": 1,
+          "consistent": true
+        },
+        "seq": 6,
+        "updated": "2026-10-15T06:55:11.845Z",
+        "situation": "awaiting-person",
+        "execution": {
+          "state": "in-progress",
+          "ready": [],
+          "active": [],
+          "failed": [],
+          "blocked": [],
+          "waiting": [
+            {
+              "node": "asset",
+              "on": {
+                "delegation": "d1"
+              },
+              "holder": "kid/make",
+              "since": "2026-10-15T06:55:09.566Z",
+              "deadline": null
+            }
+          ]
+        },
+        "hold": null,
+        "stop": null,
+        "cancelled": null,
+        "attempts": {
+          "count": 1,
+          "beganSeq": 2,
+          "open": null,
+          "last": {
+            "id": "amv96p5b2-45810d",
+            "outcome": "exited",
+            "ended": "2026-10-15T06:55:09.616Z",
+            "detail": ""
+          }
+        },
+        "session": {
+          "policy": "fresh",
+          "current": {
+            "id": null,
+            "began": "2026-10-15T06:55:09.087Z",
+            "attempts": [
+              "amv96p5b2-45810d"
+            ],
+            "attached": null,
+            "mismatch": false
+          },
+          "count": 1,
+          "ended": []
+        },
+        "process": {
+          "attempt": "amv96p5b2-45810d",
+          "state": "ended",
+          "host": "fixture-host",
+          "local": true,
+          "pid": null,
+          "alive": false,
+          "began": "2026-10-15T06:55:09.086Z",
+          "ended": "2026-10-15T06:55:09.572Z",
+          "exit": 0,
+          "signal": null,
+          "outcome": "exited",
+          "stopRequested": null,
+          "group": null,
+          "log": {
+            "last": null,
+            "bytes": 0,
+            "turns": null,
+            "session": null,
+            "problem": null,
+            "openTool": null,
+            "ended": null,
+            "backgroundStopped": 0,
+            "partial": false
+          },
+          "session": {
+            "id": null,
+            "resumed": false
+          }
+        },
+        "queue": {
+          "job": null,
+          "position": null,
+          "ahead": []
+        },
+        "inputs": {
+          "questions": [],
+          "answeredNotTakenUp": [],
+          "instructionsPending": 0
+        },
+        "waiting": {
+          "reason": "delegation d1 to kid/make: child run-001",
+          "responsible": "delegation:kid/make/run-001#1285243776d869a4",
+          "since": "2026-10-15T06:55:09.566Z"
+        },
+        "progress": {
+          "seq": 4,
+          "at": "2026-10-15T06:55:09.566Z",
+          "op": "delegation.dispatch",
+          "by": "par-agent",
+          "attempt": "amv96p5b2-45810d"
+        },
+        "recoveries": [],
+        "publication": {
+          "failed": [],
+          "attention": [],
+          "pending": []
+        },
+        "integration": {
+          "queued": [],
+          "running": [],
+          "failed": [],
+          "refused": [],
+          "attention": []
+        },
+        "input": {
+          "kind": "braindump",
+          "requester": null,
+          "source": null
+        },
+        "executor": {
+          "name": "par-agent",
+          "host": "autolab"
+        },
+        "problems": [],
+        "unavailable": {},
+        "delegations": [
+          {
+            "id": "d1",
+            "uid": "par/use/run-001#db4fccdf5bfa6b7a/d1",
+            "node": "asset",
+            "state": "working",
+            "target": "kid/make",
+            "dispatchedAt": "2026-10-15T06:55:09.566Z",
+            "closed": false,
+            "child": {
+              "uid": "kid/make/run-001#1285243776d869a4",
+              "workspace": "kid",
+              "ref": "make/run-001",
+              "situation": "awaiting-person",
+              "execution": "in-progress",
+              "waitingFor": [
+                "par-agent"
+              ],
+              "hold": null,
+              "failed": []
+            },
+            "pending": [],
+            "unrelayed": [
+              {
+                "type": "question",
+                "childSeq": 4,
+                "at": "2026-10-15T06:55:11.946Z",
+                "wakes": true
+              }
+            ],
+            "delivery": null,
+            "problem": null
+          }
+        ]
+      },
+      {
+        "identity": {
+          "project": "kid",
+          "workspace": "kid",
+          "workflow": "make",
+          "run": "run-001",
+          "creation": "1285243776d869a4",
+          "uid": "kid/make/run-001#1285243776d869a4",
+          "created": "2026-10-15T06:55:11.824Z",
+          "receipt": "zulip:fixture.invalid:1001",
+          "branch": "wfe/kid/make/run-001"
+        },
+        "source": {
+          "state": "ok",
+          "problem": null,
+          "location": "copy",
+          "readAt": "2026-10-15T06:55:12.389Z",
+          "reads": 1,
+          "consistent": true
+        },
+        "seq": 5,
+        "updated": "2026-10-15T06:55:11.997Z",
+        "situation": "awaiting-person",
+        "execution": {
+          "state": "in-progress",
+          "ready": [],
+          "active": [],
+          "failed": [],
+          "blocked": [],
+          "waiting": [
+            {
+              "node": "scope",
+              "on": {
+                "question": "q1"
+              },
+              "holder": "par-agent",
+              "since": "2026-10-15T06:55:11.946Z",
+              "deadline": null
+            }
+          ]
+        },
+        "hold": null,
+        "stop": null,
+        "cancelled": null,
+        "attempts": {
+          "count": 1,
+          "beganSeq": 2,
+          "open": null,
+          "last": {
+            "id": "amv96p7hz-85d305",
+            "outcome": "exited",
+            "ended": "2026-10-15T06:55:11.997Z",
+            "detail": ""
+          }
+        },
+        "session": {
+          "policy": "fresh",
+          "current": {
+            "id": null,
+            "began": "2026-10-15T06:55:11.929Z",
+            "attempts": [
+              "amv96p7hz-85d305"
+            ],
+            "attached": null,
+            "mismatch": false
+          },
+          "count": 1,
+          "ended": []
+        },
+        "process": {
+          "attempt": "amv96p7hz-85d305",
+          "state": "ended",
+          "host": "fixture-host",
+          "local": true,
+          "pid": null,
+          "alive": false,
+          "began": "2026-10-15T06:55:11.927Z",
+          "ended": "2026-10-15T06:55:11.954Z",
+          "exit": 0,
+          "signal": null,
+          "outcome": "exited",
+          "stopRequested": null,
+          "group": null,
+          "log": {
+            "last": null,
+            "bytes": 0,
+            "turns": null,
+            "session": null,
+            "problem": null,
+            "openTool": null,
+            "ended": null,
+            "backgroundStopped": 0,
+            "partial": false
+          },
+          "session": {
+            "id": null,
+            "resumed": false
+          }
+        },
+        "queue": {
+          "job": null,
+          "position": null,
+          "ahead": []
+        },
+        "inputs": {
+          "questions": [
+            {
+              "id": "q1",
+              "node": "scope",
+              "to": "par-agent",
+              "asked": "2026-10-15T06:55:11.946Z",
+              "state": "open"
+            }
+          ],
+          "answeredNotTakenUp": [],
+          "instructionsPending": 0
+        },
+        "waiting": {
+          "reason": "question q1 to par-agent",
+          "responsible": "person:par-agent",
+          "since": "2026-10-15T06:55:11.946Z"
+        },
+        "progress": {
+          "seq": 4,
+          "at": "2026-10-15T06:55:11.946Z",
+          "op": "question.ask",
+          "by": "kid-agent",
+          "attempt": "amv96p7hz-85d305"
+        },
+        "recoveries": [],
+        "publication": {
+          "failed": [],
+          "attention": [],
+          "pending": []
+        },
+        "integration": {
+          "queued": [],
+          "running": [],
+          "failed": [],
+          "refused": [],
+          "attention": []
+        },
+        "input": {
+          "kind": "request",
+          "requester": "par-agent",
+          "source": {
+            "kind": "zulip",
+            "realm": "fixture.invalid",
+            "message": 1001,
+            "stream": 701,
+            "topic": "request-par.use.run-001.d1",
+            "sender": 11,
+            "senderName": "autolab",
+            "at": "2026-09-21T14:13:20.000Z"
+          }
+        },
+        "executor": {
+          "name": "kid-agent",
+          "host": "autolab"
+        },
+        "problems": [],
+        "unavailable": {}
+      }
+    ],
+    "problems": []
+  },
+  "expect": {
+    "par/use/run-001#db4fccdf5bfa6b7a": {
+      "condition": "uncertain",
+      "incident": {
+        "family": "delegation",
+        "episode": "par/use/run-001#db4fccdf5bfa6b7a/d1@4"
+      },
+      "request": false
+    },
+    "kid/make/run-001#1285243776d869a4": {
+      "condition": "awaiting-person",
+      "incident": null,
+      "request": false
+    }
+  }
+}
