@@ -110,7 +110,12 @@ def is_recovery_run(run: dict, recovery_workflows: tuple[str, ...]) -> bool:
 
 
 def classify_run(run: dict, now: float, timing: dict[str, float], prev_cpu: dict[str, float] | None = None,
-                 executor_down: bool = False, recovery_workflows: tuple[str, ...] = ()) -> Finding:
+                 executor_down: bool = False, recovery_workflows: tuple[str, ...] = (), remote: dict | None = None) -> Finding:
+    """`remote` (project_migration p7): the remote worker that performs the
+    run, as the observation reports it. Its process is that worker's to
+    observe; its log is shipped to the coordinator, so liveness is judged
+    from the log and the worker's contact, and a lost contact is the
+    worker's silence — never a lost process."""
     ident = run["identity"]
     uid = ident.get("uid") or f"{ident['workspace']}:{ident['workflow']}/{ident['run']}"
     base = dict(uid=uid, workspace=ident["workspace"], ref=f"{ident['workflow']}/{ident['run']}")
@@ -175,7 +180,10 @@ def classify_run(run: dict, now: float, timing: dict[str, float], prev_cpu: dict
                            recover=recover_ok, evidence=evidence, affected=[uid])
         if executor_down:
             return Finding(**base, condition="working", kind="executor-down", fact="executing while the executor is not reporting", evidence=evidence)
-        if process.get("attempt") != a or process.get("alive") is None:
+        if remote is not None and process.get("attempt") == a and remote.get("state") != "available":
+            return Finding(**base, condition="working", kind="worker-down",
+                           fact=f"executing on worker {remote.get('id')}, which has not reported since {remote.get('heartbeatAt')}; its attempt stays open", evidence=evidence)
+        if (process.get("attempt") != a or process.get("alive") is None) and not (remote is not None and process.get("attempt") == a and process.get("log")):
             return Finding(**base, condition="uncertain", family="attempt", episode=a, kind="unobservable-process",
                            fact=f"attempt {a} is open; its process cannot be observed here", evidence=evidence)
         log = process.get("log") or {}
@@ -219,6 +227,8 @@ def classify_run(run: dict, now: float, timing: dict[str, float], prev_cpu: dict
                            fact=f"{w['node']} waits on {w.get('on')} past its declared deadline {w['deadline']}", since=ts(w["deadline"]), evidence=evidence)
         return Finding(**base, condition="awaiting-external", kind="external", fact=str(waiting.get("reason")), evidence=evidence)
     if responsible == "executor":
+        if remote is not None and remote.get("state") != "available":
+            return Finding(**base, condition="queued", kind="worker-down", fact=f"waits for worker {remote.get('id')}, which is not reporting", evidence=evidence)
         if executor_down:
             return Finding(**base, condition="queued", kind="executor-down", fact="waits for the executor, which is not reporting", evidence=evidence)
         return Finding(**base, condition="unowned", family="continuation", episode=f"seq:{run.get('seq')}", kind="unowned",
@@ -270,7 +280,12 @@ def classify(observation: dict, now: float, timing: dict[str, float] | None = No
     ex = observation.get("executor") or {}
     age = ex.get("ageSeconds")
     down = ex.get("state") != "available" and (age is None or age > t["executor_stale"])
-    findings = [classify_run(r, now, t, prev_cpu, down, recovery_workflows) for r in observation.get("runs") or []]
+    # Remote workers (project_migration p7): a run they perform is judged by
+    # their contact, not by the local executor's.
+    workers = {w.get("id"): w for w in observation.get("workers") or [] if not w.get("local")}
+    def remote_of(r: dict) -> dict | None:
+        return workers.get(((r.get("executor") or {}).get("node")))
+    findings = [classify_run(r, now, t, prev_cpu, down and remote_of(r) is None, recovery_workflows, remote_of(r)) for r in observation.get("runs") or []]
     executor = None
     if down:
         affected = [f.uid for f in findings if f.condition in ("working", "queued", "unowned", "lost-attempt", "uncertain")

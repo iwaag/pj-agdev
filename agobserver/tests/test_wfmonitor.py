@@ -69,6 +69,26 @@ def test_an_open_call_past_its_declared_timeout_is_uncertain_not_working():
     assert g.condition == "working"
 
 
+def test_a_remote_workers_attempt_is_judged_by_its_shipped_log_and_its_contact():
+    """project_migration p7: the process of an attempt on a remote worker is
+    that worker's; the coordinator has its shipped log and its contact."""
+    doc = copy.deepcopy(fixture("normal-wait.json")["observation"])
+    run = doc["runs"][1]
+    run["executor"] = {**(run.get("executor") or {}), "node": "gpupc"}
+    run["process"].update({"alive": None, "local": False, "group": None})
+    run["process"]["log"]["openTool"] = None
+    last = ts(run["process"]["log"]["last"])
+    doc["workers"] = [{"id": "studio", "local": True, "state": "available"},
+                      {"id": "gpupc", "local": False, "state": "available", "heartbeatAt": doc["observedAt"]}]
+    (f,) = [x for x in wc.classify(doc, last + 30)[0] if x.uid == run["identity"]["uid"]]
+    assert f.condition == "working" and f.kind == "log", f.fact
+    (g,) = [x for x in wc.classify(doc, last + 7200)[0] if x.uid == run["identity"]["uid"]]
+    assert g.condition == "uncertain" and g.kind == "silent", "a quiet log on a reporting worker is still a suspicion"
+    doc["workers"][1]["state"] = "unavailable"
+    (h,), = [[x for x in wc.classify(doc, last + 7200)[0] if x.uid == run["identity"]["uid"]]]
+    assert h.condition == "working" and h.kind == "worker-down" and h.key is None, "lost contact is not a lost process"
+
+
 def test_cpu_progress_between_looks_is_work():
     doc = copy.deepcopy(fixture("intentional-hold.json")["observation"])
     run = doc["runs"][1]
