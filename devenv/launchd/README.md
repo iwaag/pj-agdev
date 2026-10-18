@@ -74,3 +74,9 @@ switched by `agdevworld/scripts/wfe-release.sh`, which restarts this job with
 `com.agdev.agautolab-wfexec.plist.in` is autolab as the executor of workflow
 runs (`agautolab.wfexec`, one execution slot). It needs
 `agautolab/.local/wfexec.toml` with `wfe = ["<projects>/pj-agdev/.local/agdev/bin/wfe"]`.
+
+`com.agdev.agautolab-zulip` and `com.agdev.agautolab-gateway` are gone
+(`retire/old_autolab`): the old autolab listener and its `:8791` window were
+the entrance of the retired mission system. The executor above is the whole
+of autolab now. Boot out any installed copy of those two labels; nothing
+replaces them.

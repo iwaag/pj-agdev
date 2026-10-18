@@ -23,7 +23,7 @@
          at this host's own `.local/topics` and `.local/agent` trees, never at
          Zulip, which is why the view may poll it at a few seconds
          (`operation_room` p3). An instance missing here reports `unknown`. -->
-    <key>AGENTROOM_AGENT_ROOTS</key><string>front-agstudio1=__PROJECTS_ROOT__/pj-agdev/agfront,autolab-agstudio1=__PROJECTS_ROOT__/pj-agdev/agautolab,agforge-agstudio1=__PROJECTS_ROOT__/pj-agdev/agforge,arxivsage-agstudio1=__PROJECTS_ROOT__/arxivsage,agecho-agstudio1=__PROJECTS_ROOT__/agecho</string>
+    <key>AGENTROOM_AGENT_ROOTS</key><string>front-agstudio1=__PROJECTS_ROOT__/pj-agdev/agfront,arxivsage-agstudio1=__PROJECTS_ROOT__/arxivsage,agecho-agstudio1=__PROJECTS_ROOT__/agecho</string>
     <!-- The budget read (`gauge_panel` ex1): the CLIs' own binaries, by
          absolute path because `~/.local/bin` is not on the PATH above. The
          relay only ever *reads* through them; it never touches a credential
