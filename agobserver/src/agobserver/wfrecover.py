@@ -60,6 +60,8 @@ def request_text(inc, f: wc.Finding, n: int) -> str:
         f"- the agent's last report: {json.dumps(ev.get('progress'), ensure_ascii=False)}",
         *session_lines(ev, ref, ws),
         f"- running nodes: {ev.get('active')}; ready: {ev.get('ready')}; earlier recoveries: {len(ev.get('recoveries') or [])}",
+        *cause_lines(ev),
+        *delegation_lines(ev),
         f"- unpublished checkpoints / integration: {json.dumps(ev.get('publication'))} / {json.dumps(ev.get('integration'))}",
         "",
         "**To resolve:** can this run's work continue safely from where its record stands? Look before deciding:",
@@ -75,6 +77,34 @@ def request_text(inc, f: wc.Finding, n: int) -> str:
         "You never resume a person's hold, accept a result, answer a question for the person, or change the run's plan.",
     ]
     return "\n".join(lines)
+
+
+def cause_lines(ev: dict) -> list[str]:
+    """The hold's structured cause and the run's recent ends (project_migration p8 ex1)."""
+    hold = ev.get("hold") or {}
+    out = []
+    short = wc.cause_text(hold.get("cause"))
+    if short:
+        out.append(f"- why it is held, in short: {short} (cause `{json.dumps(hold.get('cause'), ensure_ascii=False)}`)")
+    ends = (ev.get("attempts") or {}).get("ends") or []
+    if len(ends) > 1:
+        out.append("- recent attempt ends: " + "; ".join(f"`{e.get('attempt')}` {e.get('outcome')}{_cause_suffix(e)}{', recovered' if e.get('recovered') else ''}" for e in ends))
+    return out
+
+
+def delegation_lines(ev: dict) -> list[str]:
+    """The parent's delegations by identity: each child, where it stands,
+    the facts not taken up and those not relayed (project_migration p8 ex1)."""
+    out = []
+    for d in ev.get("delegations") or []:
+        child = d.get("child") or {}
+        pending = ", ".join(f"{p.get('type')} #{p.get('n')}" for p in d.get("pending") or []) or "none"
+        unrelayed = ", ".join(f"{u.get('type')} (child seq {u.get('childSeq')})" for u in d.get("unrelayed") or []) or "none"
+        who = f"child `{child.get('uid')}` ({child.get('workspace')} {child.get('ref')}): {child.get('situation')}{', held ' + str(child.get('hold')) if child.get('hold') else ''}" if child else f"no child yet ({d.get('problem') or 'request delivery: ' + str((d.get('delivery') or {}).get('state'))})"
+        out.append(f"- delegation `{d.get('uid')}` (node {d.get('node')} → {d.get('target')}, {d.get('state')}): {who}; not taken up: {pending}; not yet relayed: {unrelayed}")
+    if out:
+        out.append("- a child is a run of its own: its interruptions are its incidents; never dispatch a replacement child or repeat its work from here")
+    return out
 
 
 def session_lines(ev: dict, ref: str, ws: str) -> list[str]:
@@ -252,3 +282,8 @@ def rc_time(rc: dict) -> float | None:
 def _finished(run: dict) -> bool:
     ex = run.get("execution") or {}
     return bool(run.get("cancelled")) or ex.get("state") in ("completed", "stopped") or (run.get("hold") or {}).get("kind") == "stopped"
+
+
+def _cause_suffix(end: dict) -> str:
+    short = wc.cause_text(end.get("cause"))
+    return f" ({short})" if short else ""

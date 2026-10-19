@@ -572,3 +572,93 @@ def test_recorded_session_is_evidence_and_reaches_the_recovery_request(tmp_path)
     ev["session"]["policy"] = "fresh"
     text = wfrecover.request_text(inc, wc.Finding(**{**{k: None for k in wc.Finding.__dataclass_fields__}, "uid": inc["uid"], "family": "attempt", "episode": "a-second", "condition": "interrupted", "fact": "x", "evidence": ev}), 1)
     assert "session policy `fresh`" in text and "--retire" not in text
+
+
+# ---- project_migration p8 ex1: waits, causes, repeats -----------------------------------------
+
+def _parent_child(doc):
+    parent = next(r for r in doc["runs"] if r["identity"]["workflow"] == "use")
+    child = next(r for r in doc["runs"] if r["identity"]["workflow"] == "make")
+    return parent, child
+
+
+def test_a_healthy_delegation_wait_stays_quiet_however_long_it_lasts():
+    doc = copy.deepcopy(fixture("delegation-healthy-wait.json")["observation"])
+    parent, child = _parent_child(doc)
+    child["queue"]["job"] = None
+    child["attempts"]["open"] = {"id": "achild-1", "began": doc["observedAt"], "reason": "start", "backend": None, "agent": "kid-agent"}
+    child["process"] = {"attempt": "achild-1", "state": "running", "alive": True, "local": True, "pid": 1, "log": {"last": doc["observedAt"]}, "group": {"cpuSeconds": 1.0}}
+    eight_hours = ts(doc["observedAt"]) + 8 * 3600
+    by = {f.uid: f for f in wc.classify(doc, eight_hours)[0]}
+    p = by[parent["identity"]["uid"]]
+    assert p.condition == "awaiting-delegation" and p.key is None, p.fact
+    # The child's own silence is the child's suspicion, never the parent's.
+    assert by[child["identity"]["uid"]].condition == "uncertain"
+
+
+def test_a_lost_child_process_is_the_childs_incident_and_the_parents_wait_stays_quiet():
+    doc = copy.deepcopy(fixture("delegation-healthy-wait.json")["observation"])
+    parent, child = _parent_child(doc)
+    child["queue"]["job"] = None
+    child["attempts"]["open"] = {"id": "achild-1", "began": doc["observedAt"], "reason": "start", "backend": None, "agent": "kid-agent"}
+    child["process"] = {"attempt": "achild-1", "state": "running", "alive": False, "local": True, "pid": 1, "log": None}
+    by = {f.uid: f for f in wc.classify(doc, ts(doc["observedAt"]))[0]}
+    c = by[child["identity"]["uid"]]
+    assert c.condition == "lost-attempt" and c.family == "attempt" and c.recover
+    assert by[parent["identity"]["uid"]].condition == "awaiting-delegation"
+
+
+def test_an_unreadable_child_is_said_not_concluded():
+    doc = copy.deepcopy(fixture("delegation-healthy-wait.json")["observation"])
+    parent, _ = _parent_child(doc)
+    parent["delegations"][0]["childUid"] = parent["delegations"][0]["child"]["uid"]
+    parent["delegations"][0]["child"] = None
+    parent["delegations"][0]["problem"] = "the child kid make/run-001 cannot be read here"
+    by = {f.uid: f for f in wc.classify(doc, ts(doc["observedAt"]))[0]}
+    p = by[parent["identity"]["uid"]]
+    assert p.condition == "unobservable" and p.kind == "child-unreadable" and not p.recover
+    assert "cannot be read here" in p.fact
+
+
+def _missed(doc, ends=None):
+    parent, child = _parent_child(doc)
+    cause = {"code": "missed-event", "events": [{"delegation": "d1", "n": 1, "type": "completed"}]}
+    parent["hold"] = {"kind": "interrupted", "since": doc["observedAt"], "by": "autolab", "reason": "the executor exited without taking up delegation event d1 completed #1",
+                      "because": None, "human": False, "cause": cause}
+    parent["attempts"]["last"] = {"id": "apar-3", "outcome": "interrupted", "ended": doc["observedAt"], "detail": ""}
+    parent["attempts"]["ends"] = ends or [{"attempt": "apar-3", "seq": 9, "at": doc["observedAt"], "outcome": "interrupted", "held": "interrupted", "cause": cause, "recovered": False}]
+    parent["delegations"][0]["pending"] = [{"n": 1, "type": "completed", "at": doc["observedAt"]}]
+    parent["delegations"][0]["state"] = "attention"
+    return parent, child, cause
+
+
+def test_an_interrupted_parent_names_its_cause_and_children_and_the_recovery_request_carries_them():
+    from agobserver.wfrecover import request_text
+    doc = copy.deepcopy(fixture("delegation-healthy-wait.json")["observation"])
+    parent, child, _ = _missed(doc)
+    by = {f.uid: f for f in wc.classify(doc, ts(doc["observedAt"]))[0]}
+    f = by[parent["identity"]["uid"]]
+    assert f.condition == "interrupted" and f.recover and f.episode == "apar-3"
+    assert f.fact.startswith("held interrupted after attempt apar-3: d1 completed #1 not taken up")
+    assert child["identity"]["uid"] in f.affected
+    inc = {"id": f.key, "workspace": f.workspace, "ref": f.ref, "uid": f.uid, "family": f.family, "first_suspected": ts(doc["observedAt"])}
+    text = request_text(inc, f, 1)
+    assert "why it is held, in short: d1 completed #1 not taken up" in text
+    assert f"child `{child['identity']['uid']}`" in text and "not taken up: completed #1" in text
+    assert "never dispatch a replacement child" in text
+
+
+def test_the_same_interruption_after_two_recoveries_goes_to_the_owners_not_a_third_recovery():
+    doc = copy.deepcopy(fixture("delegation-healthy-wait.json")["observation"])
+    cause = {"code": "left-running", "nodes": ["talk"]}
+    ends = [{"attempt": f"apar-{i}", "seq": i * 5, "at": doc["observedAt"], "outcome": "interrupted", "held": "interrupted", "cause": cause, "recovered": i < 3} for i in (1, 2, 3)]
+    parent, _, _ = _missed(doc, ends)
+    parent["hold"]["cause"] = cause
+    parent["hold"]["reason"] = "the executor exited with talk recorded as running"
+    f = {x.uid: x for x in wc.classify(doc, ts(doc["observedAt"]))[0]}[parent["identity"]["uid"]]
+    assert f.condition == "interrupted" and f.kind == "repeated" and not f.recover
+    assert "talk left running at exit" in f.fact and "after 2 recoveries in a row" in f.fact
+    # Once, with another cause in between, it is recovered as usual.
+    ends[1]["cause"] = {"code": "process", "detail": "process ended with exit code 1"}
+    g = {x.uid: x for x in wc.classify(doc, ts(doc["observedAt"]))[0]}[parent["identity"]["uid"]]
+    assert g.kind == "interrupted" and g.recover

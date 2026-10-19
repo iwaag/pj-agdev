@@ -28,7 +28,8 @@ makes a suspicion, never a verdict.
 | --- | --- | --- |
 | `hold.human` (stopped), or an unanswered question to a person | `respected-hold`, `awaiting-person` | none; stays observed |
 | `node.wait` on an external reference | `awaiting-external` | none; observed, with its age |
-| `interrupted` / `unknown` hold, no recovery recorded for that attempt | `interrupted` | incident (family `attempt`) → recovery request |
+| `interrupted` / `unknown` hold, no recovery recorded for that attempt | `interrupted` | incident (family `attempt`) → recovery request. The fact leads with the hold's cause in a few words when the hold has one (project_migration p8 ex1: `talk left running at exit`, `d1 completed #1 not taken up`, `ended with nothing of its work recorded`, `process lost; outcome unconfirmed`), the sentence after it; `affected` names the children a missed fact concerns |
+| the same interruption (cause kind and what it names) after two recoveries in a row (`attempts.ends`) | `interrupted` (`repeated`) | incident (family `attempt`) told to the owners, not recovered a third time: another recovery would lift the hold without addressing its cause |
 | an attempt open in the record, process gone or the attempt row ended | `lost-attempt` | grace for the executor's reconcile (180 s), then incident (family `attempt`) |
 | an attempt alive with an open tool call inside its declared timeout (+60 s), or log/CPU advancing | `working` | none |
 | an attempt alive with an open tool call past its declared timeout (+60 s) | `uncertain` (`tool-overrun`) | as below, suspected from the moment the bound passed |
@@ -37,7 +38,8 @@ makes a suspicion, never a verdict.
 | an external wait past its declared `deadline` | `uncertain` (family `wait`) | told to the owners |
 | ready work or an answer recorded and not taken up, no hold, no attempt, no queued job | `unowned` | grace 180 s (the executor's reconcile re-queues answers), then incident (family `continuation`) → recovery request |
 | a queued job behind a healthy executing attempt | `queued` | none (legitimate wait, `ahead` recorded) |
-| a delegate node waiting on its child (workflow_editor p10; `waiting.responsible = delegation:<child uid>`) | `awaiting-delegation` | none: the child is a run of its own with its own finding — its failure, hold or interruption is the child's incident, never a second one on the parent |
+| a delegate node waiting on its child (workflow_editor p10; `waiting.responsible = delegation:<child uid>`) | `awaiting-delegation` | none, however long it lasts: the child is a run of its own with its own finding — its failure, hold, lost process or interruption is the child's incident, never a second one on the parent |
+| a delegate node waiting on a child whose record cannot be read here (`delegations[].problem`) | `unobservable` (`child-unreadable`, family `observation`) | nothing concluded; told to the owners if it persists 30 min |
 | a relayed child fact the parent has not taken up, no queued job | `unowned` | as any unowned continuation (recovery request) |
 | a child fact that wakes the parent, not recorded on the parent for 300 s (`delegations[].unrelayed`) | `uncertain` (`relay-stalled`, family `delegation`) | told to the owners: the relay is WFE's, nothing a recovery agent can redo |
 | a dispatch with no child (`delegation-unbound:`) whose request delivery failed, may have been posted, or is older than 900 s | `uncertain` (`unbound-dispatch`, family `delegation`) | told to the owners (`wfe notify deliveries`, `wfe intake status`) |
@@ -94,7 +96,12 @@ Observer saw, asked and verified.
    workflows only (`zulip.json` `intake.agents`), and the post becomes a
    recovery run (input kind `request`, requester Observer). The same post
    never creates a second run (its receipt). The run's progress and result
-   are posted back into that topic by WFE's notifier.
+   are posted back into that topic by WFE's notifier. The request carries
+   the hold's cause in short and the run's recent attempt ends, and for a
+   parent run every delegation by identity — the child's uid and where it
+   stands, the facts not taken up, those not yet relayed — with the rule
+   that a child is never replaced or repeated from a recovery
+   (project_migration p8 ex1).
 3. **Acknowledgement** is the recovery run existing with that post as its
    source; **performance** is `run.recover` naming the incident in the target
    run's history; **restoration** is a later observation showing the

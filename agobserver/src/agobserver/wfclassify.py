@@ -104,6 +104,59 @@ def _compact(run: dict) -> dict[str, Any]:
     }
 
 
+def cause_text(cause: dict | None) -> str | None:
+    """A hold's structured cause in a few words (project_migration p8 ex1;
+    WFE `shared/run.ts` HoldCause). None for holds recorded without one."""
+    if not cause:
+        return None
+    code = cause.get("code")
+    nodes = ", ".join(cause.get("nodes") or [])
+    if code == "left-running":
+        return f"{nodes} left running at exit"
+    if code == "left-ready":
+        return f"{nodes} left ready at exit, nothing waiting"
+    if code == "nothing-recorded":
+        return f"ended with nothing of its work recorded ({nodes} never started)"
+    if code == "missed-event":
+        return "; ".join(f"{e.get('delegation')} {e.get('type')} #{e.get('n')}" for e in cause.get("events") or []) + " not taken up"
+    if code == "process":
+        return str(cause.get("detail") or "the process did not end normally")
+    if code == "lost":
+        return "process lost; outcome unconfirmed"
+    return str(code)
+
+
+def cause_signature(cause: dict | None) -> str | None:
+    """What makes two interruptions the same one coming back: the cause's
+    kind and what it names (nodes, or delegations — not event numbers)."""
+    if not cause:
+        return None
+    named = sorted(cause.get("nodes") or []) or sorted({str(e.get("delegation")) for e in cause.get("events") or []})
+    return f"{cause.get('code')}:{','.join(named)}"
+
+
+#: Recoveries after which the same interruption is told to the owners instead of recovered again.
+REPEAT_AFTER = 2
+
+
+def repeated(attempts: dict) -> tuple[int, str] | None:
+    """The current hold's cause came back after `REPEAT_AFTER` recoveries in
+    a row (each recovered end followed by an end held for the same cause):
+    another recovery would repeat it."""
+    ends = [e for e in attempts.get("ends") or [] if e.get("held") in ("interrupted", "unknown")]
+    if not ends:
+        return None
+    sig = cause_signature(ends[-1].get("cause"))
+    if sig is None:
+        return None
+    n = 0
+    for e in reversed(ends[:-1]):
+        if not e.get("recovered") or cause_signature(e.get("cause")) != sig:
+            break
+        n += 1
+    return (n, sig) if n >= REPEAT_AFTER else None
+
+
 def is_recovery_run(run: dict, recovery_workflows: tuple[str, ...]) -> bool:
     ident = run["identity"]
     return f"{ident['project']}/{ident['workflow']}" in recovery_workflows
@@ -162,11 +215,24 @@ def classify_run(run: dict, now: float, timing: dict[str, float], prev_cpu: dict
         episode = last.get("id") or f"seq:{run.get('seq')}"
         log = (process.get("log") or {}) if process.get("attempt") == last.get("id") else {}
         detail = hold.get("reason") or hold.get("kind")
+        short = cause_text(hold.get("cause"))
+        if short and short not in detail:
+            detail = f"{short} ({detail})"
         if log.get("backgroundStopped"):
             detail += f"; the session ended ({(log.get('ended') or {}).get('stopReason') or 'ended'}) with {log['backgroundStopped']} background task(s) stopped by the harness"
+        # The parent and children a missed fact concerns, by identity.
+        affected = [uid] + [str((d.get("child") or {}).get("uid")) for d in run.get("delegations") or []
+                            if (d.get("child") or {}).get("uid") and any(e.get("delegation") == d.get("id") for e in (hold.get("cause") or {}).get("events") or [])]
+        again = repeated(attempts)
+        if again:
+            n, sig = again
+            # project_migration p8 ex1: the same cause after recoveries is not lifted again.
+            return Finding(**base, condition="interrupted", family="attempt", episode=episode, kind="repeated",
+                           fact=f"held {hold['kind']} after attempt {episode}: {detail} — the same cause ({sig}) after {n} recoveries in a row; recovering again would repeat it",
+                           since=ts(hold.get("since")), recover=False, evidence=evidence, affected=affected)
         return Finding(**base, condition="interrupted", family="attempt", episode=episode, kind=hold["kind"],
                        fact=f"held {hold['kind']} after attempt {episode}: {detail}", since=ts(hold.get("since")),
-                       recover=recover_ok, evidence=evidence)
+                       recover=recover_ok, evidence=evidence, affected=affected)
     if bad_pub and not opened:
         c = bad_pub[-1]
         return Finding(**base, condition="publication", family="publication", episode=str(c["id"]), kind=c.get("state", "failed"),
@@ -249,7 +315,7 @@ def _delegation_wait(run: dict, base: dict, waiting: dict, responsible: str, now
     fact the relay has not recorded on it (the continuation path is broken),
     and a dispatched request that never became a child (its delivery)."""
     uid = responsible.split(":", 1)[1]
-    facts = next((d for d in run.get("delegations") or [] if (d.get("child") or {}).get("uid") == uid or d.get("uid") == uid), None) or {}
+    facts = next((d for d in run.get("delegations") or [] if (d.get("child") or {}).get("uid") == uid or d.get("childUid") == uid or d.get("uid") == uid), None) or {}
     stalled = [f for f in facts.get("unrelayed") or [] if f.get("wakes") and (ts(f.get("at")) or now) + timing["relay_grace"] < now]
     if stalled:
         f = stalled[0]
@@ -267,6 +333,11 @@ def _delegation_wait(run: dict, base: dict, waiting: dict, responsible: str, now
                            since=max(dispatched + timing["unbound_grace"], ts(delivery.get("since")) or 0) if not state.startswith(("failed", "unresolved")) else ts(delivery.get("since")), evidence=evidence)
         return Finding(**base, condition="awaiting-delegation", kind="delivering", fact=f"delegation {facts.get('id')} to {facts.get('target')}: request {state or 'queued'}", evidence=evidence)
     child = facts.get("child") or {}
+    if not child and facts.get("problem"):
+        # The child cannot be read here: nothing is concluded about it, and a
+        # healthy wait is not made a failure; persisting, it is told.
+        return Finding(**base, condition="unobservable", family="observation", episode=f"{facts.get('uid')}@child", kind="child-unreadable",
+                       fact=f"delegation {facts.get('id')}: {facts.get('problem')}", grace=timing["unobservable_report"], evidence=evidence)
     held = f", held {child.get('hold')} (its own finding)" if child.get("hold") else ""
     return Finding(**base, condition="awaiting-delegation", kind="child", fact=f"delegation {facts.get('id')}: child {child.get('ref')} is {child.get('situation')}{held}", evidence=evidence)
 

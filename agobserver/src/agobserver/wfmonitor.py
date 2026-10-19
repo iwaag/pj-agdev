@@ -334,7 +334,8 @@ class WorkflowMonitor:
         if f.recover and self.recoverer is not None:
             return  # the recovery path takes it (wfrecover)
         if not inc["escalated"]:
-            self.escalate(inc, f, now, why="no recovery recipient is configured" if f.recover else "a recovery run is not itself recovered")
+            self.escalate(inc, f, now, why="no recovery recipient is configured" if f.recover else
+                          "the same interruption came back after recoveries; another would repeat it" if f.kind == "repeated" else "a recovery run is not itself recovered")
 
     def escalate(self, inc, f: wc.Finding, now: float, judged=None, why: str | None = None) -> None:
         iid = inc["id"]
