@@ -11,12 +11,9 @@
     <!-- `uv` is what serve.sh execs; without an explicit PATH launchd's own
          does not carry it and the job dies on every restart. -->
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <!-- Paths to ignored credentials files. Never the values themselves. -->
-    <key>OPSROOM_ZULIP_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/zulip/opsroom.env</string>
-    <!-- The Developer's credential: closing an argue from the Arguing Room
-         is the Developer's act. Separate from the read variable on purpose,
-         and nothing falls back to it. -->
-    <key>AGENTROOM_CHAT_ZULIP_ENV</key><string>__PROJECTS_ROOT__/pj-agdev/.local/zulip/developer.env</string>
+    <!-- Since workflow_editor p15 the relay serves /budget and /cost only and
+         holds no credential: the Zulip mirror and the Developer's write
+         credential left with the Front Desk. -->
     <!-- `instance=<project root>`: the pre-WFE agents whose ag.agent-run.v1
          records `/cost` reads as history for the workflow editor's Usage
          view (retire_old_ui p1). Host files only, never Zulip. -->

@@ -13,23 +13,11 @@ mentions, and such a command carries only a `prompt_id`, so the daemon must
 know which ComfyUI to poll. The host lives in the installed copy only.
 
 `com.agdev.agentroom.plist.in` is the agdevworld relay (`agdevworld/agentroom`,
-`:8094` on every interface). Since retire_old_ui p1 it serves the Front
-Desk's panels, the Arguing Room and the Usage view's windows and history. It
-has no extra placeholder, but it does have a reason to exist that the others
-do not: it reads a *running* copy of the realm — since `better_zulip_call` p1 a persisted mirror on the relay's
-own credential (`OPSROOM_ZULIP_ENV`), whose event queue is delivered only
-while somebody polls it. A restart within Zulip's queue lifetime resumes the
-queue and reads nothing; a longer outage costs one paged read of the realm
-(62 calls on this realm). `ThrottleInterval` is 30 s rather than launchd's
-default 10 all the same, so a crash loop cannot spend the quota at speed.
-`AGENTROOM_ZULIP_ENV`, the former per-request read credential, is gone from
-the template; an installed copy that still sets it is told so at startup.
-
-It also carries `AGENTROOM_CHAT_ZULIP_ENV`, the relay's **write** credential
-(since `operation_room` p3) — the Developer's; since retire_old_ui p1 its one
-use is closing an argue — and it is a separate variable from the read one so
-that a relay without it is read-only rather than quietly posting as its
-observer.
+`:8094` on every interface). Since workflow_editor p15 it serves only the
+Usage view's windows (`/budget`) and history (`/cost`) and holds no
+credential; the Zulip mirror (`OPSROOM_ZULIP_ENV`) and the Developer's write
+credential (`AGENTROOM_CHAT_ZULIP_ENV`) left with the Front Desk's panels and
+the Arguing Room. An installed copy still setting them is told so at startup.
 
 `com.agdev.agobserver-zulip.plist.in` is the Observer agent (`observer` p1).
 One job holds two things: the ordinary agag listener, and the due-watch
@@ -54,15 +42,6 @@ Since `gauge_panel` ex1 the same template carries a third placeholder,
 relay reads the CLIs' own stores and never writes them, so nothing else is
 needed — and remember that `kickstart -k` does not re-read a changed
 `EnvironmentVariables` block: `bootout`, wait, `bootstrap`.
-
-`AGENTROOM_PLANE_ENV` is **gone** (`refactor` p2 step 4). It carried the
-completion button's one non-Zulip credential — closing a conversation also
-closed the Plane Work its delegation had opened — and forge was its last
-consumer: since p2 forge's plan, outcome and result references live in its
-own `assetplan-`/`assetrun-` conversations, as autolab's have since p1. The
-relay now holds three credentials, all Zulip. An installed copy still
-carrying the variable is harmless (nothing reads it) until the next
-`bootout`/`bootstrap`.
 
 `com.agdev.wfe-service.plist.in` is the workflow editor service of the agdev
 area: it runs the installed release `.local/agdev/service/current`, on
