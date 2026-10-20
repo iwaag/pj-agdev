@@ -13,9 +13,10 @@ mentions, and such a command carries only a `prompt_id`, so the daemon must
 know which ComfyUI to poll. The host lives in the installed copy only.
 
 `com.agdev.agentroom.plist.in` is the agdevworld relay (`agdevworld/agentroom`,
-loopback `:8094`). It has no extra placeholder, but it does have a reason to
-exist that the others do not: its boards are a *running* reconstruction of
-the realm — since `better_zulip_call` p1 a persisted mirror on the relay's
+`:8094` on every interface). Since retire_old_ui p1 it serves the Front
+Desk's panels, the Arguing Room and the Usage view's windows and history. It
+has no extra placeholder, but it does have a reason to exist that the others
+do not: it reads a *running* copy of the realm — since `better_zulip_call` p1 a persisted mirror on the relay's
 own credential (`OPSROOM_ZULIP_ENV`), whose event queue is delivered only
 while somebody polls it. A restart within Zulip's queue lifetime resumes the
 queue and reads nothing; a longer outage costs one paged read of the realm
@@ -24,11 +25,11 @@ default 10 all the same, so a crash loop cannot spend the quota at speed.
 `AGENTROOM_ZULIP_ENV`, the former per-request read credential, is gone from
 the template; an installed copy that still sets it is told so at startup.
 
-Since `operation_room` p3 it also carries `AGENTROOM_CHAT_ZULIP_ENV`, the
-relay's **write** credential — the Developer's, because a post from the
-operation room is the Developer speaking and buys a Front run — and it is a
-separate variable from the two read ones so that a relay without it is
-read-only rather than quietly posting as its observer.
+It also carries `AGENTROOM_CHAT_ZULIP_ENV`, the relay's **write** credential
+(since `operation_room` p3) — the Developer's; since retire_old_ui p1 its one
+use is closing an argue — and it is a separate variable from the read one so
+that a relay without it is read-only rather than quietly posting as its
+observer.
 
 `com.agdev.agobserver-zulip.plist.in` is the Observer agent (`observer` p1).
 One job holds two things: the ordinary agag listener, and the due-watch
