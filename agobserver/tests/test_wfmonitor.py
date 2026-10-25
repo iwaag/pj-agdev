@@ -51,6 +51,22 @@ def test_fixture_classification(name):
             assert f.affected == want["affected"]
 
 
+def test_a_standing_conductor_at_rest_is_idle_input_not_a_person_wait_or_a_stall():
+    """workflow_editor p18: one conductor run per conversation rests between turns."""
+    doc = copy.deepcopy(fixture("normal-wait.json")["observation"])
+    run = doc["runs"][0]
+    run.update(situation="awaiting-input", hold=None, stop=None, cancelled=None, queue=None)
+    run["execution"] = {"state": "idle", "ready": [], "active": [], "failed": [], "blocked": [], "waiting": []}
+    run["attempts"] = {**(run.get("attempts") or {}), "open": None}
+    run["waiting"] = {"reason": "at rest: the standing conductor of room-a (open); the conversation's next event continues it",
+                      "responsible": "conversation:room-a", "since": run.get("updated")}
+    run["delegations"] = []
+    findings, _ = wc.classify(doc, ts(doc["observedAt"]))
+    (f,) = [x for x in findings if x.uid == run["identity"]["uid"]]
+    assert f.condition == "idle-input" and f.kind == "idle"
+    assert f.condition in wc.QUIET and f.key is None and not f.recover
+
+
 def test_motivating_interruption_names_the_lost_background_task():
     doc = fixture("interrupted-lost-retry.json")["observation"]
     (f,), _ = wc.classify(doc, ts(doc["observedAt"]))

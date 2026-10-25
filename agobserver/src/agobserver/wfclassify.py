@@ -41,7 +41,9 @@ TIMING = {
 }
 
 #: Conditions that need nobody (the record says whose move it is).
-QUIET = ("respected-hold", "awaiting-person", "awaiting-external", "awaiting-delegation", "working", "queued", "terminal")
+#: `idle-input` (workflow_editor p18): a conversation's standing conductor at
+#: rest between turns; the conversation's next event continues it.
+QUIET = ("respected-hold", "awaiting-person", "awaiting-external", "awaiting-delegation", "working", "queued", "terminal", "idle-input")
 #: Families a recovery agent is asked about; the others go to the owners.
 RECOVERABLE = ("attempt", "continuation", "publication", "integration")
 
@@ -281,6 +283,8 @@ def classify_run(run: dict, now: float, timing: dict[str, float], prev_cpu: dict
         return Finding(**base, condition="queued", kind=job.get("kind", "job"), fact=f"{job.get('kind')} job {job.get('id')} {job.get('state')}",
                        since=ts(job.get("created")), evidence=evidence)
     responsible = str(waiting.get("responsible") or "")
+    if responsible.startswith("conversation:"):
+        return Finding(**base, condition="idle-input", kind=str(execution.get("state")), fact=str(waiting.get("reason")), evidence=evidence)
     if responsible.startswith("delegation:") or responsible.startswith("delegation-unbound:"):
         return _delegation_wait(run, base, waiting, responsible, now, timing, evidence)
     if responsible.startswith("person:"):
