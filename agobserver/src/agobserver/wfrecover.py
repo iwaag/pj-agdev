@@ -35,7 +35,7 @@ from . import wfclassify as wc
 #: The run agent's reports that show work after a recovery (a recorded failure is a hand-off to the person).
 WORK_OPS = ("node.progress", "node.complete", "question.ask", "node.wait", "artifact.attach", "node.fail", "presentation.register")
 
-DEFAULTS = {"workflow": "agops/recover", "channel": "wf-agops.recover", "ack_timeout": 1800.0, "max_assignments": 2, "verify_timeout": 3600.0}
+DEFAULTS = {"workflow": "warden/recover", "channel": "wf-warden.recover", "ack_timeout": 1800.0, "max_assignments": 2, "verify_timeout": 3600.0}
 
 
 def request_text(inc, f: wc.Finding, n: int) -> str:

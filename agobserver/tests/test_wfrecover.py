@@ -18,12 +18,12 @@ from agobserver.wfstore import Store
 
 from test_wfmonitor import Clock, FakeZulip, fixture, time_iso, ts
 
-CHANNEL = "wf-agops.recover"
+CHANNEL = "wf-warden.recover"
 
 
 def recovery_run(message: int, uid_tail="aaaa", situation="executing", execution="in-progress", hold=None) -> dict:
     run = copy.deepcopy(fixture("intentional-hold.json")["observation"]["runs"][1])
-    run["identity"].update(project="agops", workspace="agops", workflow="recover", run="run-001", uid=f"agops/recover/run-001#{uid_tail}")
+    run["identity"].update(project="warden", workspace="warden", workflow="recover", run="run-001", uid=f"warden/recover/run-001#{uid_tail}")
     run["input"] = {"kind": "request", "requester": "Observer", "source": {"kind": "zulip", "message": message, "topic": "request-x"}}
     run["situation"] = situation
     run["execution"]["state"] = execution
@@ -45,7 +45,7 @@ def make(tmp_path, clock, cfg=None, store=None, zulip=None):
             doc["runs"] = [r for r in doc["runs"] if f"{r['identity']['workspace']}:{r['identity']['workflow']}/{r['identity']['run']}" in runs]
         return doc, None
 
-    settings = Settings(wfe=["wfe"], recovery={"enabled": True, "workflow": "agops/recover", "channel": CHANNEL, **(cfg or {})})
+    settings = Settings(wfe=["wfe"], recovery={"enabled": True, "workflow": "warden/recover", "channel": CHANNEL, **(cfg or {})})
     m = WorkflowMonitor(settings, store, Poster(store, lambda: zulip, log=lambda _m: None), observe=observe,
                         recoverer=Recoverer(settings.recovery, log=lambda _m: None), clock=clock, log=lambda _m: None)
     return m, store, zulip, state
@@ -66,7 +66,7 @@ def recovered(doc, iid, seq=12, attempt="amv6sl63n-accd7c", job=True):
     r["situation"] = "idle"
     r["seq"] = seq
     r["recoveries"] = [{"seq": seq, "at": d["observedAt"], "by": "recovery-agent", "incident": iid, "attempt": attempt,
-                        "agent": {"workspace": "agops", "workflow": "recover", "run": "run-001", "attempt": "arec-1"}}]
+                        "agent": {"workspace": "warden", "workflow": "recover", "run": "run-001", "attempt": "arec-1"}}]
     r["waiting"] = {"reason": "resume queued", "responsible": "executor", "since": d["observedAt"]}
     if job:
         r["queue"] = {"job": {"id": 90, "kind": "resume", "state": "queued", "created": d["observedAt"], "reason": f"recover: incident {iid}", "receipt": "x"}, "position": 1, "ahead": []}
@@ -99,7 +99,7 @@ def test_interrupted_run_is_requested_acknowledged_performed_and_verified_restor
     state2["doc"] = with_run
     clock.t += 60
     m2.look()
-    assert store.assignments(iid)[0]["acknowledged_by"] == "agops/recover/run-001#aaaa"
+    assert store.assignments(iid)[0]["acknowledged_by"] == "warden/recover/run-001#aaaa"
     assert store.incident(iid)["state"] == "recovering"
     # The recovery agent continued it: the hold is lifted and the resumption queued. Not yet restored.
     state2["doc"] = recovered(with_run, iid)

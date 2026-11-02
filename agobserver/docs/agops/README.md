@@ -1,3 +1,7 @@
+> **History.** This is the seed the recovery project was created with, kept as it was. The project
+> is now `warden` (`wf-warden.recover`, its own Gitea repository `pj-warden`), and that repository
+> is authoritative. For the current contract see `docs/workflow.md` and warden's own guide.
+
 # The recovery recipient's initial content (observer p3)
 
 The `agops` project (a managed project of the agdev area, its own Gitea

@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-alert", action="store_true")
     args = parser.parse_args(argv)
     settings = Settings.load(args.settings)
-    workspace = str((settings.recovery or {}).get("workspace") or "agops")
+    workspace = str((settings.recovery or {}).get("workspace") or "warden")
     log = lambda m: print(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {m}", flush=True)  # noqa: E731
     alert = None
     if not args.no_alert:

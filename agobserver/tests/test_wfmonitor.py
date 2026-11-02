@@ -116,9 +116,18 @@ def test_cpu_progress_between_looks_is_work():
 
 def test_a_recovery_run_is_never_sent_to_recovery():
     doc = copy.deepcopy(fixture("interrupted-lost-retry.json")["observation"])
-    doc["runs"][0]["identity"].update(project="agops", workflow="recover")
-    (f,), _ = wc.classify(doc, ts(doc["observedAt"]), recovery_workflows=("agops/recover",))
+    doc["runs"][0]["identity"].update(project="warden", workflow="recover")
+    (f,), _ = wc.classify(doc, ts(doc["observedAt"]), recovery_workflows=("warden/recover",))
     assert f.condition == "interrupted" and f.recover is False
+
+
+def test_a_recovery_run_from_before_the_rename_is_still_not_recovered():
+    """rename/warden: its uid keeps the creation project; its current project decides."""
+    doc = copy.deepcopy(fixture("interrupted-lost-retry.json")["observation"])
+    doc["runs"][0]["identity"].update(project="warden", workflow="recover", uid="agops/recover/run-001#aaaa")
+    (f,), _ = wc.classify(doc, ts(doc["observedAt"]), recovery_workflows=("warden/recover",))
+    assert f.condition == "interrupted" and f.recover is False
+
 
 
 def test_a_recorded_failure_and_an_overdue_external_wait():

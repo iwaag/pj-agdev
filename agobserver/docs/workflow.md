@@ -15,7 +15,7 @@ of it.
 | WFE | run state, validated transitions (`run.recover`), the observation | infers liveness from silence |
 | Executor (autolab `wfexec`) | processes, the queue and slot, heartbeat, reconcile | decides a recovery |
 | Observer | discovery, classification, incidents, assignment and delivery, verification, its own health | changes a run, resumes, accepts, kills |
-| Recovery agent (`agops/recover` runs) | investigates the evidence and decides: continue (`wfe run recover`), repair the environment, or hand the question to a person | writes while the old attempt lives, replays side effects, accepts results |
+| Recovery agent (`warden/recover` runs) | investigates the evidence and decides: continue (`wfe run recover`), repair the environment, or hand the question to a person | writes while the old attempt lives, replays side effects, accepts results |
 | Person | holds, answers, cancellation, acceptance, anything outside the recovery authority | — |
 | Watchdog (`agobserver.watchdog`, separate process) | Observer's loop and source freshness, the executor heartbeat, recovery backlog | depends on Observer's process |
 
@@ -91,7 +91,7 @@ Observer saw, asked and verified.
    may have gone out is looked for (the incident marker in the request topic)
    before anything is posted again; a failed search keeps it `uncertain`.
 2. **Zulip request.** One `request-<incident>` topic in the channel of the
-   `agops/recover` workflow (`wf-agops.recover`), posted by Observer's bot.
+   `warden/recover` workflow (`wf-warden.recover`), posted by Observer's bot.
    WFE's intake accepts posts from configured agent requesters for named
    workflows only (`zulip.json` `intake.agents`), and the post becomes a
    recovery run (input kind `request`, requester Observer). The same post
@@ -111,7 +111,7 @@ Observer saw, asked and verified.
 4. **Bounds.** At most 2 assignments per incident, the second after 30 min
    without acknowledgement or with the recovery run ended without action.
    A recovery run is never itself the target of a recovery request: an
-   incident on an `agops` run is told to the owners. Zulip failure is
+   incident on an `warden` run is told to the owners. Zulip failure is
    recorded and retried with backoff; it never stops observation or erases
    an assignment.
 5. **Outcomes.** `restored` (verified progress), `handed-off` (the recovery
@@ -186,9 +186,9 @@ judge = true                      # local-model judgments (role wftriage)
 [timing]                          # optional overrides for trials (seconds; wfclassify.TIMING)
 [recovery]                        # the recovery path (wfrecover)
 enabled = true
-workflow = "agops/recover"        # <project>/<workflow> of the recovery recipient
-channel = "wf-agops.recover"      # its Zulip channel (request-<incident> topics)
-workspace = "agops"               # observed whole (--terminal) while assignments are open
+workflow = "warden/recover"        # <project>/<workflow> of the recovery recipient
+channel = "wf-warden.recover"      # its Zulip channel (request-<incident> topics)
+workspace = "warden"               # observed whole (--terminal) while assignments are open
 # ack_timeout = 1800, max_assignments = 2, verify_timeout = 3600
 ```
 
