@@ -60,3 +60,5 @@ runs (`agautolab.wfexec`, one execution slot). It needs
 the entrance of the retired mission system. The executor above is the whole
 of autolab now. Boot out any installed copy of those two labels; nothing
 replaces them.
+
+`com.agdev.wfe-backup.plist.in` is the daily backup of retired runs (`improve_wfrun` p3): `wfe backup create`, one shot at 04:30. `wfe backup status` reports whether it worked; the job posts nothing.
