@@ -13,7 +13,8 @@ of it.
 | Party | Responsibility | Never |
 | --- | --- | --- |
 | WFE | run state, validated transitions (`run.recover`), the observation | infers liveness from silence |
-| Executor (autolab `wfexec`) | processes, the queue and slot, heartbeat, reconcile | decides a recovery |
+| Executor (autolab `wfexec`) | processes, the queue, heartbeat, reconcile | decides a recovery |
+| warden (coordination runs, improve_wfrun p4) | which queued work starts where, and when a deferral is looked at again (WFE `docs/coordination.md`) | — Observer never admits or defers work |
 | Observer | discovery, classification, incidents, assignment and delivery, verification, its own health | changes a run, resumes, accepts, kills |
 | Recovery agent (`warden/recover` runs) | investigates the evidence and decides: continue (`wfe run recover`), repair the environment, or hand the question to a person | writes while the old attempt lives, replays side effects, accepts results |
 | Person | holds, answers, cancellation, acceptance, anything outside the recovery authority | — |
@@ -37,13 +38,16 @@ makes a suspicion, never a verdict.
 | a node failed and nothing else runs (execution `stopped`) | `awaiting-person` (`failed`) | none: the failure is a record, the person decides |
 | an external wait past its declared `deadline` | `uncertain` (family `wait`) | told to the owners |
 | ready work or an answer recorded and not taken up, no hold, no attempt, no queued job | `unowned` | grace 180 s (the executor's reconcile re-queues answers), then incident (family `continuation`) → recovery request |
-| a queued job behind a healthy executing attempt | `queued` | none (legitimate wait, `ahead` recorded) |
+| a queued job behind a healthy executing attempt, or awaiting warden's decision, or deferred by warden inside its time (improve_wfrun p4: `queue.job.admission`) | `queued` (kind `awaiting-decision`, `deferred`, `admitted`) | none (a legitimate wait; the decision is warden's) |
+| a deferral past its reconsideration time with no later decision (`deferUntil` passed, still `deferred`) | `uncertain` (`reconsideration-overdue`, family `coordination`) | told to the owners after 600 s (WFE's reconcile wakes warden itself within a minute); closes when a later decision admits or defers again |
+| coordination turns ending without a decision while work awaits one (`coordination.stalled`), or jobs awaiting a decision for 900 s with no turn open or opening | `coordination-stalled` (family `coordination`, uid `coordination`) | one incident naming the waiting runs → owners at once (WFE already paused automatic turns; `wfe coordinate wake`); closes when a turn decides again or nothing awaits |
+| a coordination run's own interruption | `interrupted` (`[recovery] exempt` names `warden/coordinate`) | told to the owners, never sent to recovery: WFE's own path opens the next turn |
 | a delegate node waiting on its child (workflow_editor p10; `waiting.responsible = delegation:<child uid>`) | `awaiting-delegation` | none, however long it lasts: the child is a run of its own with its own finding — its failure, hold, lost process or interruption is the child's incident, never a second one on the parent |
 | a delegate node waiting on a child whose record cannot be read here (`delegations[].problem`) | `unobservable` (`child-unreadable`, family `observation`) | nothing concluded; told to the owners if it persists 30 min |
 | a relayed child fact the parent has not taken up, no queued job | `unowned` | as any unowned continuation (recovery request) |
 | a child fact that wakes the parent, not recorded on the parent for 300 s (`delegations[].unrelayed`) | `uncertain` (`relay-stalled`, family `delegation`) | told to the owners: the relay is WFE's, nothing a recovery agent can redo |
 | a dispatch with no child (`delegation-unbound:`) whose request delivery failed, may have been posted, or is older than 900 s | `uncertain` (`unbound-dispatch`, family `delegation`) | told to the owners (`wfe notify deliveries`, `wfe intake status`) |
-| a queued job, slot free, executor healthy, not claimed for 300 s | `queue-stalled` | incident (family `queue`) → owners |
+| an admitted job (or any job, without coordination), its worker healthy, not claimed for 300 s | `queue-stalled` | incident (family `queue`) → owners (not implemented in code as of improve_wfrun p4: the coordination stall above and the executor outage cover the observed cases) |
 | executor heartbeat older than 180 s | `executor-down` | one infrastructure incident naming every affected run → owners (independent route); no per-run requests |
 | failed/attention checkpoint, failed/refused/attention integration | `publication` / `integration` | separate incident; recovery may retry publication, never re-run work or accept |
 | `source.state` not ok, `ambiguous`, or the observation command failing | `unobservable` | observation problem recorded once; nothing concluded, nobody asked |
@@ -60,6 +64,7 @@ An incident is `(run uid, family, episode)`:
 | `observation` | the source state |
 | `continuation` | the record sequence at which the run became unowned |
 | `queue` | the job id |
+| `coordination` | a deferral's decision id (`defer:<id>`), or the stall's start (`stall:<since>`, `idle:<oldest>`) |
 | `publication` | the checkpoint id |
 | `integration` | the integration row id |
 | `executor` | the last heartbeat time seen before the outage |

@@ -15,6 +15,7 @@ incident or replenishing a budget.
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -38,6 +39,10 @@ TIMING = {
     # workflow_editor p10 (delegation): the relay runs every 5 s (intake) and 60 s (reconcile).
     "relay_grace": 300,        # a child's fact that wakes the parent, not recorded on the parent for this long
     "unbound_grace": 900,      # a dispatched request that has not become a child for this long
+    # improve_wfrun p4 (coordination): a deferral past its reconsideration time, or turns ending without a
+    # decision while something awaits one (WFE's own reconcile wakes and retries within a minute).
+    "coordination_grace": 600,
+    "coordination_stall": 900,  # jobs awaiting a decision this long with no coordination turn open or opening
 }
 
 #: Conditions that need nobody (the record says whose move it is).
@@ -46,6 +51,8 @@ TIMING = {
 QUIET = ("respected-hold", "awaiting-person", "awaiting-external", "awaiting-delegation", "working", "queued", "terminal", "idle-input")
 #: Families a recovery agent is asked about; the others go to the owners.
 RECOVERABLE = ("attempt", "continuation", "publication", "integration")
+#: Conditions a queued job may be in (improve_wfrun p4): how WFE admits it.
+QUEUED_KINDS = {"awaiting": "awaiting-decision", "deferred": "deferred", "admitted": "admitted", "claimed": "claimed"}
 
 
 def ts(value: str | None) -> float | None:
@@ -280,7 +287,17 @@ def classify_run(run: dict, now: float, timing: dict[str, float], prev_cpu: dict
                        fact=f"attempt {a} is alive, its log has not moved for {now - last_write:.0f} s, {what}, CPU not advancing",
                        since=last_write + timing["quiet_log"], evidence=evidence)
     if job:
-        return Finding(**base, condition="queued", kind=job.get("kind", "job"), fact=f"{job.get('kind')} job {job.get('id')} {job.get('state')}",
+        # improve_wfrun p4: what the job waits for is warden's decision (awaiting), a deferral (its time or
+        # event), or its node's next claim (admitted). A deferral past its time without a later decision is
+        # a reconsideration that did not happen: told to the owners after its grace (WFE wakes warden itself).
+        admission = str(job.get("admission") or "")
+        until = job.get("deferUntil")
+        if admission == "deferred" and until and (ts(until) or now) < now:
+            return Finding(**base, condition="uncertain", family="coordination", episode=f"defer:{job.get('decisionId')}", kind="reconsideration-overdue",
+                           fact=f"job {job.get('id')} was deferred by warden (decision {job.get('decisionId')}) until {until}, which passed without a later decision",
+                           since=ts(until), grace=timing["coordination_grace"], recover=False, evidence=evidence)
+        words = {"awaiting": "awaiting warden's decision", "deferred": f"deferred by warden{f' until {until}' if until else ''}", "admitted": "admitted; starts at its node's next claim", "claimed": "claimed"}.get(admission, job.get("state", ""))
+        return Finding(**base, condition="queued", kind=QUEUED_KINDS.get(admission, job.get("kind", "job")), fact=f"{job.get('kind')} job {job.get('id')} {words}",
                        since=ts(job.get("created")), evidence=evidence)
     responsible = str(waiting.get("responsible") or "")
     if responsible.startswith("conversation:"):
@@ -348,7 +365,8 @@ def _delegation_wait(run: dict, base: dict, waiting: dict, responsible: str, now
 
 def classify(observation: dict, now: float, timing: dict[str, float] | None = None, prev_cpu: dict[str, float] | None = None,
              recovery_workflows: tuple[str, ...] = ()) -> tuple[list[Finding], Finding | None]:
-    """Every run's finding, and the executor's own (None while it reports)."""
+    """Every run's finding, and the executor's own (None while it reports).
+    The coordination path's own finding (improve_wfrun p4) is `coordination_finding`."""
     if observation.get("schema") != SCHEMA:
         raise ValueError(f"not an observation: schema {observation.get('schema')!r}")
     t = {**TIMING, **(timing or {})}
@@ -365,11 +383,41 @@ def classify(observation: dict, now: float, timing: dict[str, float] | None = No
     if down:
         affected = [f.uid for f in findings if f.condition in ("working", "queued", "unowned", "lost-attempt", "uncertain")
                     or (f.evidence.get("waiting") or {}).get("responsible") in ("executor",)]
-        slot = ex.get("slot") or {}
-        if slot.get("uid") and slot["uid"] not in affected:
-            affected.append(slot["uid"])
+        # Every open attempt of the local worker (p4: several at once), not only the first.
+        local = next((w for w in observation.get("workers") or [] if w.get("local")), None)
+        for slot in [ex.get("slot") or {}, *((local or {}).get("slots") or [])]:
+            if slot.get("uid") and slot["uid"] not in affected:
+                affected.append(slot["uid"])
         executor = Finding(uid="executor", workspace="", ref="", condition="executor-down", family="executor",
                            episode=str(ex.get("heartbeatAt")), kind="executor-down",
                            fact=f"the executor's heartbeat is {age if age is not None else 'absent'} s old ({ex.get('detail')})",
                            since=ts(ex.get("heartbeatAt")), evidence={"executor": ex}, affected=affected)
     return findings, executor
+
+
+def coordination_finding(observation: dict, findings: list[Finding], now: float, timing: dict[str, float] | None = None) -> Finding | None:
+    """The coordination path's own finding (improve_wfrun p4, WFE
+    docs/coordination.md): turns keep ending without a decision while work
+    awaits one (WFE reports the stall and pauses automatic turns), or jobs
+    await a decision for `coordination_stall` with no turn open or opening.
+    One finding naming the affected runs, told to the owners; a wait warden
+    recorded is not an incident by itself."""
+    t = {**TIMING, **(timing or {})}
+    c = observation.get("coordination") or {}
+    if not c.get("configured"):
+        return None
+    awaiting = [f.uid for f in findings if f.condition == "queued" and f.kind == "awaiting-decision"]
+    stalled = c.get("stalled") or {}
+    if stalled:
+        return Finding(uid="coordination", workspace="", ref="", condition="coordination-stalled", family="coordination",
+                       episode=f"stall:{stalled.get('since')}", kind="turns-without-decision",
+                       fact=f"{stalled.get('failures')} coordination turns ended without a decision since {stalled.get('since')} (last: {stalled.get('last')}); automatic turns wait until {stalled.get('until')} while {len(awaiting)} job(s) await a decision",
+                       since=ts(stalled.get("since")), grace=0.0, evidence={"coordination": c}, affected=awaiting)
+    if awaiting and not c.get("turn"):
+        oldest = min((ts((f.evidence.get("queue") or {}).get("created")) or now for f in findings if f.uid in awaiting), default=now)
+        if now - oldest >= t["coordination_stall"]:
+            return Finding(uid="coordination", workspace="", ref="", condition="coordination-stalled", family="coordination",
+                           episode=f"idle:{int(oldest)}", kind="no-turn",
+                           fact=f"{len(awaiting)} job(s) have awaited warden's decision since {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(oldest))} and no coordination turn is open or opening",
+                           since=oldest, grace=0.0, evidence={"coordination": c}, affected=awaiting)
+    return None

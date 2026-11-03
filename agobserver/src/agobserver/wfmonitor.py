@@ -74,8 +74,12 @@ class Settings:
 
     @property
     def recovery_workflows(self) -> tuple[str, ...]:
+        """The workflows never sent to recovery: the recovery workflow itself and
+        `[recovery] exempt` (improve_wfrun p4: the coordination workflow, whose
+        failure is told to the owners and retried by WFE's own path)."""
         wf = self.recovery.get("workflow")
-        return (str(wf),) if wf else ()
+        exempt = [str(x) for x in (self.recovery.get("exempt") or [])]
+        return ((str(wf),) if wf else ()) + tuple(exempt)
 
 
 def wfe_observe(cmd: list[str], runs: list[str] | None = None, timeout: float = 90.0, workspace: str | None = None) -> tuple[dict | None, str | None]:
@@ -225,6 +229,8 @@ class WorkflowMonitor:
         self.source.update(state="live", last_ok_at=now, failed_since=None, reason=None, release=doc.get("release"))
         self.last_doc = doc
         findings, executor = wc.classify(doc, now, self.timing, self.store.cpu_samples(), self.s.recovery_workflows)
+        # improve_wfrun p4: the coordination path's own finding, beside the executor's.
+        coordination = wc.coordination_finding(doc, findings, now, self.timing)
         for r in doc.get("runs") or []:
             p = r.get("process") or {}
             if p.get("attempt") and (p.get("group") or {}).get("cpuSeconds") is not None:
@@ -233,7 +239,7 @@ class WorkflowMonitor:
             findings = [self._defer(f) for f in findings]
         by_uid = {f.uid: f for f in findings}
         self.last_findings = by_uid
-        suspicious = [f for f in findings + ([executor] if executor else []) if f.key]
+        suspicious = [f for f in findings + ([executor] if executor else []) + ([coordination] if coordination else []) if f.key]
         for f in suspicious:
             self.suspect(f, now)
         self.store.forget_suspects({f.key for f in suspicious if f.key})
@@ -326,8 +332,8 @@ class WorkflowMonitor:
             if age >= self.timing["escalate_uncertain"]:
                 self.escalate(inc, f, now, judged=j)
             return
-        if f.family in ("executor", "queue", "wait", "observation"):
-            grace = {"queue": self.timing["queue_stall"], "observation": 0.0}.get(f.family, 0.0)
+        if f.family in ("executor", "queue", "wait", "observation", "coordination"):
+            grace = {"queue": self.timing["queue_stall"], "observation": 0.0, "coordination": self.timing.get("coordination_grace", 600.0) if f.condition == "uncertain" else 0.0}.get(f.family, 0.0)
             if age >= grace and not inc["escalated"]:
                 self.escalate(inc, f, now)
             return
@@ -407,6 +413,13 @@ class WorkflowMonitor:
         if inc["family"] == "executor":
             if executor is None and doc.get("executor", {}).get("state") == "available":
                 self.close(inc, "resumed", {"executor": doc.get("executor")}, now)
+            return
+        if inc["uid"] == "coordination":
+            # improve_wfrun p4: the path's own incident closes once a turn decided again or nothing awaits.
+            c = doc.get("coordination") or {}
+            last = c.get("lastTurn") or {}
+            if not c.get("stalled") and (not c.get("awaiting") or (last.get("decisions") or 0) > 0 or c.get("turn")):
+                self.close(inc, "resumed", {"coordination": c, "why": "a coordination turn decided again or nothing awaits a decision"}, now)
             return
         f = by_uid.get(inc["uid"])
         if f is None and ":" in inc["uid"]:
@@ -508,6 +521,7 @@ ACTIONS = {
     "wait": "The run waits on an external result past the deadline it declared: look at the awaited result, then answer, resume or cancel the run.",
     "observation": "The run's record cannot be read: `wfe runs index --workspace <ws>` and `wfe run check <run>`.",
     "attempt": "`wfe exec status <run> --workspace <ws>` shows the attempt, its process and its log; a stop request is `wfe run stop <run> --by <name>`.",
+    "coordination": "Execution coordination is warden's (`wfe coordinate view`, `wfe coordinate decisions`); `wfe coordinate wake` opens a turn now, `wfe coordinate start <run> --by <name> --reason …` admits a job by hand, and the coordination runs' records are in the warden project.",
 }
 
 

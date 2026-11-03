@@ -687,3 +687,94 @@ def test_the_same_interruption_after_two_recoveries_goes_to_the_owners_not_a_thi
     ends[1]["cause"] = {"code": "process", "detail": "process ended with exit code 1"}
     g = {x.uid: x for x in wc.classify(doc, ts(doc["observedAt"]))[0]}[parent["identity"]["uid"]]
     assert g.kind == "interrupted" and g.recover
+
+
+# ---- execution coordination (improve_wfrun p4) ------------------------------------------------
+
+def _coordinated(doc: dict, **c) -> dict:
+    doc["coordination"] = {"configured": True, "worker": "studio", "lane": "coordination", "workflow": "warden/coordinate", "turn": None, "stalled": None,
+                           "awaiting": 0, "deferred": 0, "needs": [], "pendingEvents": 0, "oldestPendingEvent": None, "overdue": [], "lastTurn": None, **c}
+    return doc
+
+
+def test_a_job_awaiting_or_deferred_by_warden_is_a_legitimate_queue_wait():
+    doc = _coordinated(copy.deepcopy(fixture("normal-wait.json")["observation"]), awaiting=1)
+    run = doc["runs"][2]
+    run["queue"]["job"].update(decision=None, decisionId=None, deferUntil=None, reconsider=None, admission="awaiting")
+    run["waiting"] = {"reason": "resume queued for studio, awaiting warden's decision", "responsible": "coordination", "since": run["queue"]["job"]["created"]}
+    (f,) = [x for x in wc.classify(doc, ts(doc["observedAt"]))[0] if x.uid == run["identity"]["uid"]]
+    assert (f.condition, f.kind, f.key) == ("queued", "awaiting-decision", None)
+    assert "awaiting warden's decision" in f.fact
+    run["queue"]["job"].update(decision="defer", decisionId=12, deferUntil="2026-10-14T05:40:00.000Z", admission="deferred")
+    (g,) = [x for x in wc.classify(doc, ts(doc["observedAt"]))[0] if x.uid == run["identity"]["uid"]]
+    assert (g.condition, g.kind, g.key) == ("queued", "deferred", None), "a deferral inside its time is warden's recorded wait"
+    assert wc.coordination_finding(doc, wc.classify(doc, ts(doc["observedAt"]))[0], ts(doc["observedAt"])) is None
+
+
+def test_a_deferral_past_its_time_without_a_later_decision_is_told_to_the_owners(tmp_path):
+    doc = _coordinated(copy.deepcopy(fixture("normal-wait.json")["observation"]), deferred=1)
+    run = doc["runs"][2]
+    run["queue"]["job"].update(decision="defer", decisionId=12, deferUntil="2026-10-14T04:00:00.000Z", admission="deferred")
+    (f,) = [x for x in wc.classify(doc, ts(doc["observedAt"]))[0] if x.uid == run["identity"]["uid"]]
+    assert (f.condition, f.family, f.episode, f.kind) == ("uncertain", "coordination", "defer:12", "reconsideration-overdue")
+    assert not f.recover, "not a recovery: the decision is warden's to revise"
+    clock = Clock(ts(doc["observedAt"]))
+    m, store, zulip, _ = make(tmp_path, doc, clock)
+    for _ in range(11):
+        m.look()
+        clock.t += 60
+    (inc,) = [i for i in store.open_incidents() if i["family"] == "coordination"]
+    assert inc["state"] == "escalated", "told to the owners after its grace, never sent to recovery"
+    assert "wfe coordinate" in [s for s in zulip.sent if s["kind"] == "dm"][-1]["content"]
+    # Warden decided again: the job is admitted; the episode ends.
+    run["queue"]["job"].update(decision="start", decisionId=13, deferUntil=None, admission="admitted")
+    m.look()
+    assert store.incident(inc["id"])["state"] == "closed"
+
+
+def test_coordination_turns_ending_without_a_decision_are_one_incident_naming_the_waiting_runs(tmp_path):
+    doc = _coordinated(copy.deepcopy(fixture("normal-wait.json")["observation"]), awaiting=1,
+                       stalled={"since": "2026-10-14T04:00:00.000Z", "failures": 3, "until": "2026-10-14T04:50:00.000Z", "last": "ended: interrupted; 0 decisions applied"},
+                       lastTurn={"id": 9, "state": "ended", "ended": "2026-10-14T04:39:00.000Z", "outcome": "interrupted: 0 decisions applied", "decisions": 0})
+    run = doc["runs"][2]
+    run["queue"]["job"].update(decision=None, decisionId=None, deferUntil=None, reconsider=None, admission="awaiting")
+    findings, _ = wc.classify(doc, ts(doc["observedAt"]))
+    c = wc.coordination_finding(doc, findings, ts(doc["observedAt"]))
+    assert c is not None and (c.condition, c.family, c.kind) == ("coordination-stalled", "coordination", "turns-without-decision")
+    assert c.affected == [run["identity"]["uid"]]
+    clock = Clock(ts(doc["observedAt"]))
+    m, store, zulip, _ = make(tmp_path, doc, clock)
+    m.look()
+    (inc,) = store.open_incidents()
+    assert inc["uid"] == "coordination" and inc["state"] == "escalated", "told at once: WFE already paused automatic turns"
+    assert len([s for s in zulip.sent if s["kind"] == "dm"]) == 1
+    # A turn that decided closes it.
+    doc["coordination"].update(stalled=None, awaiting=0, lastTurn={"id": 10, "state": "ended", "ended": "2026-10-14T04:45:00.000Z", "outcome": "exited: 1 decision applied", "decisions": 1})
+    run["queue"]["job"].update(decision="start", decisionId=14, admission="admitted")
+    m.look()
+    assert store.incident(inc["id"])["outcome"] == "resumed"
+
+
+def test_jobs_awaiting_a_decision_with_no_turn_for_long_are_a_stall_too():
+    doc = _coordinated(copy.deepcopy(fixture("normal-wait.json")["observation"]), awaiting=1)
+    run = doc["runs"][2]
+    run["queue"]["job"].update(decision=None, decisionId=None, deferUntil=None, reconsider=None, admission="awaiting")
+    now = ts(doc["observedAt"])
+    findings, _ = wc.classify(doc, now)
+    assert wc.coordination_finding(doc, findings, now) is None, "five minutes queued: warden's turn may be opening"
+    late = ts(run["queue"]["job"]["created"]) + 901
+    findings, _ = wc.classify(doc, late)
+    c = wc.coordination_finding(doc, findings, late)
+    assert c is not None and c.kind == "no-turn"
+    doc["coordination"]["turn"] = {"id": 3, "run": "coordinate/run-003", "attempt": None, "since": "2026-10-14T04:39:00.000Z"}
+    assert wc.coordination_finding(doc, findings, late) is None, "a turn open or opening is the path working"
+
+
+def test_the_coordination_workflow_is_exempt_from_recovery_by_setting(tmp_path):
+    s = Settings(wfe=["wfe"], recovery={"workflow": "warden/recover", "exempt": ["warden/coordinate"]})
+    assert s.recovery_workflows == ("warden/recover", "warden/coordinate")
+    doc = copy.deepcopy(fixture("interrupted-lost-retry.json")["observation"])
+    run = doc["runs"][0]
+    run["identity"].update(project="warden", workflow="coordinate", uid="warden/coordinate/run-055#abcd")
+    (f,) = [x for x in wc.classify(doc, ts(doc["observedAt"]), recovery_workflows=s.recovery_workflows)[0] if x.uid == run["identity"]["uid"]]
+    assert f.condition == "interrupted" and not f.recover
